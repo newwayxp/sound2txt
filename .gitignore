@@ -1,0 +1,13 @@
+# 音声ファイル
+*.wav
+*.mp3
+*.mp4
+
+# 文字起こしファイル
+transcript_*.txt
+test_result.txt
+
+# テスト用レスポンス (機密情報含む可能性)
+response.json
+response2.json
+test_audio_*.wav
