@@ -9,9 +9,23 @@
      （会议纪要の生成は start.py が summarizer.py を呼んで行う）
 """
 import os
+import configparser
+
+# ── ネットワーク設定（faster-whisper の import より先に実行） ──
+_pre_cfg = configparser.ConfigParser()
+_pre_cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini"), encoding="utf-8")
+if _pre_cfg.has_section("network"):
+    _proxy = _pre_cfg.get("network", "https_proxy", fallback="")
+    if _proxy:
+        os.environ.setdefault("HTTPS_PROXY", _proxy)
+        os.environ.setdefault("HTTP_PROXY",  _pre_cfg.get("network", "http_proxy", fallback=_proxy))
+    if not _pre_cfg.getboolean("network", "ssl_verify", fallback=True):
+        os.environ.setdefault("HF_HUB_DISABLE_SSL_VERIFICATION", "1")
+        os.environ.setdefault("CURL_CA_BUNDLE", "")
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
+
 import glob
 import time
-import configparser
 import warnings
 from faster_whisper import WhisperModel
 from datetime import datetime
