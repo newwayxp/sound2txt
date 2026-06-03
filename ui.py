@@ -69,6 +69,9 @@ _T: dict[str, dict[str, str]] = {
     "api_key":       {"zh": "API Key",                    "ja": "API Key",                        "en": "API Key"},
     "cloud_model":   {"zh": "Cloud Model",                "ja": "クラウドモデル",                 "en": "Cloud Model"},
     "ollama_model":  {"zh": "Ollama Model",               "ja": "Ollama モデル",                  "en": "Ollama Model"},
+    "device_label":  {"zh": "运算设备",                   "ja": "実行デバイス",                      "en": "Device"},
+    "device_auto":   {"zh": "自动（有GPU则用GPU）",        "ja": "自動（GPU 優先）",                  "en": "Auto (GPU if available)"},
+    "model_label":   {"zh": "Whisper 模型",               "ja": "Whisper モデル",                    "en": "Whisper model"},
     "lang_label":    {"zh": "转写语言",                   "ja": "転写言語",                          "en": "Transcription language"},
     "lang_auto":     {"zh": "自动检测",                   "ja": "自動検出",                          "en": "Auto detect"},
     "lang_zh":       {"zh": "中文 (简体)",               "ja": "中国語（簡体字）",                   "en": "Chinese (Simplified)"},
@@ -213,13 +216,39 @@ class App(ctk.CTk):
     def _build_tab_rec(self, tab):
         tab.grid_columnconfigure(1, weight=1)
 
+        # デバイス設定
+        ctk.CTkLabel(tab, text=t("device_label"), anchor="w", width=170).grid(
+            row=0, column=0, sticky="w", padx=(12, 4), pady=7)
+        self._device_var = ctk.StringVar(
+            value=self._cfg.get("recording", "device", fallback="auto"))
+        dev_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        dev_frame.grid(row=0, column=1, columnspan=2, sticky="w", pady=7)
+        ctk.CTkRadioButton(dev_frame, text=t("device_auto"),
+                           variable=self._device_var, value="auto").pack(side="left", padx=(0, 14))
+        ctk.CTkRadioButton(dev_frame, text="CUDA (GPU)",
+                           variable=self._device_var, value="cuda").pack(side="left", padx=(0, 14))
+        ctk.CTkRadioButton(dev_frame, text="CPU",
+                           variable=self._device_var, value="cpu").pack(side="left")
+
+        # モデルサイズ
+        ctk.CTkLabel(tab, text=t("model_label"), anchor="w", width=170).grid(
+            row=1, column=0, sticky="w", padx=(12, 4), pady=7)
+        self._model_var = ctk.StringVar(
+            value=self._cfg.get("recording", "model_size", fallback="small"))
+        model_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        model_frame.grid(row=1, column=1, columnspan=2, sticky="w", pady=7)
+        for val, desc in [("tiny", "tiny (高速)"), ("small", "small (推奨)"),
+                           ("medium", "medium (高精度)"), ("large-v3", "large-v3 (最高精度)")]:
+            ctk.CTkRadioButton(model_frame, text=desc,
+                               variable=self._model_var, value=val).pack(side="left", padx=(0, 10))
+
         # 言語設定
         ctk.CTkLabel(tab, text=t("lang_label"), anchor="w", width=170).grid(
-            row=0, column=0, sticky="w", padx=(12, 4), pady=7)
+            row=2, column=0, sticky="w", padx=(12, 4), pady=7)
         self._lang_var = ctk.StringVar(
             value=self._cfg.get("recording", "language", fallback="auto"))
         lang_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        lang_frame.grid(row=0, column=1, columnspan=2, sticky="w", pady=7)
+        lang_frame.grid(row=2, column=1, columnspan=2, sticky="w", pady=7)
         for val, label_key in [("auto", "lang_auto"), ("zh", "lang_zh"),
                                 ("ja", "lang_ja"), ("en", "lang_en")]:
             ctk.CTkRadioButton(lang_frame, text=t(label_key),
@@ -227,25 +256,27 @@ class App(ctk.CTk):
 
         # 録音チャンク秒数
         ctk.CTkLabel(tab, text=t("rec_sec"), anchor="w", width=170).grid(
-            row=1, column=0, sticky="w", padx=(12, 4), pady=7)
+            row=3, column=0, sticky="w", padx=(12, 4), pady=7)
         self._rec_sec = ctk.IntVar(value=int(self._cfg.get("recording", "record_sec", fallback="30")))
         lbl = ctk.CTkLabel(tab, text=f"{self._rec_sec.get()} s", width=50)
         ctk.CTkSlider(
             tab, from_=10, to=120, number_of_steps=11, variable=self._rec_sec,
             command=lambda v: lbl.configure(text=f"{int(v)} s"),
-        ).grid(row=1, column=1, sticky="ew", padx=(0, 60), pady=7)
-        lbl.grid(row=1, column=2, padx=4)
+        ).grid(row=3, column=1, sticky="ew", padx=(0, 60), pady=7)
+        lbl.grid(row=3, column=2, padx=4)
 
         def _save():
             if not self._cfg.has_section("recording"):
                 self._cfg.add_section("recording")
             self._cfg.set("recording", "record_sec", str(self._rec_sec.get()))
             self._cfg.set("recording", "language",   self._lang_var.get())
+            self._cfg.set("recording", "device",     self._device_var.get())
+            self._cfg.set("recording", "model_size", self._model_var.get())
             with open(CFG_FILE, "w", encoding="utf-8") as f:
                 self._cfg.write(f)
             self._put_log(t("saved"))
         ctk.CTkButton(tab, text=t("save"), width=160, command=_save).grid(
-            row=2, column=0, columnspan=3, pady=14)
+            row=4, column=0, columnspan=3, pady=14)
 
     def _build_tab_api(self, tab):
         tab.grid_columnconfigure(1, weight=1)

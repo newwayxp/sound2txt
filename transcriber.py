@@ -109,8 +109,23 @@ def main():
     cfg_lang = _cfg.get("recording", "language", fallback="auto").strip().lower()
     language  = cfg_lang if cfg_lang in SUPPORTED_LANGS else None
 
-    print("[Transcriber] faster-whisper small モデル読み込み中...")
-    whisper = WhisperModel("small", device="cpu", compute_type="int8")
+    # デバイス・モデルサイズ設定
+    cfg_device     = _cfg.get("recording", "device",     fallback="auto").strip().lower()
+    model_size     = _cfg.get("recording", "model_size", fallback="small").strip()
+
+    if cfg_device == "auto":
+        try:
+            import ctranslate2
+            device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+        except Exception:
+            device = "cpu"
+    else:
+        device = cfg_device
+
+    compute_type = "float16" if device == "cuda" else "int8"
+
+    print(f"[Transcriber] faster-whisper {model_size} モデル読み込み中... (device={device}, compute={compute_type})")
+    whisper = WhisperModel(model_size, device=device, compute_type=compute_type)
     print(f"[Transcriber] 準備完了 → 保存先: {output_file}")
     if language:
         print(f"[Transcriber] 言語固定: {language}（config.ini）")
