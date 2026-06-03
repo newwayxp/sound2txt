@@ -24,6 +24,8 @@ if _pre_cfg.has_section("network"):
         os.environ.setdefault("CURL_CA_BUNDLE", "")
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
 
+os.environ.setdefault("HUGGINGFACE_HUB_VERBOSITY", "error")
+
 import glob
 import time
 import warnings
