@@ -247,10 +247,18 @@ def main():
             f for f in glob.glob(os.path.join(audio_dir, "audio_*.wav"))
             if f not in seen
         )
-        if late_files:
-            print(f"[Transcriber] 未処理ファイル {len(late_files)} 件を追加します。")
-        for wav_path in late_files:
+
+        all_files = late_files + [wp for wp, _ in pending]
+        total     = len(all_files)
+        if total == 0:
+            print("[Transcriber] 未処理ファイルなし → 終了します。")
+            return
+
+        print(f"[Transcriber] 残り {total} 件を変換してから終了します（しばらくお待ちください）...")
+
+        for i, wav_path in enumerate(late_files, 1):
             seen.add(wav_path)
+            print(f"[Transcriber] 変換中 {i}/{total}: {os.path.basename(wav_path)}")
             if language is not None:
                 text, _ = _transcribe(wav_path, lang=language)
                 _write_and_move(wav_path, text, out)
@@ -260,13 +268,16 @@ def main():
         if pending:
             if language is None:
                 language = _decide_language()
+            offset = len(late_files)
             print(f"[Transcriber] pending {len(pending)} チャンクを {language} で変換中...")
-            for wav_path, text in pending:
-                # zh 確定の場合は必ず簡体字プロンプトで再変換
+            for j, (wav_path, text) in enumerate(pending, 1):
+                print(f"[Transcriber] 変換中 {offset+j}/{total}: {os.path.basename(wav_path)}")
                 if language in _LANG_PROMPT_BASE or not text:
                     text, _ = _transcribe(wav_path, lang=language)
                 _write_and_move(wav_path, text, out)
             pending.clear()
+
+        print(f"[Transcriber] 全 {total} 件の変換が完了しました。")
 
     start_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
