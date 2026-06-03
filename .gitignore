@@ -1,13 +1,30 @@
-# 音声ファイル
+# ── 音声・文字起こしファイル ──────────────────────────
 *.wav
 *.mp3
 *.mp4
-
-# 文字起こしファイル
 transcript_*.txt
-test_result.txt
+corrected_*.txt
+summary_*.md
+test_audio_*.wav
 
-# テスト用レスポンス (機密情報含む可能性)
+# ── 設定ファイル（API キーを含む） ───────────────────
+config.ini
+
+# ── ランタイム状態ファイル ────────────────────────────
+.last_transcript
+.last_language
+.stop_signal
+.tmp_*.wav
+
+# ── ビルド成果物 ──────────────────────────────────────
+dist/
+
+# ── Python キャッシュ ─────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+
+# ── その他 ────────────────────────────────────────────
 response.json
 response2.json
-test_audio_*.wav
+test_result.txt
