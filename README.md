@@ -1,5 +1,7 @@
 # Sound2Text
 
+[English](README_en.md) | [日本語](README_ja.md) | 简体中文
+
 实时音频转写 + AI 纠错 + 会议纪要自动生成的 Windows 桌面工具。
 
 通过 Windows WASAPI 捕获系统音频，使用 faster-whisper 进行本地语音识别，并调用 LLM 生成结构化会议纪要。
