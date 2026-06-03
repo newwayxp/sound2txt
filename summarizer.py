@@ -187,10 +187,11 @@ def _call_openai(
     return "".join(parts)
 
 
-def _call_ollama(system: str, user: str, model: str) -> str:
+def _call_ollama(system: str, user: str, model: str, base_url: str = "http://localhost:11434") -> str:
     prompt = f"{system}\n\n{user}"
+    url    = base_url.rstrip("/") + "/api/generate"
     resp   = requests.post(
-        "http://localhost:11434/api/generate",
+        url,
         json={"model": model, "prompt": prompt, "stream": True},
         stream=True, timeout=300,
     )
@@ -209,7 +210,11 @@ def _call_ollama(system: str, user: str, model: str) -> str:
 def _call(system: str, user: str, cfg: configparser.ConfigParser) -> str:
     mode = cfg.get("summary", "mode", fallback="ollama").lower()
     if mode == "ollama":
-        return _call_ollama(system, user, cfg.get("summary", "ollama_model", fallback="qwen2.5:7b"))
+        return _call_ollama(
+            system, user,
+            cfg.get("summary", "ollama_model", fallback="qwen2.5:7b"),
+            cfg.get("summary", "ollama_url",   fallback="http://localhost:11434"),
+        )
     return _call_openai(
         system, user,
         cfg.get("summary", "api_base",  fallback="https://api.groq.com/openai/v1"),
@@ -277,10 +282,11 @@ def run(transcript_path: str, cfg: configparser.ConfigParser, language: str = ""
         return False
 
     if mode == "ollama":
+        ollama_url = cfg.get("summary", "ollama_url", fallback="http://localhost:11434")
         try:
-            requests.get("http://localhost:11434", timeout=2)
+            requests.get(ollama_url, timeout=2)
         except Exception:
-            print("[Summarizer] Ollama not running. Start with: ollama serve")
+            print(f"[Summarizer] Ollama not reachable at {ollama_url}. Start with: ollama serve")
             return False
 
     if not os.path.exists(transcript_path):

@@ -1,10 +1,17 @@
 ; ============================================================
-;  Sound2Text Installer Script
-;  Inno Setup 6.x  —  build_installer.bat で .exe を生成
+;  Sound2Text Installer Script  v1.1.0
+;  Inno Setup 6.x  --  build with build_installer.bat
+;
+;  Dependency check flow:
+;    1. Check winget availability
+;    2. Check Python 3.8+
+;       If missing: offer auto-install via winget
+;       If no winget: open download page
+;    3. Post-install: auto setup pip + ffmpeg
 ; ============================================================
 
 #define AppName    "Sound2Text"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #define AppPublisher "Sound2Text"
 
 [Setup]
@@ -34,30 +41,110 @@ Name: "ja"; MessagesFile: "compiler:Languages\Japanese.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "ui.py";            DestDir: "{app}"; Flags: ignoreversion
-Source: "start.py";         DestDir: "{app}"; Flags: ignoreversion
-Source: "recorder.py";      DestDir: "{app}"; Flags: ignoreversion
-Source: "transcriber.py";   DestDir: "{app}"; Flags: ignoreversion
-Source: "summarizer.py";    DestDir: "{app}"; Flags: ignoreversion
-Source: "device_utils.py";  DestDir: "{app}"; Flags: ignoreversion
-Source: "requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "setup.bat";        DestDir: "{app}"; Flags: ignoreversion
-; API キーを含まないデフォルト設定を初回のみインストール（ユーザー設定を上書きしない）
+Source: "ui.py";              DestDir: "{app}"; Flags: ignoreversion
+Source: "start.py";           DestDir: "{app}"; Flags: ignoreversion
+Source: "recorder.py";        DestDir: "{app}"; Flags: ignoreversion
+Source: "transcriber.py";     DestDir: "{app}"; Flags: ignoreversion
+Source: "summarizer.py";      DestDir: "{app}"; Flags: ignoreversion
+Source: "device_utils.py";    DestDir: "{app}"; Flags: ignoreversion
+Source: "requirements.txt";   DestDir: "{app}"; Flags: ignoreversion
+Source: "setup.bat";          DestDir: "{app}"; Flags: ignoreversion
 Source: "config_default.ini"; DestDir: "{app}"; DestName: "config.ini"; Flags: ignoreversion onlyifdoesntexist
 Source: "vocabulary.txt";     DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist
 
 [Icons]
-Name: "{autoprograms}\{#AppName}\{#AppName}"; Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui.py"""; WorkingDir: "{app}"; Comment: "音声文字起こし・会议纪要生成ツール"
+Name: "{autoprograms}\{#AppName}\{#AppName}"; Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui.py"""; WorkingDir: "{app}"
 Name: "{autoprograms}\{#AppName}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui.py"""; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "pip"; Parameters: "install -r ""{app}\requirements.txt"""; WorkingDir: "{app}"; StatusMsg: "Python パッケージをインストール中..."; Description: "Python パッケージをインストール (faster-whisper, customtkinter 等)"; Flags: postinstall waituntilterminated runascurrentuser
-Filename: "winget"; Parameters: "install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements"; StatusMsg: "ffmpeg をインストール中..."; Description: "ffmpeg をインストール (音声変換に必要)"; Flags: postinstall waituntilterminated runascurrentuser skipifsilent
-Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui.py"""; WorkingDir: "{app}"; Description: "{#AppName} を起動する"; Flags: postinstall nowait skipifsilent unchecked
+; Upgrade pip then install packages
+Filename: "python"; Parameters: "-m pip install --upgrade pip --quiet"; WorkingDir: "{app}"; StatusMsg: "Upgrading pip..."; Flags: postinstall waituntilterminated runascurrentuser
+Filename: "pip"; Parameters: "install -r ""{app}\requirements.txt"""; WorkingDir: "{app}"; StatusMsg: "Installing Python packages (faster-whisper, customtkinter ...)"; Description: "Install Python packages (faster-whisper, customtkinter, etc.)"; Flags: postinstall waituntilterminated runascurrentuser
+; ffmpeg: install if not present, skip if already installed
+Filename: "powershell"; Parameters: "-NoProfile -Command ""if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {{ winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements }} else {{ Write-Host 'ffmpeg already installed' }}"""; StatusMsg: "Checking ffmpeg..."; Description: "Install ffmpeg (required for audio processing)"; Flags: postinstall waituntilterminated runascurrentuser
+; Launch app after install (optional)
+Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui.py"""; WorkingDir: "{app}"; Description: "Launch {#AppName} now"; Flags: postinstall nowait skipifsilent unchecked
 
+; ============================================================
 [Code]
-// python.exe のフルパスを取得する
+// --- Utility functions ---
+
+// Run command and capture first line of stdout
+function RunAndCapture(const Cmd, Args: String): String;
+var
+  ResultCode: Integer;
+  TempFile: String;
+  Lines: TArrayOfString;
+begin
+  Result := '';
+  TempFile := ExpandConstant('{tmp}\cap_out.txt');
+  Exec('cmd', '/c ' + Cmd + ' ' + Args + ' > "' + TempFile + '" 2>&1',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if LoadStringsFromFile(TempFile, Lines) and (GetArrayLength(Lines) > 0) then
+    Result := Trim(Lines[0]);
+  DeleteFile(TempFile);
+end;
+
+// --- winget check ---
+
+function IsWingetAvailable: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec('winget', '--version', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+            and (ResultCode = 0);
+end;
+
+// --- Python check ---
+
+// Get Python version string (e.g. "Python 3.11.9")
+function GetPythonVersionStr: String;
+begin
+  Result := RunAndCapture('python', '--version');
+end;
+
+// Check Python >= 3.8
+function IsPythonVersionOK: Boolean;
+var
+  VerStr: String;
+  DotPos: Integer;
+  Major, Minor: Integer;
+begin
+  Result := False;
+  VerStr := GetPythonVersionStr;
+  // "Python 3.11.9" -> strip "Python " prefix, parse major.minor
+  if (Length(VerStr) > 7) and (Copy(VerStr, 1, 7) = 'Python ') then
+  begin
+    VerStr := Copy(VerStr, 8, Length(VerStr));   // "3.11.9"
+    DotPos := Pos('.', VerStr);
+    if DotPos > 0 then
+    begin
+      Major := StrToIntDef(Copy(VerStr, 1, DotPos - 1), 0);
+      VerStr := Copy(VerStr, DotPos + 1, Length(VerStr));  // "11.9"
+      DotPos := Pos('.', VerStr);
+      if DotPos > 0 then
+        Minor := StrToIntDef(Copy(VerStr, 1, DotPos - 1), 0)
+      else
+        Minor := StrToIntDef(VerStr, 0);
+      Result := (Major > 3) or ((Major = 3) and (Minor >= 8));
+    end;
+  end;
+end;
+
+// Install Python 3.11 via winget
+function TryInstallPython: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec('winget',
+    'install Python.Python.3.11 --accept-package-agreements --accept-source-agreements',
+    '', SW_SHOW, ewWaitUntilTerminated, ResultCode)
+    and (ResultCode = 0);
+end;
+
+// --- Resolve python.exe / pythonw.exe path ---
+
 function FindPython: String;
 var
   ResultCode: Integer;
@@ -66,16 +153,18 @@ var
 begin
   Result := '';
   TempFile := ExpandConstant('{tmp}\py_path.txt');
-  if Exec('cmd', '/c python -c "import sys; print(sys.executable)" > "' + TempFile + '" 2>nul',
+  if Exec('cmd',
+          '/c python -c "import sys; print(sys.executable)" > "' + TempFile + '" 2>nul',
           '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
-    if (ResultCode = 0) and LoadStringsFromFile(TempFile, Lines) and (GetArrayLength(Lines) > 0) then
+    if (ResultCode = 0) and LoadStringsFromFile(TempFile, Lines)
+       and (GetArrayLength(Lines) > 0) then
       Result := Trim(Lines[0]);
   end;
   DeleteFile(TempFile);
 end;
 
-// pythonw.exe のパスを返す（コンソールウィンドウが開かない起動用）
+// Return pythonw.exe path (no console window)
 function GetPythonW(Param: String): String;
 var
   PyPath: String;
@@ -87,29 +176,86 @@ begin
     Result := 'pythonw.exe';
 end;
 
-// Python がインストールされているか確認
-function IsPythonInstalled: Boolean;
-var
-  ResultCode: Integer;
-begin
-  Result := Exec('python', '--version', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
-            and (ResultCode = 0);
-end;
+// --- Pre-install dependency checks ---
 
-// セットアップ開始前に Python を確認
 function InitializeSetup: Boolean;
 var
   ErrCode: Integer;
+  HasWinget, HasPython: Boolean;
+  PyVerStr, Msg: String;
 begin
   Result := True;
-  if not IsPythonInstalled then
+  HasWinget := IsWingetAvailable;
+  HasPython := IsPythonVersionOK;
+  PyVerStr  := GetPythonVersionStr;
+
+  // Python missing or version too old
+  if not HasPython then
   begin
-    if MsgBox('Python が見つかりません。' + #13#10 +
-              '{#AppName} には Python 3.8 以上が必要です。' + #13#10 + #13#10 +
-              'Python ダウンロードページを開きますか？' + #13#10 +
-              '（インストール時に "Add Python to PATH" にチェックを入れてください）',
-              mbConfirmation, MB_YESNO) = IDYES then
-      ShellExec('open', 'https://www.python.org/downloads/', '', '', SW_SHOWNORMAL, ewNoWait, ErrCode);
-    Result := False;
+    if HasWinget then
+    begin
+      // Offer auto-install if winget is available
+      if PyVerStr <> '' then
+        Msg := 'Python 3.8 or later is required.' + #13#10 +
+               'Detected: ' + PyVerStr + #13#10 + #13#10
+      else
+        Msg := 'Python is not installed.' + #13#10 + #13#10;
+
+      Msg := Msg + 'Would you like to install Python 3.11 automatically via winget?';
+
+      if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDYES then
+      begin
+        MsgBox('Installing Python 3.11 via winget.' + #13#10 +
+               'This may take a few minutes. Click OK to continue.',
+               mbInformation, MB_OK);
+
+        if TryInstallPython then
+        begin
+          if IsPythonVersionOK then
+            MsgBox('Python installed successfully!', mbInformation, MB_OK)
+          else
+          begin
+            MsgBox('Python was installed but is not yet recognized.' + #13#10 +
+                   'Please restart your PC and run the installer again.',
+                   mbError, MB_OK);
+            Result := False;
+          end;
+        end else
+        begin
+          MsgBox('Python installation failed.' + #13#10 +
+                 'Please install Python 3.8+ manually from:' + #13#10 +
+                 'https://www.python.org/downloads/' + #13#10 +
+                 '(Check "Add Python to PATH" during installation)',
+                 mbError, MB_OK);
+          ShellExec('open', 'https://www.python.org/downloads/', '', '',
+                    SW_SHOWNORMAL, ewNoWait, ErrCode);
+          Result := False;
+        end;
+      end else
+      begin
+        // User chose No -> open download page and abort
+        ShellExec('open', 'https://www.python.org/downloads/', '', '',
+                  SW_SHOWNORMAL, ewNoWait, ErrCode);
+        Result := False;
+      end;
+    end else
+    begin
+      // No winget available
+      if PyVerStr <> '' then
+        Msg := 'Python 3.8 or later is required.' + #13#10 +
+               'Detected: ' + PyVerStr + #13#10 + #13#10
+      else
+        Msg := 'Python is not installed.' + #13#10 + #13#10;
+
+      Msg := Msg +
+        'Please install Python 3.8+ from python.org' + #13#10 +
+        'and check "Add Python to PATH" during installation.' + #13#10 + #13#10 +
+        'Open the download page now?';
+
+      if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDYES then
+        ShellExec('open', 'https://www.python.org/downloads/', '', '',
+                  SW_SHOWNORMAL, ewNoWait, ErrCode);
+      Result := False;
+    end;
   end;
 end;

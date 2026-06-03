@@ -20,27 +20,48 @@ def launch(script: str, *args) -> subprocess.Popen:
     return subprocess.Popen([sys.executable, os.path.join(BASE, script), *args])
 
 
+def _is_mic_enabled() -> bool:
+    import configparser
+    cfg = configparser.ConfigParser()
+    cfg.read(os.path.join(BASE, "config.ini"), encoding="utf-8")
+    return cfg.getboolean("recording", "enable_mic", fallback=True)
+
+
 def main():
+    mic_enabled = _is_mic_enabled()
+
     print("=== 起動中 ===")
-    print("  [1] recorder.py    - 録音")
-    print("  [2] transcriber.py - 文字起こし")
-    print("Ctrl+C で停止\n")
+    print("  [1] recorder.py     - loopback recording")
+    if mic_enabled:
+        print("  [2] mic_recorder.py - microphone recording")
+    print("  [3] transcriber.py  - transcription")
+    print("Ctrl+C to stop\n")
 
     rec_proc   = launch("recorder.py")
+    mic_proc   = launch("mic_recorder.py") if mic_enabled else None
     trans_proc = launch("transcriber.py")
 
     try:
         rec_proc.wait()
+        if mic_proc:
+            mic_proc.wait()
         trans_proc.wait()
     except KeyboardInterrupt:
         print("\n=== 停止中 ===")
 
-        # recorder は即時停止
+        # recorder と mic_recorder は即時停止
         rec_proc.terminate()
         try:
             rec_proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             rec_proc.kill()
+
+        if mic_proc:
+            mic_proc.terminate()
+            try:
+                mic_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                mic_proc.kill()
 
         # transcriber は残ファイルを処理して自然終了するまで待つ
         # （Ctrl+C は既に transcriber 自身にも届いている）
