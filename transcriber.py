@@ -282,10 +282,11 @@ def main():
     _cfg = configparser.ConfigParser()
     _cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini"), encoding="utf-8")
     audio_dir      = _cfg.get("paths", "audio_dir")
-    mic_dir        = _cfg.get("paths", "mic_dir",    fallback="")
+    mic_dir        = _cfg.get("paths", "mic_dir",    fallback=r"C:\Users\Public\Sound2Text\mic")
     transcript_dir = _cfg.get("paths", "transcript_dir")
     enable_mic     = _cfg.getboolean("recording", "enable_mic", fallback=True)
     rec_mode       = _cfg.get("recording", "mode", fallback="meeting").strip().lower()
+    record_sec     = _cfg.getint("recording", "record_sec", fallback=30)
     # local_mic mode: mic only, no loopback scanning
     use_loopback   = (rec_mode != "local_mic")
     os.makedirs(audio_dir, exist_ok=True)
@@ -428,7 +429,8 @@ def main():
             else:
                 print(f"[Transcriber] transcribe error: {e}")
                 return []
-        lines = []
+        # Return (absolute_datetime, formatted_line) pairs so caller can sort
+        segs_out = []
         for seg in seg_list:
             text = seg.text.strip()
             if not text or any(p in text for p in HALLUCINATION_PHRASES):
@@ -437,23 +439,46 @@ def main():
                 actual = file_start + timedelta(seconds=seg.start)
                 ts = actual.strftime("%H:%M:%S")
             else:
+                actual = None
                 ts = datetime.now().strftime("%H:%M:%S")
             label = f" {self_label}" if self_label else ""
-            lines.append(f"[{ts}]{label} {text}")
-        return lines
+            segs_out.append((actual, f"[{ts}]{label} {text}"))
+        return segs_out
 
-    def _write_and_move(wav_path, lines_or_text, out, source="loopback"):
-        """Write transcript lines and move file to done/."""
-        # Accept either list of lines or a plain string (from detection cache)
-        if isinstance(lines_or_text, str):
-            lines = [lines_or_text] if lines_or_text else []
+    # ── Segment buffer: collects (datetime, line) pairs across all sources ──────
+    # Segments are flushed in absolute-time order so loopback and mic interleave.
+    _seg_buf: list[tuple] = []   # (datetime | None, str)
+
+    def _buf_flush_up_to(cutoff_dt, out_file):
+        """Write all buffered segments with dt < cutoff_dt, sorted by time."""
+        ready   = [(d, l) for d, l in _seg_buf if d is None or d < cutoff_dt]
+        pending = [(d, l) for d, l in _seg_buf if d is not None and d >= cutoff_dt]
+        ready.sort(key=lambda x: x[0] if x[0] else datetime.min)
+        for _, line in ready:
+            out_file.write(line + "\n")
+        if ready:
+            out_file.flush()
+        _seg_buf.clear()
+        _seg_buf.extend(pending)
+
+    def _buf_flush_all(out_file):
+        """Write all remaining buffered segments in time order."""
+        _seg_buf.sort(key=lambda x: x[0] if x[0] else datetime.min)
+        for _, line in _seg_buf:
+            out_file.write(line + "\n")
+        if _seg_buf:
+            out_file.flush()
+        _seg_buf.clear()
+
+    def _write_and_move(wav_path, segs_or_text, out, source="loopback"):
+        """Buffer segment lines (with timestamps) and move file to done/."""
+        if isinstance(segs_or_text, str):
+            # Plain string from detection cache — no datetime, write via buf
+            if segs_or_text:
+                _seg_buf.append((None, segs_or_text))
         else:
-            lines = lines_or_text
-
-        for line in lines:
-            out.write(line + "\n")
-        if lines:
-            out.flush()
+            for dt, line in segs_or_text:
+                _seg_buf.append((dt, line))
 
         dest_dir = os.path.join(mic_dir, "done") if source == "mic" else done_dir
         os.rename(wav_path, os.path.join(dest_dir, os.path.basename(wav_path)))
@@ -500,7 +525,7 @@ def main():
         # Collect late loopback + mic files
         late_loopback = [(f, "loopback") for f in sorted(glob.glob(os.path.join(audio_dir, "audio_*.wav"))) if f not in seen] if use_loopback else []
         late_mic      = [(f, "mic")      for f in sorted(glob.glob(os.path.join(mic_dir, "mic_*.wav")))     if f not in seen] if mic_dir else []
-        late_files    = sorted(late_loopback + late_mic, key=lambda x: os.path.basename(x[0]))
+        late_files    = sorted(late_loopback + late_mic, key=lambda x: os.path.basename(x[0]).split("_", 1)[-1])
 
         # Add already-buffered pending items
         pending_with_source = [(wp, tx, src) for wp, tx, *src_list in pending
@@ -540,6 +565,8 @@ def main():
             pending.clear()
 
         print(f"[Transcriber] All {total} files processed.")
+        # Flush all buffered segments in absolute-time order
+        _buf_flush_all(out)
 
     # Output file is created lazily when the first audio chunk arrives,
     # so the timestamp reflects actual recording start (not UI startup).
@@ -606,7 +633,7 @@ def main():
                     (f, "mic") for f in sorted(glob.glob(os.path.join(mic_dir, "mic_*.wav")))
                     if f not in seen and os.path.getmtime(f) >= _start_cutoff
                 ]
-            all_new = sorted(loopback_new + mic_new, key=lambda x: os.path.basename(x[0]))
+            all_new = sorted(loopback_new + mic_new, key=lambda x: os.path.basename(x[0]).split("_", 1)[-1])
 
             for wav_path, source in all_new:
                 seen.add(wav_path)
@@ -629,7 +656,7 @@ def main():
                                 src = item[2] if len(item) > 2 else "loopback"
                                 print(f"[Transcriber] 認識開始: {os.path.basename(wp)} ({src}/pending)", flush=True)
                                 lbl   = self_label if src == "mic" else ""
-                                lines = _transcribe_lines(wp, language, lbl) if language in _LANG_PROMPT_BASE else ([tx] if tx else [])
+                                lines = _transcribe_lines(wp, language, lbl) if language in _LANG_PROMPT_BASE else ([(None, tx)] if tx else [])
                                 _write_and_move(wp, lines, out, src)
                             pending.clear()
                     else:
@@ -643,12 +670,22 @@ def main():
             if os.path.exists(STOP_SIGNAL):
                 os.remove(STOP_SIGNAL)
                 raise KeyboardInterrupt
+
+            # Flush segments older than record_sec+5s — by then all overlapping
+            # files (loopback + mic) for that time window have been transcribed,
+            # so we can write them in absolute-time order.
+            if all_new and out.path:
+                cutoff = datetime.now() - timedelta(seconds=record_sec + 5)
+                _buf_flush_up_to(cutoff, out)
+
             time.sleep(POLL_SEC)
 
     except KeyboardInterrupt:
         print("\n[Transcriber] 停止します...")
         if out.path:  # only flush/write if we ever opened a file
             _flush_all(out)
+            # Flush any segments still in buffer (sorted by absolute time)
+            _buf_flush_all(out)
             if not header_written:
                 if start_ts is None:
                     start_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

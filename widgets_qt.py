@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import time
 
-from PyQt6.QtCore import QTimer, Qt, QRect, QPoint
+from PyQt6.QtCore import QTimer, Qt, QRect, QPoint, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QFont
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
 
@@ -36,7 +36,9 @@ class VUMeterWidget(QWidget):
     Horizontal LED VU-meter: 12 colored segments, green→yellow→red.
     Animated at ~25 fps via QTimer.
     Public: set_level(float), show(), hide()
+    Emits clicked() when user clicks — used as PTT-stop trigger.
     """
+    clicked = pyqtSignal()
 
     N   = 12   # number of segments
     SW  = 9    # segment width
@@ -48,6 +50,7 @@ class VUMeterWidget(QWidget):
         super().__init__(parent)
         w = self.N * (self.SW + self.GAP) - self.GAP + 8
         self.setFixedSize(w, self.SH + 8)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._level    = 0.0
         self._smoothed = 0.0
         self._active   = False
@@ -103,6 +106,12 @@ class VUMeterWidget(QWidget):
             painter.fillRect(x, 4, self.SW, self.SH, c)
 
         painter.end()
+
+    def mousePressEvent(self, event) -> None:
+        """Clicking the VU meter acts as PTT stop."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 # ── SevenSegClock ─────────────────────────────────────────────────────────────

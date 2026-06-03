@@ -83,6 +83,8 @@ _T: dict[str, dict[str, str]] = {
     "ollama_url":    {"zh": "Ollama 服务器地址",         "ja": "Ollama サーバー URL",                "en": "Ollama Server URL"},
     # Failed status
     "failed":        {"zh": "● 失败",                    "ja": "● 失敗",                            "en": "● Failed"},
+    "ptt_speak":     {"zh": "发言",                      "ja": "発言",                               "en": "Speak"},
+    "ptt_speaking":  {"zh": "发言中",                    "ja": "発言中",                             "en": "Speaking"},
 }
 
 

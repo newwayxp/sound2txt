@@ -17,31 +17,32 @@ warnings.filterwarnings("ignore")
 CHUNK       = 1024
 MAX_RETRIES = 5
 RETRY_WAIT  = 3
-STOP_SIGNAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".stop_signal")
+STOP_SIGNAL     = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".stop_signal")
+PTT_STOP_SIGNAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".ptt_stop")
 
 
 def _select_mic_device(pa: pyaudio.PyAudio):
     """
     Select the default microphone input device (not loopback).
-    Returns (device_index, device_info) or (None, None) if not found.
+    Returns (device_index, device_info, aec_available).
     """
-    # Try the system default input device first
+    # Try system default input
     try:
         info = pa.get_default_input_device_info()
         if info["maxInputChannels"] > 0 and not info.get("isLoopbackDevice", False):
             print(f"[MicRecorder] Mic device: {info['name']}")
-            return int(info["index"]), info
+            return int(info["index"]), info, False
     except Exception:
         pass
 
-    # Fall back: scan all input devices
+    # Scan as fallback
     for i in range(pa.get_device_count()):
         info = pa.get_device_info_by_index(i)
         if info["maxInputChannels"] > 0 and not info.get("isLoopbackDevice", False):
-            print(f"[MicRecorder] Mic device (fallback): {info['name']}")
-            return i, info
+            print(f"[MicRecorder] Mic device (scan): {info['name']}")
+            return i, info, False
 
-    return None, None
+    return None, None, False
 
 
 def _open_stream(pa, device_index, channels, sample_rate):
@@ -56,10 +57,13 @@ def _open_stream(pa, device_index, channels, sample_rate):
 
 
 def main():
+    import sys as _sys
+    ptt_mode = "--ptt" in _sys.argv   # PTT button always records, ignoring enable_mic
+
     cfg = configparser.ConfigParser()
     cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini"), encoding="utf-8")
 
-    if not cfg.getboolean("recording", "enable_mic", fallback=True):
+    if not ptt_mode and not cfg.getboolean("recording", "enable_mic", fallback=True):
         print("[MicRecorder] Mic recording disabled in config.")
         return
 
@@ -69,7 +73,7 @@ def main():
     os.makedirs(os.path.join(mic_dir, "done"), exist_ok=True)
 
     pa = pyaudio.PyAudio()
-    device_index, dev_info = _select_mic_device(pa)
+    device_index, dev_info, aec_ok = _select_mic_device(pa)
 
     if device_index is None:
         print("[MicRecorder] No microphone found. Exiting.")
@@ -92,7 +96,7 @@ def main():
         Read one CHUNK from the stream.
         Returns (data, stopped) where stopped=True if stop signal was detected.
         """
-        if os.path.exists(STOP_SIGNAL):
+        if os.path.exists(STOP_SIGNAL) or os.path.exists(PTT_STOP_SIGNAL):
             return None, True
         try:
             return stream.read(CHUNK, exception_on_overflow=False), False
@@ -168,6 +172,12 @@ def main():
             try: stream.stop_stream(); stream.close()
             except Exception: pass
         pa.terminate()
+        # Clean up PTT stop signal if it was used
+        try:
+            if os.path.exists(PTT_STOP_SIGNAL):
+                os.remove(PTT_STOP_SIGNAL)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

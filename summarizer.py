@@ -240,11 +240,24 @@ def correct_transcript(raw: str, corrected_dir: str, ts: str,
 
     # Build a language-specific ABSOLUTE instruction prepended in the target language
     # so local models (Ollama/qwen) respect it even when the rest of the prompt is English.
-    _lang_guard = {
-        "zh": "【绝对要求】本文本使用中文写成。你的输出必须完全使用简体中文。严禁翻译成其他语言。",
-        "ja": "【絶対条件】このテキストは日本語で書かれています。出力は必ず日本語にしてください。他の言語に翻訳することは禁止です。",
-        "en": "ABSOLUTE REQUIREMENT: This transcript is in English. Output MUST be in English only.",
-    }.get(language, "")
+    # Language guard — written in Chinese AND target language so qwen (a Chinese-centric
+    # model) reliably respects it. Also added to the END of the user prompt for extra weight.
+    _lang_guards = {
+        "zh": (
+            "【绝对要求】输出语言：简体中文。\n"
+            "RULE: Output ONLY in Simplified Chinese. NEVER translate to other languages."
+        ),
+        "ja": (
+            "【絶対禁止】日本語のテキストを中国語や英語に翻訳してはなりません。\n"
+            "【絶対条件】出力は必ず日本語のみ。中国語への翻訳は厳禁。\n"
+            "RULE: Output ONLY in Japanese. Do NOT translate to Chinese or any other language."
+        ),
+        "en": (
+            "ABSOLUTE RULE: Output ONLY in English. Do NOT translate to Chinese or Japanese.\n"
+            "【禁止】中国語・日本語への翻訳禁止。英語のみで出力すること。"
+        ),
+    }
+    _lang_guard = _lang_guards.get(language, "")
 
     system = ((_lang_guard + "\n\n") if _lang_guard else "") + CORRECT_SYSTEM
 
@@ -259,6 +272,9 @@ def correct_transcript(raw: str, corrected_dir: str, ts: str,
         )
 
     prompt = CORRECT_PROMPT.format(transcript=raw) + vocab_section
+    # Repeat the language guard at the END of the user prompt — models weight recent instructions highly
+    if _lang_guard:
+        prompt += f"\n\n[REMINDER] {_lang_guard}"
     corrected = _call(system, prompt, cfg).strip()
 
     os.makedirs(corrected_dir, exist_ok=True)

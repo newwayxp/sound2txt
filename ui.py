@@ -100,6 +100,8 @@ class App(ctk.CTk):
     def set_rec_status(self, text_key: str, color: str) -> None: pass
     def set_tr_status(self,  text_key: str, color: str) -> None: pass
     def set_sum_status(self, text_key: str, color: str) -> None: pass
+    def show_ptt_button(self) -> None: pass
+    def hide_ptt_button(self) -> None: pass
 
     # ── Initial UI state from config ──────────────────────────────────────────
 

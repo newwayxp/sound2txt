@@ -7,13 +7,33 @@ Communicates with the View via ViewProtocol + schedule().
 from __future__ import annotations
 
 import glob
+import logging
 import os
 import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime
 from typing import TYPE_CHECKING
+
+# ── File logger (always active, independent of UI) ────────────────────────────
+_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sound2txt.log")
+
+def _setup_file_logger() -> logging.Logger:
+    logger = logging.getLogger("sound2txt")
+    if logger.handlers:
+        return logger  # already configured
+    logger.setLevel(logging.DEBUG)
+    fh = logging.FileHandler(_LOG_FILE, encoding="utf-8", mode="a")
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    logger.addHandler(fh)
+    return logger
+
+_logger = _setup_file_logger()
 
 from appconfig import (
     AppConfig,
@@ -62,6 +82,8 @@ class ViewProtocol:
     def set_rec_status(self, text_key: str, color: str): ...
     def set_tr_status(self, text_key: str, color: str): ...
     def set_sum_status(self, text_key: str, color: str): ...
+    def show_ptt_button(self): ...
+    def hide_ptt_button(self): ...
 
 
 # ── Presenter ─────────────────────────────────────────────────────────────────
@@ -123,6 +145,13 @@ class Presenter:
 
     def set_view(self, view: ViewProtocol) -> None:
         self._view = view
+        _logger.info("View set: %s", type(view).__name__)
+
+    def _log(self, msg: str, level: str = "info") -> None:
+        """Write to both the UI log panel and the log file."""
+        getattr(_logger, level, _logger.info)(msg)
+        if self._view:
+            self._view.put_log(msg)
 
     # ── initialisation ────────────────────────────────────────────────────────
 
@@ -226,6 +255,51 @@ class Presenter:
             from i18n import t
             self._view.put_log(t("saved"))
 
+    def start_mic(self) -> None:
+        """Start mic_recorder.py (Push-to-Talk ON)."""
+        if not self._running:
+            return
+        if self._mic_proc and self._mic_proc.poll() is None:
+            return  # already running
+        mic_dir = self._config.get("paths", "mic_dir", fallback=r"C:\Users\Public\Sound2Text\mic")
+        self._view and self._view.put_log(f"[UI] 発言開始 — mic_dir: {mic_dir}")
+        # Pass --ptt flag so mic_recorder.py ignores the enable_mic setting
+        self._mic_proc = subprocess.Popen(
+            [sys.executable, "-X", "utf8", os.path.join(BASE, "mic_recorder.py"), "--ptt"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", env=self._env,
+        )
+        self._view and self._view.put_log(f"[UI] mic_recorder.py started: pid={self._mic_proc.pid}")
+        threading.Thread(target=self._pipe, args=(self._mic_proc, "[Mic]"), daemon=True).start()
+        if self._view:
+            self._view.schedule(lambda: self._view.show_onair())
+        self._start_meter()
+
+    def stop_mic(self) -> None:
+        """Stop mic_recorder.py (Push-to-Talk OFF) — save partial frames first."""
+        self._stop_meter()
+        if self._view:
+            self._view.schedule(lambda: self._view.hide_onair())
+        if self._mic_proc and self._mic_proc.poll() is None:
+            # Write PTT stop signal so mic_recorder saves the partial chunk before exiting
+            try:
+                with open(os.path.join(BASE, ".ptt_stop"), "w") as f:
+                    f.write("stop")
+            except Exception:
+                self._mic_proc.terminate()  # fallback
+            # Wait up to 5 seconds for graceful exit; force-kill if needed
+            try:
+                self._mic_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._mic_proc.kill()
+            self._view and self._view.put_log("[UI] 発言終了 — マイク録音を停止しました")
+        self._mic_proc = None
+
+    @property
+    def cuda_available(self) -> bool:
+        """Whether CUDA GPU is usable (view uses this instead of importing appconfig)."""
+        return _CUDA_AVAILABLE and _CUDA_LIBS_OK
+
     def ensure_ollama_running(self) -> None:
         """Public: start Ollama if mode is ollama and not already running."""
         if self._config.get("summary", "mode", fallback="openai") == "ollama":
@@ -244,6 +318,8 @@ class Presenter:
     # ── Ollama management ─────────────────────────────────────────────────────
 
     def _ensure_ollama_running(self) -> None:
+        if os.environ.get("SOUND2TXT_NO_OLLAMA"):
+            return   # skip in test/debug mode
         import shutil
         with self._OLLAMA_LOCK:
             if self._OLLAMA_STATE in ("starting", "running"):
@@ -345,6 +421,20 @@ class Presenter:
                 input_device_index=idx,
             )
             while self._meter_active:
+                # Gate: if mic_recorder.py has exited, level must be 0
+                # (hardware stream may still work even if the recorder crashed)
+                mic_running = (
+                    self._mic_proc is not None
+                    and self._mic_proc.poll() is None
+                )
+                if not mic_running:
+                    # Recording stopped or failed — show 0 and quit meter
+                    if self._view:
+                        self._view.schedule(lambda: self._view.set_onair_level(0.0))
+                        self._view.schedule(lambda: self._view.hide_onair())
+                    self._meter_active = False
+                    break
+
                 data  = stream.read(chunk, exception_on_overflow=False)
                 arr   = np.frombuffer(data, dtype=np.int16)
                 rms   = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
@@ -376,8 +466,9 @@ class Presenter:
         if self._view is None:
             return
 
-        # Clean up signal files
-        for path in (STOP_SIGNAL, STATE_FILE, LANG_FILE):
+        # Clean up signal files (including any stale PTT stop signal)
+        for path in (STOP_SIGNAL, STATE_FILE, LANG_FILE,
+                     os.path.join(BASE, ".ptt_stop")):
             if os.path.exists(path):
                 os.remove(path)
 
@@ -394,8 +485,14 @@ class Presenter:
         self._view.schedule(lambda: self._view.set_rec_status("running", "#44dd44"))
         self._view.schedule(lambda: self._view.set_tr_status("running",  "#44dd44"))
         self._view.schedule(lambda: self._view.set_sum_status("standby", "gray60"))
-        self._view.schedule(lambda: self._view.show_onair())
         self._view.schedule(lambda: self._view.dashboard_start())
+        # In meeting mode show PTT button; hide VU meter until PTT is pressed
+        _rm = self._config.get("recording", "mode", fallback="meeting").strip().lower()
+        if _rm == "meeting":
+            self._view.schedule(lambda: self._view.hide_onair())
+            self._view.schedule(lambda: self._view.show_ptt_button())
+        else:
+            self._view.schedule(lambda: self._view.show_onair())
 
         audio_dir      = self._config.get("paths", "audio_dir",     fallback="")
         transcript_dir = self._config.get("paths", "transcript_dir", fallback="")
@@ -437,8 +534,10 @@ class Presenter:
             self._view.put_log("[UI] Local Mic mode: loopback recorder skipped")
 
         # Mic recorder
+        # In meeting mode: use Push-to-Talk (mic starts only when user presses 発言 button)
+        # In local_mic mode: start immediately (mic is the only audio source)
         self._mic_proc = None
-        if enable_mic:
+        if enable_mic and rec_mode != "meeting":
             self._view.put_log("[UI] Launching mic_recorder.py")
             self._mic_proc = subprocess.Popen(
                 [sys.executable, "-X", "utf8", os.path.join(BASE, "mic_recorder.py")],
@@ -448,6 +547,8 @@ class Presenter:
             threading.Thread(target=self._pipe, args=(self._mic_proc, "[Mic]"), daemon=True).start()
             self._view.schedule(lambda: self._view.show_onair())
             self._start_meter()
+        elif rec_mode == "meeting" and enable_mic:
+            self._view.put_log("[UI] 会議モード: 発言ボタンを押してからマイク録音を開始してください")
 
         # Transcriber (pre-loaded or fresh start)
         if self._tr_proc and self._tr_proc.poll() is None:
@@ -495,6 +596,7 @@ class Presenter:
         if self._view:
             self._view.schedule(lambda: self._view.set_rec_status("stopped", "gray60"))
             self._view.schedule(lambda: self._view.hide_onair())
+            self._view.schedule(lambda: self._view.hide_ptt_button())
             self._view.schedule(lambda: self._view.dashboard_stop())
         self._stop_meter()
         self._view and self._view.put_log(
@@ -628,7 +730,7 @@ class Presenter:
         _tr_done_re  = re.compile(r"done \((loopback|mic)\):\s+(\S+\.wav)")
         _rec_sec  = self._config.getint("recording", "record_sec", fallback=30)
         audio_dir = self._config.get("paths", "audio_dir", fallback="")
-        mic_dir   = self._config.get("paths", "mic_dir",   fallback="")
+        mic_dir   = self._config.get("paths", "mic_dir",   fallback=r"C:\Users\Public\Sound2Text\mic")
         rec_mode  = self._config.get("recording", "mode",  fallback="meeting").strip().lower()
 
         # Primary source for dashboard timers (avoids double-counting).

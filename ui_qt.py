@@ -11,17 +11,17 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import (
-    Q_ARG, QMetaObject, QSize, Qt, QTimer, pyqtSlot,
+    QMetaObject, QSize, Qt, QTimer, pyqtSignal, pyqtSlot,
 )
 from PyQt6.QtGui import QColor, QFont, QPalette
 from PyQt6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QRadioButton, QSlider, QSizePolicy,
-    QSpacerItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QSpacerItem, QStackedWidget, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from appconfig import AppConfig, _CUDA_AVAILABLE
+from appconfig import AppConfig
 from i18n import _LANG, t
 from widgets_qt import DashboardWidget, VUMeterWidget
 
@@ -91,6 +91,26 @@ QPushButton#btnSave {
     min-height: 36px;
 }
 QPushButton#btnSave:hover { background-color: #1565C0; }
+
+/* ── Push-to-Talk (発言) button ── */
+QPushButton#btnPTT {
+    background-color: #F5F5F5;
+    color: #424242;
+    border: 2px solid #BDBDBD;
+    border-radius: 20px;
+    padding: 6px 18px;
+    font-size: 13px;
+    font-weight: bold;
+    min-width: 110px;
+    min-height: 36px;
+}
+QPushButton#btnPTT:hover    { background-color: #EEEEEE; border-color: #9E9E9E; }
+QPushButton#btnPTT:checked  {
+    background-color: #E53935;
+    color: white;
+    border-color: #C62828;
+}
+QPushButton#btnPTT:checked:hover { background-color: #C62828; }
 
 /* ── Mode segmented control — left button ── */
 QPushButton#modeBtnLeft {
@@ -270,6 +290,9 @@ class App(QMainWindow):
     PyQt6 View implementing ViewProtocol.
     All business logic is delegated to the Presenter.
     """
+    # Thread-safe signals — safe to emit from any thread
+    _log_signal  = pyqtSignal(str)      # log message
+    _call_signal = pyqtSignal(object)   # schedule(fn) — run fn on main thread
 
     def __init__(self, presenter: "Presenter"):
         super().__init__()
@@ -289,11 +312,9 @@ class App(QMainWindow):
         self._build()
         self._apply_initial_ui_state()
 
-        # Log poll timer
-        self._log_timer = QTimer(self)
-        self._log_timer.setInterval(100)
-        self._log_timer.timeout.connect(lambda: None)  # no-op; logs via invokeMethod
-        self._log_timer.start()
+        # Connect signals (thread-safe cross-thread communication)
+        self._log_signal.connect(self._log_box.append)
+        self._call_signal.connect(lambda fn: fn())
 
         # Deferred presenter startup
         QTimer.singleShot(100, presenter.initialize)
@@ -301,33 +322,32 @@ class App(QMainWindow):
     # ── ViewProtocol ──────────────────────────────────────────────────────────
 
     def put_log(self, msg: str) -> None:
-        """Thread-safe: queues log append via QueuedConnection."""
+        """Thread-safe: emit signal which is connected to log box on main thread."""
         ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"[{ts}] {msg}"
-        QMetaObject.invokeMethod(
-            self, "_append_log",
-            Qt.ConnectionType.QueuedConnection,
-            Q_ARG(str, line),
-        )
-
-    @pyqtSlot(str)
-    def _append_log(self, line: str) -> None:
-        self._log_box.append(line)
+        self._log_signal.emit(f"[{ts}] {msg}")
 
     def schedule(self, fn) -> None:
-        QTimer.singleShot(0, fn)
+        """Thread-safe: emit signal so fn runs on the Qt main thread."""
+        self._call_signal.emit(fn)
 
     def set_start_enabled(self, v: bool) -> None:
         self._btn_start.setEnabled(v)
+        self.put_log(f"[UI-STATE] Start button: {'enabled' if v else 'disabled'}")
 
     def set_stop_enabled(self, v: bool) -> None:
         self._btn_stop.setEnabled(v)
+        self.put_log(f"[UI-STATE] Stop button: {'enabled' if v else 'disabled'}")
 
     def show_onair(self) -> None:
-        self._vu_meter.show()
+        """Switch stack to VU meter (speaking active)."""
+        self._ptt_stack.setCurrentIndex(1)
+        self._ptt_stack.setVisible(True)
+        self.put_log("[UI-STATE] PTT stack → VU meter (speaking)")
 
     def hide_onair(self) -> None:
-        self._vu_meter.hide()
+        """Switch stack back to PTT button (not speaking)."""
+        self._ptt_stack.setCurrentIndex(0)
+        # Keep stack visible if in recording mode (PTT button should stay visible)
 
     def set_onair_level(self, level: float) -> None:
         self._vu_meter.set_level(level)
@@ -520,9 +540,27 @@ class App(QMainWindow):
         hbox.addWidget(self._btn_mode_meeting)
         hbox.addWidget(self._btn_mode_local_mic)
 
-        # VU meter (hidden by default)
-        self._vu_meter = VUMeterWidget(bar)
-        hbox.addWidget(self._vu_meter)
+        # PTT / VU stacked widget — same slot, mutually exclusive:
+        #   slot 0: PTT button (default, shown in meeting mode during recording)
+        #   slot 1: VU meter  (shown while speaking; click = stop speaking)
+        self._ptt_stack = QStackedWidget(bar)
+        self._ptt_stack.setFixedWidth(130)
+        self._ptt_stack.setFixedHeight(44)
+        self._ptt_stack.setVisible(False)   # hidden until recording starts
+
+        self._btn_ptt = QPushButton("🎙  " + t("ptt_speak"))
+        self._btn_ptt.setObjectName("btnPTT")
+        self._btn_ptt.setCheckable(False)
+        self._btn_ptt.clicked.connect(lambda: self._on_ptt_toggle(True))
+        self._ptt_stack.addWidget(self._btn_ptt)   # index 0
+
+        self._vu_meter = VUMeterWidget()
+        self._vu_meter.setVisible(True)            # visible inside its stack layer
+        self._vu_meter.clicked.connect(lambda: self._on_ptt_toggle(False))
+        self._ptt_stack.addWidget(self._vu_meter)  # index 1
+
+        self._ptt_stack.setCurrentIndex(0)         # start showing PTT button
+        hbox.addWidget(self._ptt_stack)
 
         # Expanding spacer
         hbox.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
@@ -564,44 +602,52 @@ class App(QMainWindow):
         w = QWidget()
         grid = QGridLayout(w)
         grid.setContentsMargins(16, 12, 16, 12)
-        grid.setVerticalSpacing(6)
-        grid.setHorizontalSpacing(8)
-        grid.setColumnStretch(2, 1)
+        grid.setVerticalSpacing(8)
+        grid.setHorizontalSpacing(10)
+        grid.setColumnStretch(1, 1)   # col 0=label, col 1=input, col 2=browse
 
         cfg = self._presenter._config
+        # (icon, label_key, section, config_key, default_path)
         rows_def = [
-            ("audio_dir",  "paths",   "audio_dir",      r"C:\Users\Public\Sound2Text\audio"),
-            ("mic_dir",    "paths",   "mic_dir",          r"C:\Users\Public\Sound2Text\mic"),
-            ("tr_dir",     "paths",   "transcript_dir",   r"C:\Users\Public\Sound2Text\transcript"),
-            ("corr_dir",   "summary", "corrected_dir",    r"C:\Users\Public\Sound2Text\corrected"),
-            ("sum_dir",    "summary", "summary_dir",      r"C:\Users\Public\Sound2Text\memo"),
+            ("🔊", "audio_dir",  "paths",   "audio_dir",      r"C:\Users\Public\Sound2Text\audio"),
+            ("🎙", "mic_dir",    "paths",   "mic_dir",         r"C:\Users\Public\Sound2Text\mic"),
+            ("📝", "tr_dir",     "paths",   "transcript_dir",  r"C:\Users\Public\Sound2Text\transcript"),
+            ("✏️", "corr_dir",   "summary", "corrected_dir",   r"C:\Users\Public\Sound2Text\corrected"),
+            ("📋", "sum_dir",    "summary", "summary_dir",     r"C:\Users\Public\Sound2Text\memo"),
         ]
         entries: dict = {}
-        for row, (lbl_key, sec, key, default) in enumerate(rows_def):
-            # Folder emoji icon
-            icon_lbl = QLabel("📁")
-            icon_lbl.setFixedWidth(24)
-            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            grid.addWidget(icon_lbl, row, 0)
+        for row, (icon, lbl_key, sec, key, default) in enumerate(rows_def):
+            # Icon + label in one widget, left-aligned, fixed width
+            label_w = QWidget()
+            label_h = QHBoxLayout(label_w)
+            label_h.setContentsMargins(0, 0, 0, 0)
+            label_h.setSpacing(6)
 
-            # Field label
-            lbl = QLabel(t(lbl_key))
-            lbl.setFixedWidth(130)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            grid.addWidget(lbl, row, 1)
+            icon_lbl = QLabel(icon)
+            icon_lbl.setFixedWidth(20)
+            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            icon_lbl.setStyleSheet("font-size: 15px;")
+
+            text_lbl = QLabel(t(lbl_key))
+            text_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+            label_h.addWidget(icon_lbl)
+            label_h.addWidget(text_lbl)
+            label_h.addStretch()
+            label_w.setFixedWidth(170)
+            grid.addWidget(label_w, row, 0)
 
             # Path input
             le = QLineEdit(cfg.get(sec, key, fallback=default))
-            grid.addWidget(le, row, 2)
+            grid.addWidget(le, row, 1)
             entries[(sec, key)] = le
 
             # Browse button
             btn = QPushButton("📂")
             btn.setObjectName("btnBrowse")
             btn.setFixedWidth(36)
-            btn.setToolTip(t("browse_tooltip") if hasattr(t, "__call__") else "Browse")
             btn.clicked.connect(lambda _, v=le: self._browse_dir(v))
-            grid.addWidget(btn, row, 3)
+            grid.addWidget(btn, row, 2)
 
         save_btn = QPushButton(t("save"))
         save_btn.setObjectName("btnSave")
@@ -611,7 +657,7 @@ class App(QMainWindow):
             self._presenter.save_config(updates)
 
         save_btn.clicked.connect(_save)
-        grid.addWidget(save_btn, len(rows_def), 0, 1, 4, Qt.AlignmentFlag.AlignHCenter)
+        grid.addWidget(save_btn, len(rows_def), 0, 1, 3, Qt.AlignmentFlag.AlignHCenter)
 
         return w
 
@@ -774,7 +820,7 @@ class App(QMainWindow):
         def _save():
             device = _get_device()
             model  = _get_model()
-            if not _CUDA_AVAILABLE:
+            if not self._presenter.cuda_available:
                 device = "cpu"
                 model  = "tiny"
                 self._rb_device_cpu.setChecked(True)
@@ -1007,10 +1053,47 @@ class App(QMainWindow):
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _on_start(self) -> None:
-        threading.Thread(target=self._presenter.start, daemon=True).start()
+        def _run():
+            try:
+                self._presenter.start()
+            except Exception as e:
+                import traceback
+                self.put_log(f"[ERROR] Start failed: {e}")
+                self.put_log(traceback.format_exc())
+        threading.Thread(target=_run, daemon=True).start()
 
     def _on_stop(self) -> None:
-        threading.Thread(target=self._presenter.stop, daemon=True).start()
+        # Reset stack to PTT button if VU was showing
+        if hasattr(self, "_ptt_stack") and self._ptt_stack.currentIndex() == 1:
+            self._ptt_stack.setCurrentIndex(0)
+        def _run():
+            try:
+                self._presenter.stop()
+            except Exception as e:
+                self.put_log(f"[ERROR] Stop failed: {e}")
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_ptt_toggle(self, speaking: bool) -> None:
+        if speaking:
+            # Show VU meter, start recording
+            self._ptt_stack.setCurrentIndex(1)
+            threading.Thread(target=self._presenter.start_mic, daemon=True).start()
+        else:
+            # Show PTT button again, stop recording
+            self._ptt_stack.setCurrentIndex(0)
+            threading.Thread(target=self._presenter.stop_mic, daemon=True).start()
+
+    def show_ptt_button(self) -> None:
+        """Show the PTT/VU stack (recording started in meeting mode)."""
+        if hasattr(self, "_ptt_stack"):
+            self._ptt_stack.setCurrentIndex(0)   # ensure PTT button is on top
+            self._ptt_stack.setVisible(True)
+
+    def hide_ptt_button(self) -> None:
+        """Hide the entire PTT/VU stack (recording stopped)."""
+        if hasattr(self, "_ptt_stack"):
+            self._ptt_stack.setCurrentIndex(0)   # reset to PTT button
+            self._ptt_stack.setVisible(False)
 
     def _on_mode_change(self, btn: QPushButton) -> None:
         code = "local_mic" if btn is self._btn_mode_local_mic else "meeting"
