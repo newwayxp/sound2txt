@@ -1,0 +1,305 @@
+"""
+widgets_qt.py – Custom QPainter-based widgets for Sound2Text PyQt6 UI.
+No customtkinter / tkinter imports.
+"""
+from __future__ import annotations
+
+import time
+
+from PyQt6.QtCore import QTimer, Qt, QRect, QPoint
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QFont
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
+
+from i18n import _LANG
+
+# ── Seven-segment character map (bit mask: a=64 b=32 c=16 d=8 e=4 f=2 g=1) ────
+_SEG7 = {
+    "0": 0b1111110, "1": 0b0110000, "2": 0b1101101,
+    "3": 0b1111001, "4": 0b0110011, "5": 0b1011011,
+    "6": 0b1011111, "7": 0b1110000, "8": 0b1111111,
+    "9": 0b1111011,
+}
+
+
+def _dim_color(hex_color: str, factor: int = 9) -> QColor:
+    """Return a very dim QColor version of hex_color (for ghost segments)."""
+    r = max(int(hex_color[1:3], 16) // factor, 8)
+    g = max(int(hex_color[3:5], 16) // factor, 6)
+    b = max(int(hex_color[5:7], 16) // factor, 6)
+    return QColor(r, g, b)
+
+
+# ── VUMeterWidget ─────────────────────────────────────────────────────────────
+
+class VUMeterWidget(QWidget):
+    """
+    Horizontal LED VU-meter: 12 colored segments, green→yellow→red.
+    Animated at ~25 fps via QTimer.
+    Public: set_level(float), show(), hide()
+    """
+
+    N   = 12   # number of segments
+    SW  = 9    # segment width
+    SH  = 22   # segment height
+    GAP = 3    # gap between segments
+    FPS = 40   # milliseconds per frame
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        w = self.N * (self.SW + self.GAP) - self.GAP + 8
+        self.setFixedSize(w, self.SH + 8)
+        self._level    = 0.0
+        self._smoothed = 0.0
+        self._active   = False
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(self.FPS)
+
+        # Hidden by default
+        self.setVisible(False)
+
+    def set_level(self, v: float) -> None:
+        self._level = max(0.0, min(float(v), 1.0))
+
+    def show(self) -> None:  # type: ignore[override]
+        self._active = True
+        self.setVisible(True)
+
+    def hide(self) -> None:  # type: ignore[override]
+        self._active = False
+        self.setVisible(False)
+
+    def _tick(self) -> None:
+        target = self._level if self._active else 0.0
+        self._smoothed += (target - self._smoothed) * 0.35
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+
+        # Background
+        painter.fillRect(self.rect(), QColor("#1a1a2a"))
+
+        lit = int(self._smoothed * self.N)
+        for i in range(self.N):
+            x    = 4 + i * (self.SW + self.GAP)
+            frac = i / (self.N - 1)
+            if i < lit:
+                if frac < 0.60:
+                    c = QColor("#00e676")
+                elif frac < 0.80:
+                    c = QColor("#ffea00")
+                else:
+                    c = QColor("#ff1744")
+            else:
+                if frac < 0.60:
+                    c = QColor("#0a2a18")
+                elif frac < 0.80:
+                    c = QColor("#2a2a06")
+                else:
+                    c = QColor("#2a0a10")
+            painter.fillRect(x, 4, self.SW, self.SH, c)
+
+        painter.end()
+
+
+# ── SevenSegClock ─────────────────────────────────────────────────────────────
+
+class SevenSegClock(QWidget):
+    """
+    MM:SS display drawn via QPainter as authentic 7-segment LED digits.
+    Dark background (#0d1117), configurable digit color.
+    Ghost (inactive) segments shown very dim.
+    Public: set_secs(float)
+    Size: ~180×70 px
+    """
+
+    DW = 32   # digit width
+    DH = 52   # digit height
+    DT = 5    # segment thickness
+    CW = 12   # colon width
+    PX = 10   # horizontal padding
+    PY = 8    # vertical padding
+    GS = 2    # inter-segment gap
+
+    def __init__(self, parent=None, on_color: str = "#29b6f6"):
+        super().__init__(parent)
+        cw = self.PX * 2 + 4 * self.DW + self.CW + 5 * self.GS + 12
+        ch = self.DH + self.PY * 2
+        self.setFixedSize(cw, ch)
+        self._on_color  = QColor(on_color)
+        self._off_color = _dim_color(on_color, 10)
+        self._secs      = 0.0
+        self._last_int  = -1
+
+        # Dark background
+        self.setAutoFillBackground(True)
+        p = self.palette()
+        p.setColor(self.backgroundRole(), QColor("#0d1117"))
+        self.setPalette(p)
+
+    def set_secs(self, secs: float) -> None:
+        if int(secs) != self._last_int:
+            self._secs     = secs
+            self._last_int = int(secs)
+            self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.fillRect(self.rect(), QColor("#0d1117"))
+
+        s       = int(self._secs)
+        mm, ss  = s // 60, s % 60
+        chars   = f"{mm:02d}{ss:02d}"
+        x, y    = self.PX, self.PY
+
+        for i, ch in enumerate(chars):
+            self._draw_digit(painter, x, y, ch)
+            x += self.DW + self.GS
+            if i == 1:
+                self._draw_colon(painter, x, y)
+                x += self.CW + self.GS
+
+        painter.end()
+
+    def _draw_digit(self, painter: QPainter, ox: int, oy: int, ch: str) -> None:
+        mask = _SEG7.get(ch, 0)
+        W, H, T, G = self.DW, self.DH, self.DT, self.GS
+
+        def seg(bit: int, x1: int, y1: int, x2: int, y2: int) -> None:
+            c = self._on_color if (mask & bit) else self._off_color
+            painter.fillRect(ox + x1, oy + y1, x2 - x1, y2 - y1, c)
+
+        seg(64, T+G,        0,          W-T-G, T)           # top
+        seg(32, W-T,        T+G,        W,     H//2-G)      # top-right
+        seg(16, W-T,        H//2+G,     W,     H-T-G)       # bottom-right
+        seg(8,  T+G,        H-T,        W-T-G, H)           # bottom
+        seg(4,  0,          H//2+G,     T,     H-T-G)       # bottom-left
+        seg(2,  0,          T+G,        T,     H//2-G)      # top-left
+        seg(1,  T+G,        H//2-T//2,  W-T-G, H//2+T//2)  # middle
+
+    def _draw_colon(self, painter: QPainter, ox: int, oy: int) -> None:
+        cx = ox + self.CW // 2
+        r  = 3
+        painter.setBrush(self._on_color)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for yc in (oy + self.DH // 3, oy + 2 * self.DH // 3):
+            painter.drawEllipse(QPoint(cx, yc), r, r)
+
+
+# ── DashboardWidget ───────────────────────────────────────────────────────────
+
+class DashboardWidget(QWidget):
+    """
+    Three SevenSegClock timers side by side:
+      elapsed (cyan #29b6f6) / audio (green #66bb6a) / trans (amber #ffa726)
+    Dark card background #0d1117.
+    Public: start(), stop(), reset(), add_audio(secs), add_trans(secs)
+    Elapsed clock driven internally by QTimer every second.
+    """
+
+    _TIMERS = [
+        # key        zh label     ja label       en label       LED color
+        ("elapsed", "录音经过",  "録音経過",    "Elapsed",      "#29b6f6"),
+        ("audio",   "音频收录",  "音声収録",    "Audio Rec",    "#66bb6a"),
+        ("trans",   "文字转换",  "文字起こし",  "Transcribed",  "#ffa726"),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self._clocks:        dict[str, SevenSegClock] = {}
+        self._labels:        dict[str, QLabel]        = {}
+        self._audio_secs   = 0.0
+        self._trans_secs   = 0.0
+        self._start_time   = 0.0
+        self._frozen_elapsed = 0.0
+        self._active       = False
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(16)
+
+        lang = _LANG
+        for key, lz, lj, le, color in self._TIMERS:
+            cap = lz if lang == "zh" else (lj if lang == "ja" else le)
+
+            # Card widget with dark background and rounded corners
+            card = QWidget()
+            card.setObjectName("dashCard")
+            card.setStyleSheet(
+                "#dashCard { background-color: #0d1117; border-radius: 14px; }"
+            )
+
+            vbox = QVBoxLayout(card)
+            vbox.setContentsMargins(14, 14, 14, 12)
+            vbox.setSpacing(4)
+
+            clk = SevenSegClock(card, on_color=color)
+            vbox.addWidget(clk, 0, Qt.AlignmentFlag.AlignHCenter)
+            self._clocks[key] = clk
+
+            lbl = QLabel(cap)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            lbl.setStyleSheet("color: #4a4a6a; font-size: 11px;")
+            vbox.addWidget(lbl)
+            self._labels[key] = lbl
+
+            outer.addWidget(card)
+
+        # Internal timer for elapsed clock
+        self._tick_timer = QTimer(self)
+        self._tick_timer.setInterval(1000)
+        self._tick_timer.timeout.connect(self._tick)
+        self._tick_timer.start()
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        self._start_time     = time.time()
+        self._audio_secs     = 0.0
+        self._trans_secs     = 0.0
+        self._frozen_elapsed = 0.0
+        self._active         = True
+
+    def stop(self) -> None:
+        if self._active and self._start_time:
+            self._frozen_elapsed = time.time() - self._start_time
+        self._active = False
+
+    def reset(self) -> None:
+        self._start_time     = 0.0
+        self._audio_secs     = 0.0
+        self._trans_secs     = 0.0
+        self._frozen_elapsed = 0.0
+        self._active         = False
+        for clk in self._clocks.values():
+            clk.set_secs(0.0)
+
+    def add_audio(self, secs: float) -> None:
+        self._audio_secs += secs
+
+    def add_trans(self, secs: float) -> None:
+        self._trans_secs += secs
+
+    # ── Internal tick ─────────────────────────────────────────────────────────
+
+    def _tick(self) -> None:
+        if self._active and self._start_time:
+            elapsed = time.time() - self._start_time
+        else:
+            elapsed = self._frozen_elapsed
+
+        vals = {
+            "elapsed": elapsed,
+            "audio":   self._audio_secs,
+            "trans":   self._trans_secs,
+        }
+        for key, clk in self._clocks.items():
+            try:
+                clk.set_secs(vals[key])
+            except Exception:
+                pass
