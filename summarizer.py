@@ -13,9 +13,10 @@ import requests
 import urllib3
 from datetime import datetime
 
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_transcript")
-LANG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_language")
-VOCAB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vocabulary.txt")
+STATE_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_transcript")
+LANG_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_language")
+CORRECTED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_corrected")
+VOCAB_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vocabulary.txt")
 
 
 def _network_kwargs(cfg: configparser.ConfigParser) -> dict:
@@ -233,8 +234,19 @@ def _call(system: str, user: str, cfg: configparser.ConfigParser) -> str:
 
 # ── Step 1: 纠错 ─────────────────────────────────────────────────────────────
 
-def correct_transcript(raw: str, corrected_dir: str, ts: str, cfg: configparser.ConfigParser) -> str:
+def correct_transcript(raw: str, corrected_dir: str, ts: str,
+                        cfg: configparser.ConfigParser, language: str = "") -> str:
     print("[Summarizer] Step1: correcting transcript...")
+
+    # Build a language-specific ABSOLUTE instruction prepended in the target language
+    # so local models (Ollama/qwen) respect it even when the rest of the prompt is English.
+    _lang_guard = {
+        "zh": "【绝对要求】本文本使用中文写成。你的输出必须完全使用简体中文。严禁翻译成其他语言。",
+        "ja": "【絶対条件】このテキストは日本語で書かれています。出力は必ず日本語にしてください。他の言語に翻訳することは禁止です。",
+        "en": "ABSOLUTE REQUIREMENT: This transcript is in English. Output MUST be in English only.",
+    }.get(language, "")
+
+    system = ((_lang_guard + "\n\n") if _lang_guard else "") + CORRECT_SYSTEM
 
     vocab = _load_vocabulary()
     vocab_section = ""
@@ -247,12 +259,15 @@ def correct_transcript(raw: str, corrected_dir: str, ts: str, cfg: configparser.
         )
 
     prompt = CORRECT_PROMPT.format(transcript=raw) + vocab_section
-    corrected = _call(CORRECT_SYSTEM, prompt, cfg).strip()
+    corrected = _call(system, prompt, cfg).strip()
 
     os.makedirs(corrected_dir, exist_ok=True)
     path = os.path.join(corrected_dir, f"corrected_{ts}.txt")
     with open(path, "w", encoding="utf-8-sig") as f:
         f.write(corrected)
+    # Record the exact path so the summary step can use it without guessing
+    with open(CORRECTED_FILE, "w", encoding="utf-8") as f:
+        f.write(path)
     print(f"[Summarizer] correction done -> {path}")
     return corrected
 
@@ -368,13 +383,24 @@ def run_step(step: str, transcript_path: str, cfg: configparser.ConfigParser,
 
     try:
         if step in ("correct", "all"):
-            corrected = correct_transcript(raw, corrected_dir, ts, cfg)
+            corrected = correct_transcript(raw, corrected_dir, ts, cfg, language)
         else:
-            # For summary-only step, load the latest corrected file
-            import glob
-            files = sorted(glob.glob(os.path.join(corrected_dir, "corrected_*.txt")),
-                           key=os.path.getmtime)
-            corrected = open(files[-1], encoding="utf-8-sig").read() if files else raw
+            # For summary-only step, load the corrected file recorded by the correct step
+            corrected_path = ""
+            if os.path.exists(CORRECTED_FILE):
+                with open(CORRECTED_FILE, "r", encoding="utf-8") as f:
+                    corrected_path = f.read().strip()
+            if corrected_path and os.path.exists(corrected_path):
+                with open(corrected_path, "r", encoding="utf-8-sig") as f:
+                    corrected = f.read()
+                print(f"[Summarizer] using corrected file: {corrected_path}")
+            else:
+                # Fallback: search latest corrected file (should not normally reach here)
+                import glob as _glob
+                files = sorted(_glob.glob(os.path.join(corrected_dir, "corrected_*.txt")),
+                               key=os.path.getmtime)
+                corrected = open(files[-1], encoding="utf-8-sig").read() if files else raw
+                print(f"[Summarizer] warning: .last_corrected missing, using latest file")
 
         if step in ("summary", "all"):
             make_summary(corrected, language, summary_dir, ts, cfg)
@@ -402,6 +428,10 @@ def main():
     if args:
         transcript_path = args[0]
         language = args[1] if len(args) >= 2 else ""
+        # Always try LANG_FILE if language not explicitly given
+        if not language and os.path.exists(LANG_FILE):
+            with open(LANG_FILE, "r", encoding="utf-8") as f:
+                language = f.read().strip()
     elif os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             transcript_path = f.read().strip()
