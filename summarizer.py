@@ -10,11 +10,33 @@ import sys
 import json
 import configparser
 import requests
+import urllib3
 from datetime import datetime
 
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_transcript")
 LANG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_language")
 VOCAB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vocabulary.txt")
+
+
+def _network_kwargs(cfg: configparser.ConfigParser) -> dict:
+    kwargs = {"verify": cfg.getboolean("network", "ssl_verify", fallback=True)}
+
+    proxies = {}
+    https_proxy = cfg.get("network", "https_proxy", fallback="")
+    http_proxy = cfg.get("network", "http_proxy", fallback="")
+    if https_proxy:
+        proxies["https"] = https_proxy
+    if http_proxy:
+        proxies["http"] = http_proxy
+    elif https_proxy:
+        proxies["http"] = https_proxy
+    if proxies:
+        kwargs["proxies"] = proxies
+
+    if not kwargs["verify"]:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    return kwargs
 
 
 def _load_vocabulary() -> list[str]:
@@ -125,13 +147,27 @@ Output language MUST be the same as the transcript — do NOT translate.
 
 # ── バックエンド呼び出し ─────────────────────────────────────────────────────
 
-def _call_openai(system: str, user: str, api_base: str, api_key: str, model: str) -> str:
+def _call_openai(
+    system: str,
+    user: str,
+    api_base: str,
+    api_key: str,
+    model: str,
+    request_kwargs: dict,
+) -> str:
     url      = api_base.rstrip("/") + "/chat/completions"
     headers  = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     payload  = {"model": model, "messages": messages, "stream": True}
 
-    resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=120)
+    resp = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        stream=True,
+        timeout=120,
+        **request_kwargs,
+    )
     resp.raise_for_status()
 
     parts = []
@@ -179,6 +215,7 @@ def _call(system: str, user: str, cfg: configparser.ConfigParser) -> str:
         cfg.get("summary", "api_base",  fallback="https://api.groq.com/openai/v1"),
         cfg.get("summary", "api_key",   fallback=""),
         cfg.get("summary", "model",     fallback="llama-3.3-70b-versatile"),
+        _network_kwargs(cfg),
     )
 
 

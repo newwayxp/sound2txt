@@ -9,7 +9,10 @@ import queue
 import threading
 import subprocess
 import configparser
+import time
+import shutil
 import customtkinter as ctk
+from datetime import datetime
 
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
@@ -18,6 +21,7 @@ BASE        = os.path.dirname(os.path.abspath(__file__))
 CFG_FILE    = os.path.join(BASE, "config.ini")
 STOP_SIGNAL = os.path.join(BASE, ".stop_signal")
 STATE_FILE  = os.path.join(BASE, ".last_transcript")
+LANG_FILE   = os.path.join(BASE, ".last_language")
 
 # ── i18n ─────────────────────────────────────────────────────────────────────
 
@@ -71,12 +75,20 @@ _T: dict[str, dict[str, str]] = {
     "ollama_model":  {"zh": "Ollama Model",               "ja": "Ollama モデル",                  "en": "Ollama Model"},
     "device_label":  {"zh": "运算设备",                   "ja": "実行デバイス",                      "en": "Device"},
     "device_auto":   {"zh": "自动（有GPU则用GPU）",        "ja": "自動（GPU 優先）",                  "en": "Auto (GPU if available)"},
+    "gpu_unavailable":{"zh": "未检测到 CUDA GPU，已固定为 CPU + tiny", "ja": "CUDA GPU が見つからないため CPU + tiny に固定しました", "en": "CUDA GPU not detected; fixed to CPU + tiny"},
     "model_label":   {"zh": "Whisper 模型",               "ja": "Whisper モデル",                    "en": "Whisper model"},
     "lang_label":    {"zh": "转写语言",                   "ja": "転写言語",                          "en": "Transcription language"},
     "lang_auto":     {"zh": "自动检测",                   "ja": "自動検出",                          "en": "Auto detect"},
     "lang_zh":       {"zh": "中文 (简体)",               "ja": "中国語（簡体字）",                   "en": "Chinese (Simplified)"},
     "lang_ja":       {"zh": "日语",                      "ja": "日本語",                             "en": "Japanese"},
     "lang_en":       {"zh": "英语",                      "ja": "英語",                               "en": "English"},
+    "tab_network":   {"zh": "🌐  代理",                  "ja": "🌐  ネットワーク",                   "en": "🌐  Network"},
+    "https_proxy":   {"zh": "HTTPS 代理",                "ja": "HTTPS プロキシ",                     "en": "HTTPS Proxy"},
+    "http_proxy":    {"zh": "HTTP 代理",                 "ja": "HTTP プロキシ",                      "en": "HTTP Proxy"},
+    "ssl_verify":    {"zh": "SSL 证书验证",              "ja": "SSL 証明書の検証",                   "en": "SSL certificate verify"},
+    "ssl_on":        {"zh": "启用（默认）",              "ja": "有効（デフォルト）",                 "en": "Enabled (default)"},
+    "ssl_off":       {"zh": "禁用（企业代理自签名证书）","ja": "無効（社内プロキシ自己署名証明書）", "en": "Disabled (self-signed corp proxy)"},
+    "proxy_hint":    {"zh": "留空则不使用代理",          "ja": "空欄の場合はプロキシなし",           "en": "Leave blank to disable proxy"},
 }
 
 def t(key: str) -> str:
@@ -98,12 +110,14 @@ class App(ctk.CTk):
         self._running  = False
         self._rec_proc = None
         self._tr_proc  = None
+        self._stopping = False
 
         # 子プロセスに UTF-8 出力を強制する（環境変数 + -X utf8 フラグ）
         self._env = os.environ.copy()
         self._env["PYTHONUTF8"] = "1"
 
         self._build()
+        self._apply_cpu_only_defaults()
         self._poll_log()
 
     # ── UI 構築 ───────────────────────────────────────────────────────────────
@@ -159,6 +173,7 @@ class App(ctk.CTk):
         self._build_tab_paths(tabs.add(t("tab_paths")))
         self._build_tab_rec(tabs.add(t("tab_rec")))
         self._build_tab_api(tabs.add(t("tab_api")))
+        self._build_tab_network(tabs.add(t("tab_network")))
 
     def _build_log(self):
         frame = ctk.CTkFrame(self, corner_radius=8)
@@ -223,12 +238,17 @@ class App(ctk.CTk):
             value=self._cfg.get("recording", "device", fallback="auto"))
         dev_frame = ctk.CTkFrame(tab, fg_color="transparent")
         dev_frame.grid(row=0, column=1, columnspan=2, sticky="w", pady=7)
-        ctk.CTkRadioButton(dev_frame, text=t("device_auto"),
-                           variable=self._device_var, value="auto").pack(side="left", padx=(0, 14))
-        ctk.CTkRadioButton(dev_frame, text="CUDA (GPU)",
-                           variable=self._device_var, value="cuda").pack(side="left", padx=(0, 14))
-        ctk.CTkRadioButton(dev_frame, text="CPU",
-                           variable=self._device_var, value="cpu").pack(side="left")
+        self._gpu_locked_buttons = []
+        btn_auto = ctk.CTkRadioButton(dev_frame, text=t("device_auto"),
+                                      variable=self._device_var, value="auto")
+        btn_auto.pack(side="left", padx=(0, 14))
+        btn_cuda = ctk.CTkRadioButton(dev_frame, text="CUDA (GPU)",
+                                      variable=self._device_var, value="cuda")
+        btn_cuda.pack(side="left", padx=(0, 14))
+        btn_cpu = ctk.CTkRadioButton(dev_frame, text="CPU",
+                                     variable=self._device_var, value="cpu")
+        btn_cpu.pack(side="left")
+        self._gpu_locked_buttons.extend([btn_auto, btn_cuda])
 
         # モデルサイズ
         ctk.CTkLabel(tab, text=t("model_label"), anchor="w", width=170).grid(
@@ -239,8 +259,11 @@ class App(ctk.CTk):
         model_frame.grid(row=1, column=1, columnspan=2, sticky="w", pady=7)
         for val, desc in [("tiny", "tiny (高速)"), ("small", "small (推奨)"),
                            ("medium", "medium (高精度)"), ("large-v3", "large-v3 (最高精度)")]:
-            ctk.CTkRadioButton(model_frame, text=desc,
-                               variable=self._model_var, value=val).pack(side="left", padx=(0, 10))
+            btn = ctk.CTkRadioButton(model_frame, text=desc,
+                                     variable=self._model_var, value=val)
+            btn.pack(side="left", padx=(0, 10))
+            if val != "tiny":
+                self._gpu_locked_buttons.append(btn)
 
         # 言語設定
         ctk.CTkLabel(tab, text=t("lang_label"), anchor="w", width=170).grid(
@@ -272,6 +295,12 @@ class App(ctk.CTk):
             self._cfg.set("recording", "language",   self._lang_var.get())
             self._cfg.set("recording", "device",     self._device_var.get())
             self._cfg.set("recording", "model_size", self._model_var.get())
+            if not self._cuda_available():
+                self._cfg.set("recording", "device", "cpu")
+                self._cfg.set("recording", "model_size", "tiny")
+                self._device_var.set("cpu")
+                self._model_var.set("tiny")
+                self._put_log(f"[UI] {t('gpu_unavailable')}")
             with open(CFG_FILE, "w", encoding="utf-8") as f:
                 self._cfg.write(f)
             self._put_log(t("saved"))
@@ -315,6 +344,31 @@ class App(ctk.CTk):
 
         self._save_btn(tab, 6, e)
 
+    def _build_tab_network(self, tab):
+        tab.grid_columnconfigure(1, weight=1)
+        e = {}
+
+        e[("network", "https_proxy")] = self._entry_row(tab, 0, "https_proxy", "network", "https_proxy", "")
+        e[("network", "http_proxy")]  = self._entry_row(tab, 1, "http_proxy",  "network", "http_proxy",  "")
+
+        ctk.CTkLabel(tab, text=t("proxy_hint"), text_color="gray60",
+                     font=ctk.CTkFont(size=11), anchor="w").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=(12, 4), pady=(0, 8))
+
+        ctk.CTkLabel(tab, text=t("ssl_verify"), anchor="w", width=170).grid(
+            row=3, column=0, sticky="w", padx=(12, 4), pady=7)
+        self._ssl_var = ctk.StringVar(
+            value=self._cfg.get("network", "ssl_verify", fallback="true"))
+        ssl_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        ssl_frame.grid(row=3, column=1, sticky="w", pady=7)
+        ctk.CTkRadioButton(ssl_frame, text=t("ssl_on"),
+                           variable=self._ssl_var, value="true").pack(side="left", padx=(0, 20))
+        ctk.CTkRadioButton(ssl_frame, text=t("ssl_off"),
+                           variable=self._ssl_var, value="false").pack(side="left")
+        e[("network", "ssl_verify")] = self._ssl_var
+
+        self._save_btn(tab, 4, e)
+
     # ── プロセス制御 ──────────────────────────────────────────────────────────
 
     def _reload_config(self):
@@ -325,32 +379,155 @@ class App(ctk.CTk):
         if hasattr(self, "_lang_var"):
             self._lang_var.set(lang)
 
+    def _cuda_available(self) -> bool:
+        try:
+            import ctranslate2
+            return ctranslate2.get_cuda_device_count() > 0
+        except Exception:
+            pass
+
+        exe = shutil.which("nvidia-smi")
+        if not exe:
+            return False
+        try:
+            result = subprocess.run(
+                [exe, "-L"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+            )
+            return result.returncode == 0 and "GPU" in result.stdout
+        except Exception:
+            return False
+
+    def _force_cpu_tiny_config(self) -> bool:
+        if not self._cfg.has_section("recording"):
+            self._cfg.add_section("recording")
+        changed = False
+        if self._cfg.get("recording", "device", fallback="auto") != "cpu":
+            self._cfg.set("recording", "device", "cpu")
+            changed = True
+        if self._cfg.get("recording", "model_size", fallback="small") != "tiny":
+            self._cfg.set("recording", "model_size", "tiny")
+            changed = True
+        if changed:
+            with open(CFG_FILE, "w", encoding="utf-8") as f:
+                self._cfg.write(f)
+        return changed
+
+    def _apply_cpu_only_defaults(self, log=False):
+        if self._cuda_available():
+            return
+        changed = self._force_cpu_tiny_config()
+        if hasattr(self, "_device_var"):
+            self._device_var.set("cpu")
+        if hasattr(self, "_model_var"):
+            self._model_var.set("tiny")
+        for btn in getattr(self, "_gpu_locked_buttons", []):
+            btn.configure(state="disabled")
+        if log or changed:
+            self._put_log(f"[UI] {t('gpu_unavailable')}")
+
+    def _ui(self, fn, *args, **kwargs):
+        self.after(0, lambda: fn(*args, **kwargs))
+
+    def _set_status(self, label, text_key, color):
+        self._ui(label.configure, text=t(text_key), text_color=color)
+
+    def _set_controls_idle(self):
+        self._running = False
+        self._stopping = False
+        self._btn_start.configure(state="normal")
+        self._btn_stop.configure(state="disabled")
+
+    def _read_last_transcript(self) -> str:
+        if not os.path.exists(STATE_FILE):
+            return ""
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+
+    def _latest_file(self, directory: str, pattern: str) -> str:
+        if not directory or not os.path.isdir(directory):
+            return ""
+        import glob
+        files = glob.glob(os.path.join(directory, pattern))
+        return max(files, key=os.path.getmtime) if files else ""
+
+    def _wait_process(self, proc, name: str, timeout_sec=None, interval_sec=5) -> bool:
+        if not proc:
+            return True
+        start = time.monotonic()
+        next_log = 0
+        while proc.poll() is None:
+            elapsed = int(time.monotonic() - start)
+            if elapsed >= next_log:
+                self._put_log(f"[UI] Waiting for {name} to finish... elapsed={elapsed}s")
+                next_log = elapsed + interval_sec
+            if timeout_sec is not None and elapsed >= timeout_sec:
+                self._put_log(f"[UI] {name} did not finish within {timeout_sec}s. Terminating.")
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self._put_log(f"[UI] {name} still running. Killing process.")
+                    proc.kill()
+                    proc.wait()
+                return False
+            time.sleep(0.5)
+        self._put_log(f"[UI] {name} exited with code {proc.returncode}")
+        return True
+
     def _start(self):
         if self._running:
             return
         if os.path.exists(STOP_SIGNAL):
             os.remove(STOP_SIGNAL)
+        for state_file in (STATE_FILE, LANG_FILE):
+            if os.path.exists(state_file):
+                os.remove(state_file)
 
         # 開始前に config を再読み込み（前回の自動検出結果を反映）
         self._reload_config()
+        self._apply_cpu_only_defaults(log=True)
 
         self._running = True
+        self._stopping = False
         self._btn_start.configure(state="disabled")
         self._btn_stop.configure(state="normal")
         self._lbl_rec.configure(text=t("running"), text_color="#44dd44")
         self._lbl_tr.configure(text=t("running"),  text_color="#44dd44")
         self._lbl_sum.configure(text=t("standby"), text_color="gray60")
 
+        audio_dir = self._cfg.get("paths", "audio_dir", fallback="")
+        transcript_dir = self._cfg.get("paths", "transcript_dir", fallback="")
+        corrected_dir = self._cfg.get("summary", "corrected_dir", fallback="")
+        summary_dir = self._cfg.get("summary", "summary_dir", fallback="")
+        mode = self._cfg.get("summary", "mode", fallback="openai")
+        language = self._cfg.get("recording", "language", fallback="auto")
+        record_sec = self._cfg.get("recording", "record_sec", fallback="30")
+
+        self._put_log("[UI] Start requested")
+        self._put_log(f"[UI] Config loaded: mode={mode}, language={language}, record_sec={record_sec}s")
+        self._put_log(f"[UI] Audio directory: {audio_dir}")
+        self._put_log(f"[UI] Transcript directory: {transcript_dir}")
+        self._put_log(f"[UI] Corrected text directory: {corrected_dir}")
+        self._put_log(f"[UI] Summary directory: {summary_dir}")
+
+        self._put_log("[UI] Launching recorder.py")
         self._rec_proc = subprocess.Popen(
             [sys.executable, "-X", "utf8", os.path.join(BASE, "recorder.py")],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", env=self._env,
         )
+        self._put_log(f"[UI] recorder.py started: pid={self._rec_proc.pid}")
+        self._put_log("[UI] Launching transcriber.py")
         self._tr_proc = subprocess.Popen(
             [sys.executable, "-X", "utf8", os.path.join(BASE, "transcriber.py")],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", env=self._env,
         )
+        self._put_log(f"[UI] transcriber.py started: pid={self._tr_proc.pid}")
 
         threading.Thread(target=self._pipe, args=(self._rec_proc, "[Rec]"),  daemon=True).start()
         threading.Thread(target=self._pipe, args=(self._tr_proc,  "[Tr]"),   daemon=True).start()
@@ -361,38 +538,65 @@ class App(ctk.CTk):
     def _stop(self):
         if not self._running:
             return
+        if self._stopping:
+            self._put_log("[UI] Stop is already in progress")
+            return
+        self._stopping = True
         self._btn_stop.configure(state="disabled")
         self._put_log(t("stopping"))
 
-        if self._rec_proc and self._rec_proc.poll() is None:
-            self._rec_proc.terminate()
-        self._lbl_rec.configure(text=t("stopped"), text_color="gray60")
-
-        with open(STOP_SIGNAL, "w") as f:
+        self._put_log("[UI] Creating stop signal for transcriber.py")
+        with open(STOP_SIGNAL, "w", encoding="utf-8") as f:
             f.write("stop")
 
-    def _after_trans(self):
-        if self._tr_proc:
-            self._tr_proc.wait()
-        self._lbl_tr.configure(text=t("stopped"), text_color="gray60")
+        if self._rec_proc and self._rec_proc.poll() is None:
+            self._put_log("[UI] Stopping recorder.py")
+            self._rec_proc.terminate()
+        else:
+            self._put_log("[UI] recorder.py is already stopped")
+        self._lbl_rec.configure(text=t("stopped"), text_color="gray60")
+        self._put_log("[UI] Waiting for transcriber.py to drain remaining audio files")
 
-        if os.path.exists(STATE_FILE):
-            self._lbl_sum.configure(text=t("generating"), text_color="#ddaa00")
+    def _after_trans(self):
+        self._wait_process(self._tr_proc, "transcriber.py", timeout_sec=900)
+        self._set_status(self._lbl_tr, "stopped", "gray60")
+
+        transcript_path = self._read_last_transcript()
+        if transcript_path:
+            self._put_log(f"[UI] Transcript file: {transcript_path}")
+        else:
+            self._put_log("[UI] Transcript file was not created")
+
+        if transcript_path and os.path.exists(transcript_path):
+            self._set_status(self._lbl_sum, "generating", "#ddaa00")
             self._put_log(t("sum_start"))
+            self._put_log("[UI] Launching summarizer.py")
             sum_proc = subprocess.Popen(
                 [sys.executable, "-X", "utf8", os.path.join(BASE, "summarizer.py")],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", env=self._env,
             )
+            self._put_log(f"[UI] summarizer.py started: pid={sum_proc.pid}")
             threading.Thread(target=self._pipe, args=(sum_proc, "[Sum]"), daemon=True).start()
-            sum_proc.wait()
-            self._lbl_sum.configure(text=t("done"), text_color="#44dd44")
+            self._wait_process(sum_proc, "summarizer.py", timeout_sec=900)
+            corrected = self._latest_file(
+                self._cfg.get("summary", "corrected_dir", fallback=""),
+                "corrected_*.txt",
+            )
+            summary = self._latest_file(
+                self._cfg.get("summary", "summary_dir", fallback=""),
+                "summary_*.md",
+            )
+            if corrected:
+                self._put_log(f"[UI] Corrected text file: {corrected}")
+            if summary:
+                self._put_log(f"[UI] Summary file: {summary}")
+            self._set_status(self._lbl_sum, "done", "#44dd44")
         else:
-            self._lbl_sum.configure(text=t("skipped"), text_color="gray60")
+            self._put_log("[UI] Summary skipped because transcript file is missing")
+            self._set_status(self._lbl_sum, "skipped", "gray60")
 
-        self._running = False
-        self._btn_start.configure(state="normal")
-        self._btn_stop.configure(state="disabled")
+        self._ui(self._set_controls_idle)
         self._put_log(t("all_done"))
 
     def _pipe(self, proc, prefix):
@@ -404,7 +608,8 @@ class App(ctk.CTk):
     # ── ログ ─────────────────────────────────────────────────────────────────
 
     def _put_log(self, msg: str):
-        self._log_q.put(msg)
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._log_q.put(f"[{ts}] {msg}")
 
     def _poll_log(self):
         while not self._log_q.empty():

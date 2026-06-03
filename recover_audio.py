@@ -6,14 +6,22 @@ import configparser
 from datetime import datetime
 
 warnings.filterwarnings("ignore")
-os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
-os.environ["HTTPS_PROXY"] = "http://tkyproxy-std.intra.tis.co.jp:8080"
 os.environ["HUGGINGFACE_HUB_VERBOSITY"] = "error"
 
-from faster_whisper import WhisperModel
-
 cfg = configparser.ConfigParser()
-cfg.read(os.path.join(os.path.dirname(__file__), "config.ini"), encoding="utf-8")
+cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini"), encoding="utf-8")
+
+if cfg.has_section("network"):
+    proxy = cfg.get("network", "https_proxy", fallback="")
+    if proxy:
+        os.environ.setdefault("HTTPS_PROXY", proxy)
+        os.environ.setdefault("HTTP_PROXY", cfg.get("network", "http_proxy", fallback=proxy))
+    if not cfg.getboolean("network", "ssl_verify", fallback=True):
+        os.environ.setdefault("HF_HUB_DISABLE_SSL_VERIFICATION", "1")
+        os.environ.setdefault("CURL_CA_BUNDLE", "")
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
+
+from faster_whisper import WhisperModel
 
 audio_dir      = cfg.get("paths", "audio_dir")
 transcript_dir = cfg.get("paths", "transcript_dir")

@@ -134,6 +134,33 @@ def build_initial_prompt(lang: str | None, vocab: list[str]) -> str | None:
     return base if base else None
 
 
+def _cuda_available() -> bool:
+    try:
+        import ctranslate2
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        return False
+
+
+def _write_recording_config(cfg, cfg_file, device, model_size):
+    try:
+        if not cfg.has_section("recording"):
+            cfg.add_section("recording")
+        changed = False
+        if cfg.get("recording", "device", fallback="auto") != device:
+            cfg.set("recording", "device", device)
+            changed = True
+        if cfg.get("recording", "model_size", fallback="small") != model_size:
+            cfg.set("recording", "model_size", model_size)
+            changed = True
+        if changed:
+            with open(cfg_file, "w", encoding="utf-8") as f:
+                cfg.write(f)
+            print(f"[Transcriber] config.ini updated: device={device}, model_size={model_size}")
+    except Exception as e:
+        print(f"[Transcriber] config.ini update skipped: {e}")
+
+
 def main():
     _cfg = configparser.ConfigParser()
     _cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini"), encoding="utf-8")
