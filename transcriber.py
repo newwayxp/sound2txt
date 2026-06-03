@@ -40,6 +40,33 @@ MIN_CONFIDENCE  = 0.5
 SUPPORTED_LANGS = {"zh", "ja", "en"}
 LANG_ALIAS      = {"yue": "zh", "zh-TW": "zh", "zh-HK": "zh"}
 
+# OS のロケールからデフォルト言語を決定
+def _detect_os_language() -> str:
+    loc = ""
+    try:
+        # Windows: レジストリから取得（最も確実）
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\International")
+        loc = winreg.QueryValueEx(key, "LocaleName")[0].lower()  # 例: "ja-jp"
+    except Exception:
+        pass
+    if not loc:
+        try:
+            import locale
+            locale.setlocale(locale.LC_ALL, "")
+            loc = (locale.getlocale()[0] or "").lower()
+        except Exception:
+            pass
+    if loc.startswith("zh"):
+        return "zh"
+    if loc.startswith("ja"):
+        return "ja"
+    if loc.startswith("ko"):
+        return "ko"
+    return "en"
+
+_OS_DEFAULT_LANG = _detect_os_language()
+
 # UI からの停止シグナルファイル（ui.py が作成する）
 STOP_SIGNAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".stop_signal")
 DRAIN_WAIT_SEC  = 3
@@ -182,7 +209,14 @@ def main():
         text, info = _transcribe(wav_path, lang=None)
         raw_lang   = LANG_ALIAS.get(info.language, info.language)
         prob       = info.language_probability
-        valid      = raw_lang in SUPPORTED_LANGS and prob >= MIN_CONFIDENCE
+
+        # 無音チャンク: テキストが空 → 待機継続（EVAL_CHUNKS にカウントしない）
+        if not text.strip():
+            print(f"[Transcriber] 無音チャンク → 会議開始を待機中...")
+            os.rename(wav_path, os.path.join(done_dir, os.path.basename(wav_path)))
+            return
+
+        valid = raw_lang in SUPPORTED_LANGS and prob >= MIN_CONFIDENCE
         print(
             f"[Transcriber] チャンク {len(pending)+1}: "
             f"検出={info.language} ({prob:.0%})"
@@ -198,8 +232,9 @@ def main():
             detail = " | ".join(f"{l}:{s:.2f}" for l, s in sorted(lang_scores.items(), key=lambda x: -x[1]))
             print(f"[Transcriber] 言語確定: {lang}  (スコア: {detail})\n")
         else:
-            lang = "zh"
-            print(f"[Transcriber] 信頼度不足 → デフォルト: {lang}\n")
+            # 発話はあるが信頼度不足 → OS デフォルト言語を使用
+            lang = _OS_DEFAULT_LANG
+            print(f"[Transcriber] 信頼度不足 → OS デフォルト言語: {lang}\n")
         return lang
 
     def _flush_all(out):
