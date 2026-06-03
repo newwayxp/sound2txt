@@ -1,169 +1,189 @@
-# Zoom 会議 リアルタイム文字起こしツール
+# Sound2Text
 
-Zoom 会議の音声をリアルタイムでテキスト変換し、ファイルに保存するツールです。
+实时音频转写 + AI 纠错 + 会议纪要自动生成的 Windows 桌面工具。
+
+通过 Windows WASAPI 捕获系统音频，使用 faster-whisper 进行本地语音识别，并调用 LLM 生成结构化会议纪要。
 
 ---
 
-## 動作環境
+## 功能特性
 
-| 項目 | 要件 |
+- **实时录音转写** — 自动检测音频输出设备，无需手动配置
+- **多语言支持** — 自动识别中文 / 日语 / 英语，下次启动直接跳过检测
+- **GPU 加速** — 有 NVIDIA GPU 时自动启用 CUDA，速度提升约 10 倍
+- **AI 纠错** — 调用 LLM 修正同音字、补充标点、整理段落
+- **会议纪要** — 一键生成结构化纪要，语言与录音保持一致
+- **自定义术语** — `vocabulary.txt` 提升专有名词识别准确率
+- **企业代理支持** — 支持 HTTP/HTTPS 代理及自签名证书
+
+---
+
+## 系统要求
+
+| 项目 | 要求 |
 |---|---|
-| OS | Windows 10 / 11 |
+| OS | Windows 10 / 11 (64-bit) |
 | Python | 3.8 以上 |
-| GPU | 不要（CPU のみで動作） |
-| Zoom | ヘッドセット・イヤホン使用可 |
+| RAM | 4 GB 以上 |
+| GPU | 可选，NVIDIA CUDA（有 GPU 时自动启用）|
 
 ---
 
-## セットアップ
+## 安装
 
-### 1. ライブラリのインストール
+### 方法一：使用安装包（推荐）
 
-社内プロキシ経由でインストールする場合：
+从 [Releases](../../releases) 下载 `Sound2Text_Setup_x.x.x.exe`，双击运行。
 
-```powershell
-pip install pyaudiowpatch faster-whisper --proxy http://<社内プロキシ>:<ポート> --trusted-host pypi.org --trusted-host files.pythonhosted.org
-```
+> 安装前需先安装 Python 3.8+（安装时勾选 **Add Python to PATH**）
 
-プロキシなしの場合：
+### 方法二：手动安装
 
 ```powershell
-pip install pyaudiowpatch faster-whisper
-```
-
-### 2. ffmpeg のインストール
-
-```powershell
+git clone https://github.com/newwayxp/sound2txt.git
+cd sound2txt
+pip install -r requirements.txt
 winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements
 ```
 
-インストール後、PowerShell を再起動してください。
-
 ---
 
-## ファイル構成
+## 使用方法
 
-```
-├── transcribe.py       # メイン：リアルタイム文字起こし
-├── record_test.py      # デバッグ用：音声録音テスト
-├── .gitignore          # *.wav, transcript_*.txt を除外
-└── README.md           # このファイル
-```
-
----
-
-## 使い方
-
-### Step 1: 音声キャプチャの確認（初回推奨）
-
-Zoom を起動した状態で実行し、音声が正しく取れているか確認します。
+### GUI 启动（推荐）
 
 ```powershell
-python record_test.py
+python ui.py
 ```
 
-- ループバックデバイス一覧が表示されます
-- **ヘッドセット/イヤホンの番号**を選択してください
-- 30秒録音後 `test_audio_日時.wav` が保存されます
-- Windows Media Player で再生して相手の声が聞こえるか確認してください
+点击 **▶ 开始** 录音，点击 **■ 停止** 结束并自动生成会议纪要。
 
-### Step 2: リアルタイム文字起こし
+### 命令行启动
 
 ```powershell
-python transcribe.py
+python start.py
 ```
 
-1. ループバックデバイスを選択（ヘッドセットの番号）
-2. 5秒間の音量確認（Zoom の音声を流してください）
-3. 文字起こし開始
-4. `Ctrl+C` で停止 → `transcript_日時.txt` に保存
+按 `Ctrl+C` 停止。
 
-**出力例：**
+---
+
+## 初次配置
+
+启动后在 **⚙ 纪要/API** 标签页填入 API Key：
+
+| 服务 | 获取地址 | 费用 |
+|---|---|---|
+| **Groq**（推荐） | https://console.groq.com | 每天 14,400 次免费 |
+| DeepSeek | https://platform.deepseek.com | 极低（按量计费）|
+| 阿里云百炼 | https://bailian.console.aliyun.com | 新用户赠送 token |
+| Ollama（本地） | 本地运行，无需 API Key | 完全免费 |
+
+---
+
+## 输出文件
+
+| 文件 | 位置 |
+|---|---|
+| 原始转写 | `C:\Users\Public\Sound2Text\transcript\transcript_*.txt` |
+| 纠错文本 | `C:\Users\Public\Sound2Text\corrected\corrected_*.txt` |
+| 会议纪要 | `C:\Users\Public\Sound2Text\memo\summary_*.md` |
+| 音频文件 | `C:\Users\Public\Sound2Text\audio\audio_*.wav` |
+
+保存路径可在 **📁 路径** 设置标签页中修改。
+
+---
+
+## 自定义术语
+
+编辑 `vocabulary.txt`，每行一个词：
+
 ```
-=== Zoom文字起こし 2026-06-02 14:30:22 ===
+Anthropic
+ChatGPT
+Docker
+田中一郎
+```
 
-[14:30:27] 本日はよろしくお願いします。
-[14:30:35] では議題に入りましょう。
-[14:30:41] 先週の進捗について報告します。
+术语会同时传入 Whisper 的 `initial_prompt` 和 LLM 纠错提示，提升专有名词识别准确率。
 
-=== 終了 2026-06-02 15:00:10 ===
+---
+
+## 文件结构
+
+```
+├── ui.py               # GUI 主界面（customtkinter）
+├── start.py            # 命令行启动器
+├── recorder.py         # 录音进程
+├── transcriber.py      # 转写进程
+├── summarizer.py       # 纠错 + 会议纪要生成
+├── device_utils.py     # 音频设备自动检测
+├── config.ini          # 用户配置（不含 API Key 时可提交）
+├── config_default.ini  # 安装包默认配置
+├── vocabulary.txt      # 自定义术语表
+├── requirements.txt    # Python 依赖
+├── setup.bat           # 手动安装脚本
+├── installer.iss       # Inno Setup 安装包脚本
+└── build_installer.bat # 构建安装包
 ```
 
 ---
 
-## 仕組み
+## 企业代理设置
 
-```
-Zoom音声
-  → Windows WASAPI ループバック（ヘッドセット出力を取得）
-  → 5秒ごとに WAV ファイルへ保存
-  → faster-whisper (small モデル / int8量子化) で日本語認識
-  → transcript_日時.txt に追記保存
+在 **🌐 Network** 设置标签页或直接编辑 `config.ini`：
+
+```ini
+[network]
+https_proxy = http://proxy.company.com:8080
+http_proxy  = http://proxy.company.com:8080
+ssl_verify  = true   # 自签名证书时设为 false
 ```
 
 ---
 
-## パラメータ調整
+## Whisper モデル比較
 
-`transcribe.py` 冒頭の定数を変更することで動作を調整できます。
+| モデル | 速度（CPU） | 速度（GPU） | 精度 |
+|---|---|---|---|
+| tiny | 約 0.3秒/30秒音声 | 約 0.1秒 | 低 |
+| small | 約 3秒/30秒音声 | 約 0.3秒 | 中（推奨）|
+| medium | 約 15秒/30秒音声 | 約 0.8秒 | 高 |
+| large-v3 | 約 40秒/30秒音声 | 約 2秒 | 最高 |
 
-```python
-RECORD_SEC        = 5    # 何秒ごとに文字変換するか（小さいほどリアルタイムに近い）
-SILENCE_THRESHOLD = 800  # 無音判定の閾値（大きいほど静かな音を無視）
-```
-
-**モデルの変更（精度 vs 速度）：**
-
-```python
-model = WhisperModel("small", device="cpu", compute_type="int8")
-#                     ↑ここを変更
-# tiny  → 約0.6秒/5秒音声（高速・低精度）
-# small → 約2.7秒/5秒音声（推奨）
-# medium→ 約15秒/5秒音声（高精度・CPU では遅い）
-```
+モデルは **🎙 録音** 設定タブで変更できます。
 
 ---
 
 ## トラブルシューティング
 
-### ループバックデバイスが見つからない
+**ループバックデバイスが見つからない**
+> `コントロールパネル → サウンド → 録音タブ → ステレオミキサー → 有効化`
 
-Windows のサウンド設定でステレオミキサーを有効にしてください：
-`コントロールパネル → サウンド → 録音タブ → ステレオミキサー → 有効化`
+**文字起こしが出ない**
+> `record_test.py` で音声が録音できているか確認してください。
 
-### 文字起こしが全く出ない
+**FP16 警告が表示される**
+> GPU（CUDA）使用時は自動的に解消されます。CPU 使用時は動作に影響ありません。
 
-`record_test.py` で音声が録音できているか確認してください。  
-録音できているのに文字起こしが出ない場合は `SILENCE_THRESHOLD` を下げてください。
-
-### 識別精度が低い
-
-- `small` → `medium` モデルに変更する
-- ヘッドセットの音量を上げる
-- Zoom の「オーディオ設定 → スピーカー音量」を確認する
-
-### ffmpeg が見つからないエラー
-
-PowerShell を再起動してください（PATH の反映に再起動が必要です）。
-
-### FP16 警告が表示される
-
-CPU 環境では正常な警告です。動作に影響はありません。  
-`transcribe.py` の `warnings.filterwarnings("ignore")` で非表示になります。
+**インストーラーのビルド**
+> `build_installer.bat` をダブルクリック。初回は自動で Inno Setup を検索してパスをキャッシュします。
 
 ---
 
 ## 注意事項
 
-> **録音・文字起こしを行う際は、会議参加者全員の同意を事前に得てください。**  
-> 無断録音は日本の法律（不正競争防止法・プライバシー権）に抵触する可能性があります。
+> **録音・文字起こしを行う際は、会議参加者全員の同意を事前に得てください。**
+> 無断録音は各国の法律に抵触する可能性があります。
 
 ---
 
 ## 依存ライブラリ
 
-| ライブラリ | バージョン | 用途 |
-|---|---|---|
-| pyaudiowpatch | 0.2.x | Windows WASAPI ループバック録音 |
-| faster-whisper | 1.x | 高速音声認識（OpenAI Whisper の最適化版） |
-| ffmpeg | 8.x | 音声フォーマット変換 |
+| ライブラリ | 用途 |
+|---|---|
+| pyaudiowpatch | Windows WASAPI ループバック録音 |
+| faster-whisper | 高速音声認識（OpenAI Whisper 最適化版）|
+| customtkinter | GUI フレームワーク |
+| requests | LLM API 呼び出し |
+| ffmpeg | 音声フォーマット変換 |
