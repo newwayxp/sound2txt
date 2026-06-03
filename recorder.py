@@ -75,6 +75,7 @@ def main():
 
     stream            = _open_stream(pa, device_index, channels, sample_rate)
     consecutive_errors = 0
+    _file_count        = 0  # how many WAV files saved so far
 
     try:
         while True:
@@ -103,9 +104,16 @@ def main():
             # ── WAV 保存 ──────────────────────────────────────────────
             audio_np = np.frombuffer(b"".join(frames), dtype=np.int16)
             level    = int(np.abs(audio_np).mean())
+            _file_count += 1
             ts       = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             tmp_path = os.path.join(audio_dir, f".tmp_{ts}.wav")
             fin_path = os.path.join(audio_dir, f"audio_{ts}.wav")
+
+            # Warn on first 3 files if level suggests silence
+            if _file_count <= 3 and level < 10:
+                print(f"[Recorder] ⚠ 音量がほぼゼロ (avg:{level}) — "
+                      "ループバックデバイスが正しく選択されていない可能性があります。"
+                      " python debug_modules.py loopback を実行して確認してください。")
 
             try:
                 with wave.open(tmp_path, "wb") as wf:

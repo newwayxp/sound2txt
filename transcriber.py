@@ -451,15 +451,15 @@ def main():
 
     def _buf_flush_up_to(cutoff_dt, out_file):
         """Write all buffered segments with dt < cutoff_dt, sorted by time."""
-        ready   = [(d, l) for d, l in _seg_buf if d is None or d < cutoff_dt]
-        pending = [(d, l) for d, l in _seg_buf if d is not None and d >= cutoff_dt]
+        ready    = [(d, l) for d, l in _seg_buf if d is None or d < cutoff_dt]
+        deferred = [(d, l) for d, l in _seg_buf if d is not None and d >= cutoff_dt]
         ready.sort(key=lambda x: x[0] if x[0] else datetime.min)
         for _, line in ready:
             out_file.write(line + "\n")
         if ready:
             out_file.flush()
         _seg_buf.clear()
-        _seg_buf.extend(pending)
+        _seg_buf.extend(deferred)
 
     def _buf_flush_all(out_file):
         """Write all remaining buffered segments in time order."""
@@ -526,10 +526,6 @@ def main():
         late_loopback = [(f, "loopback") for f in sorted(glob.glob(os.path.join(audio_dir, "audio_*.wav"))) if f not in seen] if use_loopback else []
         late_mic      = [(f, "mic")      for f in sorted(glob.glob(os.path.join(mic_dir, "mic_*.wav")))     if f not in seen] if mic_dir else []
         late_files    = sorted(late_loopback + late_mic, key=lambda x: os.path.basename(x[0]).split("_", 1)[-1])
-
-        # Add already-buffered pending items
-        pending_with_source = [(wp, tx, src) for wp, tx, *src_list in pending
-                               for src in (src_list[0] if src_list else "loopback",)]
 
         total = len(late_files) + len(pending)
         if total == 0:

@@ -2,6 +2,7 @@
 debug_modules.py — Individual module tests using existing recordings.
 
 Usage:
+  python debug_modules.py loopback      # list loopback devices + 5s capture test (meeting mode)
   python debug_modules.py transcriber   # test transcriber with latest WAV file
   python debug_modules.py summarizer    # test summarizer with latest transcript
   python debug_modules.py ui            # launch UI in debug mode (extra logging)
@@ -122,6 +123,142 @@ def test_summarizer():
         print(f"   Output:\n{out[:400]}")
     return True
 
+# ── test_loopback ─────────────────────────────────────────────────────────────
+
+def test_loopback(probe_sec: float = 3.0):
+    """
+    List all loopback devices and probe each for probe_sec seconds.
+    Then record 5 seconds with the auto-selected device and report audio levels.
+    Helps diagnose silent meeting-mode recordings.
+    """
+    section("TEST: loopback device selection (meeting mode)")
+
+    try:
+        import pyaudiowpatch as pyaudio
+        import numpy as np
+    except ImportError as e:
+        print(f"❌  Missing dependency: {e}")
+        return False
+
+    pa = pyaudio.PyAudio()
+
+    # ── 1. List every loopback device ─────────────────────────────────────────
+    print("\nAll loopback devices:")
+    loopback_devices = []
+    for i in range(pa.get_device_count()):
+        info = pa.get_device_info_by_index(i)
+        if info["maxInputChannels"] > 0 and info.get("isLoopbackDevice", False):
+            loopback_devices.append((i, info))
+            print(f"  [{i:2d}] {info['name'][:60]:<60}  ch={info['maxInputChannels']}  "
+                  f"sr={int(info['defaultSampleRate'])}")
+
+    if not loopback_devices:
+        print("❌  No loopback devices found. pyaudiowpatch WASAPI loopback not available.")
+        pa.terminate()
+        return False
+
+    print(f"\n{len(loopback_devices)} loopback device(s) found.")
+
+    # ── 2. Probe each device for probe_sec ───────────────────────────────────
+    print(f"\nProbing each device for {probe_sec}s (play some audio now):")
+    CHUNK = 1024
+    results = []
+
+    for dev_idx, dev_info in loopback_devices:
+        channels    = dev_info["maxInputChannels"]
+        sample_rate = int(dev_info["defaultSampleRate"])
+        n_chunks    = max(1, int(sample_rate / CHUNK * probe_sec))
+        levels      = []
+
+        try:
+            stream = pa.open(
+                format=pyaudio.paInt16, channels=channels, rate=sample_rate,
+                frames_per_buffer=CHUNK, input=True, input_device_index=dev_idx,
+            )
+            for _ in range(n_chunks):
+                data   = stream.read(CHUNK, exception_on_overflow=False)
+                arr    = np.frombuffer(data, dtype=np.int16)
+                levels.append(int(np.abs(arr).mean()))
+            stream.stop_stream(); stream.close()
+            avg   = int(np.mean(levels)) if levels else 0
+            peak  = max(levels) if levels else 0
+            bar   = "#" * min(avg // 20, 40)
+            status = "✓ AUDIO" if avg > 50 else "  silent"
+            print(f"  [{dev_idx:2d}] {status}  avg={avg:5d}  peak={peak:5d}  |{bar:<40}|  {dev_info['name'][:40]}")
+            results.append((dev_idx, dev_info, avg))
+        except Exception as e:
+            print(f"  [{dev_idx:2d}] ❌ ERROR: {e}  ({dev_info['name'][:40]})")
+            results.append((dev_idx, dev_info, -1))
+
+    # ── 3. Auto-select and record 5 seconds ──────────────────────────────────
+    best = max(results, key=lambda x: x[2])
+    best_idx, best_info, best_avg = best
+
+    if best_avg < 0:
+        print("\n❌  All devices failed to open.")
+        pa.terminate()
+        return False
+
+    print(f"\nAuto-selected: [{best_idx}] {best_info['name']}")
+    if best_avg <= 50:
+        print("⚠  Low audio level detected. If a meeting is in progress, the selected")
+        print("   device may not be capturing the correct audio output.")
+        print("   Check: Windows Sound → Playback tab → default device matches the meeting app.")
+
+    # Record 5 seconds with live level bar
+    print(f"\nRecording 5s with selected device (play audio during this window):")
+    channels    = best_info["maxInputChannels"]
+    sample_rate = int(best_info["defaultSampleRate"])
+    record_sec  = 5
+    n_chunks    = int(sample_rate / CHUNK * record_sec)
+
+    try:
+        import wave, os
+        from appconfig import AppConfig
+        cfg = AppConfig()
+        audio_dir = cfg.get("paths", "audio_dir", fallback=r"C:\Users\Public\Sound2Text\audio")
+        os.makedirs(audio_dir, exist_ok=True)
+
+        stream = pa.open(
+            format=pyaudio.paInt16, channels=channels, rate=sample_rate,
+            frames_per_buffer=CHUNK, input=True, input_device_index=best_idx,
+        )
+        frames    = []
+        max_level = 0
+        for i in range(n_chunks):
+            data = stream.read(CHUNK, exception_on_overflow=False)
+            frames.append(data)
+            lvl = int(np.abs(np.frombuffer(data, dtype=np.int16)).mean())
+            max_level = max(max_level, lvl)
+            bar = "#" * min(lvl // 50, 30)
+            elapsed = int(i / n_chunks * record_sec)
+            print(f"\r  {elapsed+1}/{record_sec}s  avg:{lvl:5d}  |{bar:<30}|", end="", flush=True)
+        stream.stop_stream(); stream.close()
+        print()
+
+        from datetime import datetime
+        out_path = os.path.join(audio_dir, f"dbg_loopback_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav")
+        with wave.open(out_path, "wb") as wf:
+            wf.setnchannels(channels); wf.setsampwidth(2)
+            wf.setframerate(sample_rate); wf.writeframes(b"".join(frames))
+
+        if max_level > 50:
+            print(f"✓  Recorded OK  peak={max_level}  → {out_path}")
+        else:
+            print(f"⚠  Recorded but SILENT  peak={max_level}  → {out_path}")
+            print("   The WAV file contains near-zero audio. Meeting audio is not captured.")
+            print("   Try: Play a YouTube video and re-run this test.")
+        pa.terminate()
+        return max_level > 50
+
+    except Exception as e:
+        import traceback
+        print(f"❌  Recording error: {e}")
+        traceback.print_exc()
+        pa.terminate()
+        return False
+
+
 # ── test_ui ───────────────────────────────────────────────────────────────────
 
 def test_ui():
@@ -203,6 +340,8 @@ if __name__ == "__main__":
     check_signal_files()
 
     results = {}
+    if cmd in ("loopback", "all"):
+        results["loopback"]    = test_loopback()
     if cmd in ("transcriber", "all"):
         results["transcriber"] = test_transcriber()
     if cmd in ("summarizer", "all"):
