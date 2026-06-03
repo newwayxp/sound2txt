@@ -37,157 +37,219 @@ QWidget {
     font-size: 13px;
 }
 
-/* ── Main window / frames ── */
+/* ── Main window / central widget — pure white background ── */
 QMainWindow, QWidget#centralWidget {
-    background-color: palette(window);
+    background-color: #FFFFFF;
 }
 
-/* ── Control bar ── */
+/* ── Control bar — blends with window, subtle bottom border ── */
 QFrame#controlBar {
-    background-color: palette(base);
-    border-radius: 8px;
+    background-color: #FFFFFF;
+    border: none;
+    border-bottom: 1px solid #E0E0E0;
 }
 
-/* ── Start button ── */
+/* ── Start button — pill shaped, bright green ── */
 QPushButton#btnStart {
     background-color: #28a745;
     color: white;
     border: none;
-    border-radius: 8px;
+    border-radius: 20px;
     padding: 8px 20px;
     font-size: 14px;
     font-weight: bold;
     min-width: 110px;
     min-height: 40px;
 }
-QPushButton#btnStart:hover    { background-color: #1e7e34; }
-QPushButton#btnStart:disabled { background-color: #5a9a6e; color: #cccccc; }
+QPushButton#btnStart:hover    { background-color: #218838; }
+QPushButton#btnStart:disabled { background-color: #7cb990; color: #e0e0e0; }
 
-/* ── Stop button ── */
+/* ── Stop button — pill shaped, bright red ── */
 QPushButton#btnStop {
     background-color: #dc3545;
     color: white;
     border: none;
-    border-radius: 8px;
+    border-radius: 20px;
     padding: 8px 20px;
     font-size: 14px;
     font-weight: bold;
     min-width: 110px;
     min-height: 40px;
 }
-QPushButton#btnStop:hover    { background-color: #bd2130; }
-QPushButton#btnStop:disabled { background-color: #9a5060; color: #cccccc; }
+QPushButton#btnStop:hover    { background-color: #c82333; }
+QPushButton#btnStop:disabled { background-color: #e88a93; color: #e0e0e0; }
 
-/* ── Save button ── */
+/* ── Save button — blue, centered ── */
 QPushButton#btnSave {
-    background-color: #1976d2;
+    background-color: #1976D2;
     color: white;
     border: none;
     border-radius: 8px;
     padding: 6px 18px;
     font-weight: bold;
-    min-width: 140px;
-    min-height: 32px;
+    min-width: 160px;
+    min-height: 36px;
 }
-QPushButton#btnSave:hover { background-color: #1565c0; }
+QPushButton#btnSave:hover { background-color: #1565C0; }
 
-/* ── Mode toggle buttons ── */
-QPushButton#modeBtn {
-    background-color: palette(button);
-    color: palette(button-text);
-    border: 1px solid palette(mid);
-    border-radius: 6px;
-    padding: 5px 12px;
-    min-height: 30px;
+/* ── Mode segmented control — left button ── */
+QPushButton#modeBtnLeft {
+    background-color: #FFFFFF;
+    color: #424242;
+    border: 1px solid #BDBDBD;
+    border-right: none;
+    border-top-left-radius: 18px;
+    border-bottom-left-radius: 18px;
+    border-top-right-radius: 0px;
+    border-bottom-right-radius: 0px;
+    padding: 6px 16px;
+    min-height: 34px;
+    font-size: 13px;
 }
-QPushButton#modeBtn:checked {
-    background-color: #1976d2;
+QPushButton#modeBtnLeft:checked {
+    background-color: #1565C0;
     color: white;
-    border-color: #1565c0;
+    border-color: #1565C0;
 }
-QPushButton#modeBtn:hover:!checked { background-color: palette(midlight); }
+QPushButton#modeBtnLeft:hover:!checked {
+    background-color: #F5F5F5;
+}
 
-/* ── Browse folder button ── */
+/* ── Mode segmented control — right button ── */
+QPushButton#modeBtnRight {
+    background-color: #FFFFFF;
+    color: #424242;
+    border: 1px solid #BDBDBD;
+    border-top-left-radius: 0px;
+    border-bottom-left-radius: 0px;
+    border-top-right-radius: 18px;
+    border-bottom-right-radius: 18px;
+    padding: 6px 16px;
+    min-height: 34px;
+    font-size: 13px;
+}
+QPushButton#modeBtnRight:checked {
+    background-color: #1565C0;
+    color: white;
+    border-color: #1565C0;
+}
+QPushButton#modeBtnRight:hover:!checked {
+    background-color: #F5F5F5;
+}
+
+/* ── Browse folder button — small, subtle ── */
 QPushButton#btnBrowse {
-    background-color: palette(mid);
-    border: none;
+    background-color: #F0F0F0;
+    color: #424242;
+    border: 1px solid #D0D0D0;
     border-radius: 5px;
     padding: 4px 8px;
     min-height: 26px;
 }
-QPushButton#btnBrowse:hover { background-color: palette(dark); }
+QPushButton#btnBrowse:hover { background-color: #E0E0E0; }
 
 /* ── Preset buttons ── */
 QPushButton#btnPreset {
-    background-color: palette(mid);
-    border: none;
+    background-color: #F0F0F0;
+    color: #424242;
+    border: 1px solid #D0D0D0;
     border-radius: 5px;
     padding: 4px 10px;
     min-height: 26px;
 }
-QPushButton#btnPreset:hover { background-color: palette(dark); }
+QPushButton#btnPreset:hover { background-color: #E0E0E0; }
 
-/* ── Tab widget ── */
+/* ── Tab widget — flat style, blue underline for selected ── */
 QTabWidget::pane {
-    border: 1px solid palette(mid);
-    border-radius: 6px;
+    border: none;
+    border-top: 1px solid #E0E0E0;
+    background-color: #FFFFFF;
 }
 QTabBar::tab {
-    color: palette(text);
-    padding: 6px 14px;
-    margin-right: 2px;
+    color: #616161;
+    padding: 8px 16px;
+    margin-right: 4px;
     border: none;
+    border-bottom: 2px solid transparent;
     background: transparent;
 }
 QTabBar::tab:selected {
-    color: #1976d2;
+    color: #1565C0;
     font-weight: bold;
-    border-bottom: 2px solid #1976d2;
+    border-bottom: 2px solid #1565C0;
 }
-QTabBar::tab:hover:!selected { color: #1565c0; }
+QTabBar::tab:hover:!selected {
+    color: #1976D2;
+    border-bottom: 2px solid #BBDEFB;
+}
 
-/* ── Line edit / combo box ── */
+/* ── Line edit ── */
 QLineEdit {
-    border: 1px solid palette(mid);
+    border: 1px solid #BDBDBD;
     border-radius: 5px;
     padding: 4px 8px;
     min-height: 28px;
-    background-color: palette(base);
+    background-color: #FFFFFF;
+    color: #212121;
 }
-QLineEdit:focus { border-color: #1976d2; }
+QLineEdit:focus { border-color: #1976D2; }
 
+/* ── Combo box ── */
 QComboBox {
-    border: 1px solid palette(mid);
+    border: 1px solid #BDBDBD;
     border-radius: 5px;
     padding: 3px 8px;
     min-height: 28px;
-    background-color: palette(base);
+    background-color: #FFFFFF;
+    color: #212121;
+}
+QComboBox:focus { border-color: #1976D2; }
+QComboBox::drop-down {
+    border: none;
+    width: 20px;
 }
 
 /* ── Slider ── */
 QSlider::groove:horizontal {
     height: 4px;
-    background: palette(mid);
+    background: #E0E0E0;
     border-radius: 2px;
 }
 QSlider::handle:horizontal {
-    background: #1976d2;
+    background: #1976D2;
     width: 14px;
     height: 14px;
     margin: -5px 0;
     border-radius: 7px;
 }
 QSlider::sub-page:horizontal {
-    background: #1976d2;
+    background: #1976D2;
     border-radius: 2px;
 }
 
 /* ── Text edit (log) ── */
 QTextEdit#logBox {
-    border: 1px solid palette(mid);
+    border: 1px solid #E0E0E0;
     border-radius: 5px;
+    background-color: #FAFAFA;
+    color: #212121;
     font-family: "Consolas", "Courier New", monospace;
     font-size: 12px;
+}
+
+/* ── Vertical separator lines ── */
+QFrame[frameShape="5"] {
+    color: #E0E0E0;
+}
+
+/* ── Labels — clean dark text ── */
+QLabel {
+    color: #424242;
+}
+
+/* ── Checkboxes and radio buttons ── */
+QCheckBox, QRadioButton {
+    color: #424242;
 }
 """
 
@@ -218,7 +280,7 @@ class App(QMainWindow):
 
         # Window basics
         self.setWindowTitle(t("title"))
-        self.resize(900, 700)
+        self.resize(860, 680)
         self.setMinimumSize(700, 560)
 
         # Wire view before building (so presenter can call us during initialize)
@@ -386,30 +448,39 @@ class App(QMainWindow):
         self.setCentralWidget(central)
 
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # Row 0: control bar
+        # Row 0: control bar (full-width, no padding)
         control_bar = self._build_control_bar(central)
         layout.addWidget(control_bar, 0)
 
+        # Inner content area with padding
+        inner = QWidget()
+        inner.setObjectName("innerContent")
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(12, 8, 12, 12)
+        inner_layout.setSpacing(6)
+
         # Row 1: settings tabs (stretch=1)
-        settings_tabs = self._build_settings_tabs(central)
-        layout.addWidget(settings_tabs, 1)
+        settings_tabs = self._build_settings_tabs(inner)
+        inner_layout.addWidget(settings_tabs, 1)
 
         # Row 2: log area (stretch=1)
-        log_area = self._build_log_area(central)
-        layout.addWidget(log_area, 1)
+        log_area = self._build_log_area(inner)
+        inner_layout.addWidget(log_area, 1)
+
+        layout.addWidget(inner, 1)
 
     # ── Control bar ───────────────────────────────────────────────────────────
 
     def _build_control_bar(self, parent: QWidget) -> QFrame:
         bar = QFrame(parent)
         bar.setObjectName("controlBar")
-        bar.setFixedHeight(70)
+        bar.setFixedHeight(66)
 
         hbox = QHBoxLayout(bar)
-        hbox.setContentsMargins(12, 8, 12, 8)
+        hbox.setContentsMargins(16, 10, 16, 10)
         hbox.setSpacing(8)
 
         # Start button
@@ -427,12 +498,15 @@ class App(QMainWindow):
 
         hbox.addWidget(_vsep(bar))
 
-        # Mode toggle buttons
+        # Mode toggle buttons — segmented control style
         mode_val = self._presenter._config.get("recording", "mode", fallback="meeting")
         self._btn_mode_meeting   = QPushButton(t("mode_meeting"), bar)
         self._btn_mode_local_mic = QPushButton(t("mode_local_mic"), bar)
+
+        self._btn_mode_meeting.setObjectName("modeBtnLeft")
+        self._btn_mode_local_mic.setObjectName("modeBtnRight")
+
         for btn in (self._btn_mode_meeting, self._btn_mode_local_mic):
-            btn.setObjectName("modeBtn")
             btn.setCheckable(True)
         self._btn_mode_meeting.setChecked(mode_val != "local_mic")
         self._btn_mode_local_mic.setChecked(mode_val == "local_mic")
@@ -457,22 +531,20 @@ class App(QMainWindow):
 
         # Language quick selector
         lang_label = QLabel(t("lang_label"), bar)
-        lang_label.setStyleSheet("color: gray; font-size: 11px;")
+        lang_label.setStyleSheet("color: #757575; font-size: 11px;")
         hbox.addWidget(lang_label)
 
         self._quick_lang_combo = QComboBox(bar)
         self._quick_lang_combo.addItems([
             t("lang_auto"), t("lang_zh"), t("lang_ja"), t("lang_en"),
         ])
-        self._quick_lang_combo.setFixedWidth(130)
+        self._quick_lang_combo.setFixedWidth(110)
         cur_lang = self._presenter._config.get("recording", "language", fallback="auto")
         self._quick_lang_combo.setCurrentIndex(
             {"auto": 0, "zh": 1, "ja": 2, "en": 3}.get(cur_lang, 0)
         )
         self._quick_lang_combo.currentIndexChanged.connect(self._on_quick_lang_change)
         hbox.addWidget(self._quick_lang_combo)
-
-        hbox.addWidget(_vsep(bar))
 
         return bar
 
@@ -491,8 +563,10 @@ class App(QMainWindow):
     def _build_tab_paths(self, parent: QWidget) -> QWidget:
         w = QWidget()
         grid = QGridLayout(w)
-        grid.setContentsMargins(12, 12, 12, 12)
-        grid.setColumnStretch(1, 1)
+        grid.setContentsMargins(16, 12, 16, 12)
+        grid.setVerticalSpacing(6)
+        grid.setHorizontalSpacing(8)
+        grid.setColumnStretch(2, 1)
 
         cfg = self._presenter._config
         rows_def = [
@@ -504,16 +578,30 @@ class App(QMainWindow):
         ]
         entries: dict = {}
         for row, (lbl_key, sec, key, default) in enumerate(rows_def):
-            grid.addWidget(QLabel(t(lbl_key)), row, 0, Qt.AlignmentFlag.AlignRight)
+            # Folder emoji icon
+            icon_lbl = QLabel("📁")
+            icon_lbl.setFixedWidth(24)
+            icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(icon_lbl, row, 0)
+
+            # Field label
+            lbl = QLabel(t(lbl_key))
+            lbl.setFixedWidth(130)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(lbl, row, 1)
+
+            # Path input
             le = QLineEdit(cfg.get(sec, key, fallback=default))
-            grid.addWidget(le, row, 1)
+            grid.addWidget(le, row, 2)
             entries[(sec, key)] = le
 
+            # Browse button
             btn = QPushButton("📂")
             btn.setObjectName("btnBrowse")
             btn.setFixedWidth(36)
+            btn.setToolTip(t("browse_tooltip") if hasattr(t, "__call__") else "Browse")
             btn.clicked.connect(lambda _, v=le: self._browse_dir(v))
-            grid.addWidget(btn, row, 2)
+            grid.addWidget(btn, row, 3)
 
         save_btn = QPushButton(t("save"))
         save_btn.setObjectName("btnSave")
@@ -523,7 +611,7 @@ class App(QMainWindow):
             self._presenter.save_config(updates)
 
         save_btn.clicked.connect(_save)
-        grid.addWidget(save_btn, len(rows_def), 0, 1, 3, Qt.AlignmentFlag.AlignHCenter)
+        grid.addWidget(save_btn, len(rows_def), 0, 1, 4, Qt.AlignmentFlag.AlignHCenter)
 
         return w
 

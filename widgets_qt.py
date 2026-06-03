@@ -231,22 +231,37 @@ class DashboardWidget(QWidget):
             card = QWidget()
             card.setObjectName("dashCard")
             card.setStyleSheet(
-                "#dashCard { background-color: #0d1117; border-radius: 14px; }"
+                "#dashCard { background-color: #0D1117; border-radius: 12px; }"
             )
 
             vbox = QVBoxLayout(card)
-            vbox.setContentsMargins(14, 14, 14, 12)
-            vbox.setSpacing(4)
+            vbox.setContentsMargins(16, 12, 16, 14)
+            vbox.setSpacing(6)
 
+            # Label row: colored dot + caption text (above clock)
+            lbl_row = QWidget()
+            lbl_row.setStyleSheet("background: transparent;")
+            lbl_hbox = QHBoxLayout(lbl_row)
+            lbl_hbox.setContentsMargins(0, 0, 0, 0)
+            lbl_hbox.setSpacing(4)
+
+            dot = QLabel("●")
+            dot.setStyleSheet(f"color: {color}; font-size: 10px; background: transparent;")
+            lbl_hbox.addWidget(dot)
+
+            lbl = QLabel(cap)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            lbl.setStyleSheet("color: #8A8A9A; font-size: 11px; background: transparent;")
+            lbl_hbox.addWidget(lbl)
+            lbl_hbox.addStretch()
+            self._labels[key] = lbl
+
+            vbox.addWidget(lbl_row)
+
+            # Seven-segment clock
             clk = SevenSegClock(card, on_color=color)
             vbox.addWidget(clk, 0, Qt.AlignmentFlag.AlignHCenter)
             self._clocks[key] = clk
-
-            lbl = QLabel(cap)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-            lbl.setStyleSheet("color: #4a4a6a; font-size: 11px;")
-            vbox.addWidget(lbl)
-            self._labels[key] = lbl
 
             outer.addWidget(card)
 
