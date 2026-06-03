@@ -1,0 +1,44 @@
+name: Build and Release Installer
+
+# v1.0.0 のようなタグを push したときに自動実行
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Inno Setup
+        run: winget install JRSoftware.InnoSetup --accept-package-agreements --accept-source-agreements
+        shell: cmd
+
+      - name: Build installer
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { $iscc = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & $iscc installer.iss
+        shell: pwsh
+
+      - name: Get tag name
+        id: tag
+        run: echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Sound2Text ${{ steps.tag.outputs.TAG }}"
+          files: dist/Sound2Text_Setup_*.exe
+          generate_release_notes: true
