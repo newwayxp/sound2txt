@@ -61,6 +61,7 @@ You are familiar with common Whisper mis-recognition patterns such as:
   - Proper noun mis-recognition (names, places, products)
   - Cross-language confusion in code-switched speech
   - Missing punctuation (ASR outputs no punctuation by default)
+  - Hallucinated lines inserted by Whisper in silent/noisy segments
 
 CRITICAL RULE for Chinese text:
   If the input uses Simplified Chinese characters (简体中文), your output MUST also use
@@ -85,6 +86,12 @@ With full context in mind:
 6. Keep original timestamps (e.g. [22:27:15])
 7. If the input is in Simplified Chinese (简体字), output MUST be in Simplified Chinese.
    NEVER convert 简体字 → 繁体字. (e.g. keep 变/换/语, never write 變/換/語)
+8. REMOVE any Whisper hallucination lines — these are lines that are completely
+   unrelated to the actual conversation, typically promotional or repetitive phrases
+   that Whisper inserts during silent/noisy segments. Common patterns to delete:
+   - Chinese: 请不吝点赞、订阅、转发、打赏支持、感谢观看、欢迎关注 etc.
+   - Japanese: ご視聴ありがとうございました、チャンネル登録 etc.
+   - English: "Thank you for watching", "Please subscribe" etc.
 
 [Output]
 Output only the corrected text, no explanations or annotations.
@@ -319,13 +326,82 @@ def run(transcript_path: str, cfg: configparser.ConfigParser, language: str = ""
     return True
 
 
+def run_step(step: str, transcript_path: str, cfg: configparser.ConfigParser,
+             language: str = "") -> bool:
+    """
+    Run a single pipeline step.
+    step = "correct"  → correction only (Step 1)
+    step = "summary"  → meeting minutes only, uses latest corrected file (Step 2)
+    step = "all"      → both steps (default, backward compatible)
+    """
+    corrected_dir = cfg.get("summary", "corrected_dir", fallback=r"C:\code\data\corrected")
+    summary_dir   = cfg.get("summary", "summary_dir",   fallback=r"C:\code\data\memo")
+    mode          = cfg.get("summary", "mode",          fallback="ollama").lower()
+    api_key       = cfg.get("summary", "api_key",       fallback="")
+
+    print(f"[Summarizer] step={step} mode={mode} lang={language or 'auto'} transcript={transcript_path}")
+
+    if mode == "openai" and (not api_key or api_key == "your_api_key_here"):
+        print("[Summarizer] api_key not set in config.ini"); return False
+
+    if mode == "ollama":
+        ollama_url = cfg.get("summary", "ollama_url", fallback="http://localhost:11434")
+        try:
+            requests.get(ollama_url, timeout=2)
+        except Exception:
+            print(f"[Summarizer] Ollama not reachable at {ollama_url}. Start with: ollama serve")
+            return False
+
+    if not os.path.exists(transcript_path):
+        print(f"[Summarizer] file not found: {transcript_path}"); return False
+
+    with open(transcript_path, "r", encoding="utf-8-sig") as f:
+        raw = f.read().strip()
+
+    if not raw or raw.count("\n") < 2:
+        print("[Summarizer] transcript too short, skipping"); return False
+
+    if not language:
+        language = "en"
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    try:
+        if step in ("correct", "all"):
+            corrected = correct_transcript(raw, corrected_dir, ts, cfg)
+        else:
+            # For summary-only step, load the latest corrected file
+            import glob
+            files = sorted(glob.glob(os.path.join(corrected_dir, "corrected_*.txt")),
+                           key=os.path.getmtime)
+            corrected = open(files[-1], encoding="utf-8-sig").read() if files else raw
+
+        if step in ("summary", "all"):
+            make_summary(corrected, language, summary_dir, ts, cfg)
+
+    except requests.exceptions.HTTPError as e:
+        print(f"[Summarizer] API error: {e}"); return False
+    except Exception as e:
+        print(f"[Summarizer] error: {e}"); return False
+
+    return True
+
+
 def main():
     cfg = configparser.ConfigParser()
     cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini"), encoding="utf-8")
 
-    if len(sys.argv) >= 2:
-        transcript_path = sys.argv[1]
-        language = sys.argv[2] if len(sys.argv) >= 3 else ""
+    # Parse --step argument
+    args  = sys.argv[1:]
+    step  = "all"
+    if "--step" in args:
+        idx  = args.index("--step")
+        step = args[idx + 1]
+        args = args[:idx] + args[idx + 2:]
+
+    if args:
+        transcript_path = args[0]
+        language = args[1] if len(args) >= 2 else ""
     elif os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             transcript_path = f.read().strip()
@@ -335,10 +411,10 @@ def main():
                 language = f.read().strip()
         print(f"[Summarizer] reading from state: {transcript_path}  lang={language}")
     else:
-        print("[Summarizer] usage: python summarizer.py <transcript.txt> [lang]")
+        print("[Summarizer] usage: python summarizer.py [--step correct|summary|all] <transcript.txt> [lang]")
         sys.exit(1)
 
-    sys.exit(0 if run(transcript_path, cfg, language) else 1)
+    sys.exit(0 if run_step(step, transcript_path, cfg, language) else 1)
 
 
 if __name__ == "__main__":

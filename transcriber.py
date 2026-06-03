@@ -124,7 +124,7 @@ from datetime import datetime, timedelta
 warnings.filterwarnings("ignore")
 
 POLL_SEC        = 1.0
-EVAL_CHUNKS     = 3
+EVAL_CHUNKS     = 1   # detect language after the first audio chunk (~record_sec seconds)
 MIN_CONFIDENCE  = 0.5
 SUPPORTED_LANGS = {"zh", "ja", "en"}
 LANG_ALIAS      = {"yue": "zh", "zh-TW": "zh", "zh-HK": "zh"}
@@ -165,8 +165,15 @@ LANG_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_
 START_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".recording_start")
 
 HALLUCINATION_PHRASES = [
+    # Japanese
     "ご視聴ありがとうございました", "チャンネル登録", "字幕",
-    "thank you for watching", "please subscribe",
+    "ご視聴ありがとうございます", "高評価", "コメント欄",
+    # English
+    "thank you for watching", "please subscribe", "like and subscribe",
+    # Chinese (common Whisper hallucinations in silent/noise segments)
+    "请不吝点赞", "订阅", "转发", "打赏支持", "明镜与点点",
+    "感谢观看", "关注我的频道", "点击订阅", "欢迎关注",
+    "字幕由", "本视频",
 ]
 
 # Speaker label for local mic input (by detected language)
@@ -615,11 +622,15 @@ def main():
                         if len(pending) >= EVAL_CHUNKS:
                             language   = _decide_language()
                             self_label = _SELF_LABEL.get(language, "[Me]")
+                            print(f"[Transcriber] 言語確定: {language}  (以降この言語で認識)", flush=True)
                             _ensure_header()
-                            for wp, tx in pending:
-                                print(f"[Transcriber] 認識開始: {os.path.basename(wp)} (loopback/pending)", flush=True)
-                                lines = _transcribe_lines(wp, language) if language in _LANG_PROMPT_BASE else ([tx] if tx else [])
-                                _write_and_move(wp, lines, out, "loopback")
+                            for item in pending:
+                                wp  = item[0]; tx = item[1]
+                                src = item[2] if len(item) > 2 else "loopback"
+                                print(f"[Transcriber] 認識開始: {os.path.basename(wp)} ({src}/pending)", flush=True)
+                                lbl   = self_label if src == "mic" else ""
+                                lines = _transcribe_lines(wp, language, lbl) if language in _LANG_PROMPT_BASE else ([tx] if tx else [])
+                                _write_and_move(wp, lines, out, src)
                             pending.clear()
                     else:
                         pending.append((wav_path, "", source))
@@ -666,7 +677,6 @@ def main():
 
     if out.path:
         print(f"[Transcriber] 保存しました: {out.path}")
-    print(f"[Transcriber] 検出言語: {language}")
 
 
 if __name__ == "__main__":

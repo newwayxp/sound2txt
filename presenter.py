@@ -20,6 +20,7 @@ from appconfig import (
     BASE,
     CFG_FILE,
     LANG_FILE,
+    START_FILE,
     STATE_FILE,
     STOP_SIGNAL,
     _CUDA_AVAILABLE,
@@ -225,6 +226,11 @@ class Presenter:
             from i18n import t
             self._view.put_log(t("saved"))
 
+    def ensure_ollama_running(self) -> None:
+        """Public: start Ollama if mode is ollama and not already running."""
+        if self._config.get("summary", "mode", fallback="openai") == "ollama":
+            threading.Thread(target=self._ensure_ollama_running, daemon=True).start()
+
     def _on_mode_change(self, mode: str) -> None:
         self._config.set("summary", "mode", mode)
         self._config.save()
@@ -319,20 +325,48 @@ class Presenter:
             self._view.schedule(lambda: self._view.set_onair_level(0.0))
 
     def _meter_loop(self) -> None:
-        """
-        Simulate a VU meter by reading mic audio level.
-        Currently produces a fake level so the ring animates.
-        Replace with real audio sampling if needed.
-        """
-        import math
-        t0 = time.monotonic()
-        while self._meter_active:
-            elapsed = time.monotonic() - t0
-            level = (math.sin(elapsed * 3.0) + 1.0) / 2.0 * 0.8 + 0.1
-            if self._view:
-                v = level  # capture for lambda
-                self._view.schedule(lambda l=v: self._view.set_onair_level(l))
-            time.sleep(0.1)
+        """Read mic input in real time and feed RMS level to the VU meter."""
+        stream = None
+        pa     = None
+        try:
+            import numpy as np
+            import pyaudiowpatch as pyaudio
+            pa = pyaudio.PyAudio()
+            try:
+                info = pa.get_default_input_device_info()
+                idx  = int(info["index"])
+                sr   = int(info["defaultSampleRate"])
+            except Exception:
+                return
+            chunk  = 512
+            stream = pa.open(
+                format=pyaudio.paInt16, channels=1, rate=sr,
+                input=True, frames_per_buffer=chunk,
+                input_device_index=idx,
+            )
+            while self._meter_active:
+                data  = stream.read(chunk, exception_on_overflow=False)
+                arr   = np.frombuffer(data, dtype=np.int16)
+                rms   = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
+                level = min(rms / 4000.0, 1.0)
+                if self._view:
+                    v = level
+                    self._view.schedule(lambda l=v: self._view.set_onair_level(l))
+        except Exception:
+            pass
+        finally:
+            if stream:
+                try: stream.stop_stream(); stream.close()
+                except Exception: pass
+            if pa:
+                try: pa.terminate()
+                except Exception: pass
+            # If crashed while active, auto-hide
+            if self._meter_active:
+                self._meter_active = False
+                if self._view:
+                    try: self._view.schedule(self._view.hide_onair)
+                    except Exception: pass
 
     # ── start / stop ─────────────────────────────────────────────────────────
 
@@ -379,30 +413,56 @@ class Presenter:
         )
         self._view.put_log(f"[UI] Audio directory: {audio_dir}")
         self._view.put_log(f"[UI] Transcript directory: {transcript_dir}")
-        self._view.put_log(f"[UI] Corrected text directory: {corrected_dir}")
-        self._view.put_log(f"[UI] Summary directory: {summary_dir}")
 
-        self._view.put_log("[UI] Launching recorder.py")
-        self._rec_proc = subprocess.Popen(
-            [sys.executable, "-X", "utf8", os.path.join(BASE, "recorder.py")],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", env=self._env,
-        )
-        self._view.put_log(f"[UI] recorder.py started: pid={self._rec_proc.pid}")
+        # Write recording start time so transcriber skips pre-recording files
+        with open(START_FILE, "w") as _sf:
+            _sf.write(str(time.time()))
+        self._view.put_log(f"[UI] Recording started at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-        self._view.put_log("[UI] Launching transcriber.py")
-        self._tr_proc = subprocess.Popen(
-            [sys.executable, "-X", "utf8", os.path.join(BASE, "transcriber.py")],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", env=self._env,
-        )
-        self._view.put_log(f"[UI] transcriber.py started: pid={self._tr_proc.pid}")
+        rec_mode   = self._config.get("recording", "mode",       fallback="meeting").strip().lower()
+        enable_mic = self._config.getboolean("recording", "enable_mic", fallback=True)
 
-        threading.Thread(target=self._pipe, args=(self._rec_proc, "[Rec]"),  daemon=True).start()
-        threading.Thread(target=self._pipe, args=(self._tr_proc,  "[Tr]"),   daemon=True).start()
-        threading.Thread(target=self._after_trans,                            daemon=True).start()
+        # Loopback recorder (meeting mode only)
+        self._rec_proc = None
+        if rec_mode == "meeting":
+            self._view.put_log("[UI] Launching recorder.py (loopback)")
+            self._rec_proc = subprocess.Popen(
+                [sys.executable, "-X", "utf8", os.path.join(BASE, "recorder.py")],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", env=self._env,
+            )
+            threading.Thread(target=self._pipe, args=(self._rec_proc, "[Rec]"), daemon=True).start()
+            self._view.put_log(f"[UI] recorder.py started: pid={self._rec_proc.pid}")
+        else:
+            self._view.put_log("[UI] Local Mic mode: loopback recorder skipped")
 
-        self._start_meter()
+        # Mic recorder
+        self._mic_proc = None
+        if enable_mic:
+            self._view.put_log("[UI] Launching mic_recorder.py")
+            self._mic_proc = subprocess.Popen(
+                [sys.executable, "-X", "utf8", os.path.join(BASE, "mic_recorder.py")],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", env=self._env,
+            )
+            threading.Thread(target=self._pipe, args=(self._mic_proc, "[Mic]"), daemon=True).start()
+            self._view.schedule(lambda: self._view.show_onair())
+            self._start_meter()
+
+        # Transcriber (pre-loaded or fresh start)
+        if self._tr_proc and self._tr_proc.poll() is None:
+            self._view.put_log(f"[UI] transcriber.py already running (pre-loaded): pid={self._tr_proc.pid}")
+        else:
+            self._view.put_log("[UI] Launching transcriber.py")
+            self._tr_proc = subprocess.Popen(
+                [sys.executable, "-X", "utf8", os.path.join(BASE, "transcriber.py")],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", env=self._env,
+            )
+            self._view.put_log(f"[UI] transcriber.py started: pid={self._tr_proc.pid}")
+            threading.Thread(target=self._pipe, args=(self._tr_proc, "[Tr]"), daemon=True).start()
+
+        threading.Thread(target=self._after_trans, daemon=True).start()
         self._view.put_log(t("starting"))
 
     def stop(self) -> None:
@@ -428,6 +488,10 @@ class Presenter:
         else:
             self._view and self._view.put_log("[UI] recorder.py is already stopped")
 
+        if self._mic_proc and self._mic_proc.poll() is None:
+            self._view and self._view.put_log("[UI] Stopping mic_recorder.py")
+            self._mic_proc.terminate()
+
         if self._view:
             self._view.schedule(lambda: self._view.set_rec_status("stopped", "gray60"))
             self._view.schedule(lambda: self._view.hide_onair())
@@ -440,6 +504,18 @@ class Presenter:
     # ── after-transcription pipeline ─────────────────────────────────────────
 
     def _after_trans(self) -> None:
+        try:
+            self._after_trans_impl()
+        except Exception as e:
+            self._view and self._view.put_log(f"[UI] ⚠ Error in pipeline: {e}")
+        finally:
+            # Always clean up mic/meter regardless of errors
+            self._stop_meter()
+            if self._view:
+                self._view.schedule(lambda: self._view.hide_onair())
+                self._view.schedule(self._set_controls_idle)
+
+    def _after_trans_impl(self) -> None:
         self._wait_process(self._tr_proc, "transcriber.py", timeout_sec=900)
         if self._view:
             self._view.schedule(lambda: self._view.set_tr_status("stopped", "gray60"))
@@ -456,30 +532,36 @@ class Presenter:
                     lambda: self._view.set_sum_status("generating", "#ddaa00")
                 )
             from i18n import t
-            self._view and self._view.put_log(t("sum_start"))
-            self._view and self._view.put_log("[UI] Launching summarizer.py")
 
-            sum_proc = subprocess.Popen(
-                [sys.executable, "-X", "utf8", os.path.join(BASE, "summarizer.py")],
+            # ── Step 1: Correction (runs first, gives user corrected text ASAP) ──
+            self._view and self._view.put_log("[UI] Starting correction (Step 1/2)...")
+            sum_proc1 = subprocess.Popen(
+                [sys.executable, "-X", "utf8", os.path.join(BASE, "summarizer.py"),
+                 "--step", "correct", transcript_path],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", env=self._env,
             )
-            self._view and self._view.put_log(
-                f"[UI] summarizer.py started: pid={sum_proc.pid}"
-            )
-            threading.Thread(target=self._pipe, args=(sum_proc, "[Sum]"), daemon=True).start()
-            self._wait_process(sum_proc, "summarizer.py", timeout_sec=900)
+            threading.Thread(target=self._pipe, args=(sum_proc1, "[Sum]"), daemon=True).start()
+            self._wait_process(sum_proc1, "summarizer.py (correct)", timeout_sec=600)
 
             corrected = self._latest_file(
-                self._config.get("summary", "corrected_dir", fallback=""),
-                "corrected_*.txt",
-            )
-            summary = self._latest_file(
-                self._config.get("summary", "summary_dir", fallback=""),
-                "summary_*.md",
-            )
+                self._config.get("summary", "corrected_dir", fallback=""), "corrected_*.txt")
             if corrected:
-                self._view and self._view.put_log(f"[UI] Corrected text file: {corrected}")
+                self._view and self._view.put_log(f"[UI] Corrected text: {corrected}")
+
+            # ── Step 2: Meeting minutes ─────────────────────────────────────────
+            self._view and self._view.put_log("[UI] Generating meeting minutes (Step 2/2)...")
+            sum_proc2 = subprocess.Popen(
+                [sys.executable, "-X", "utf8", os.path.join(BASE, "summarizer.py"),
+                 "--step", "summary", transcript_path],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", env=self._env,
+            )
+            threading.Thread(target=self._pipe, args=(sum_proc2, "[Sum]"), daemon=True).start()
+            self._wait_process(sum_proc2, "summarizer.py (summary)", timeout_sec=600)
+
+            summary = self._latest_file(
+                self._config.get("summary", "summary_dir", fallback=""), "summary_*.md")
             if summary:
                 self._view and self._view.put_log(f"[UI] Summary file: {summary}")
 
@@ -492,8 +574,6 @@ class Presenter:
             if self._view:
                 self._view.schedule(lambda: self._view.set_sum_status("skipped", "gray60"))
 
-        if self._view:
-            self._view.schedule(self._set_controls_idle)
         from i18n import t
         self._view and self._view.put_log(t("all_done"))
 
@@ -541,10 +621,55 @@ class Presenter:
     # ── process helpers ───────────────────────────────────────────────────────
 
     def _pipe(self, proc, prefix: str) -> None:
+        import re, wave as _wave
+        _tr_file_re  = re.compile(r"\d+/\d+:\s+(\S+\.wav)")
+        _rec_save_re = re.compile(r"保存|Saved")
+        _fname_re    = re.compile(r"((?:audio|mic)_\S+\.wav)")
+        _tr_done_re  = re.compile(r"done \((loopback|mic)\):\s+(\S+\.wav)")
+        _rec_sec  = self._config.getint("recording", "record_sec", fallback=30)
+        audio_dir = self._config.get("paths", "audio_dir", fallback="")
+        mic_dir   = self._config.get("paths", "mic_dir",   fallback="")
+        rec_mode  = self._config.get("recording", "mode",  fallback="meeting").strip().lower()
+
+        # Primary source for dashboard timers (avoids double-counting).
+        # In meeting mode the loopback file covers the full session duration;
+        # in local_mic mode only mic files exist.
+        primary_audio_prefix = "[Rec]" if rec_mode == "meeting" else "[Mic]"
+        primary_trans_source = "loopback" if rec_mode == "meeting" else "mic"
+
         for line in proc.stdout:
             text = line.rstrip()
-            if text:
-                self._view and self._view.put_log(f"{prefix} {text}")
+            if not text:
+                continue
+
+            if prefix == "[Tr]":
+                m = _tr_file_re.search(text)
+                if m:
+                    self._tr_current_file  = m.group(1)
+                    self._tr_last_activity = time.monotonic()
+                dm = _tr_done_re.search(text)
+                # Count only the primary source so loopback + mic don't double-count
+                if dm and self._view and self._running:
+                    source, fname = dm.group(1), dm.group(2)
+                    if source == primary_trans_source:
+                        done_base = mic_dir if source == "mic" else audio_dir
+                        secs = self._wav_secs(os.path.join(done_base, "done", fname))
+                        if secs <= 0: secs = float(_rec_sec)
+                        self._view.schedule(lambda s=secs: self._view.dashboard_add_trans(s))
+
+            elif prefix in ("[Rec]", "[Mic]"):
+                # Count only the primary recorder so loopback + mic don't double-count
+                if prefix == primary_audio_prefix and _rec_save_re.search(text) and self._running:
+                    fm = _fname_re.search(text)
+                    if fm and self._view:
+                        fname = fm.group(1)
+                        base  = mic_dir if fname.startswith("mic_") else audio_dir
+                        secs  = self._wav_secs(os.path.join(base, fname))
+                        if secs <= 0: secs = float(_rec_sec)
+                        self._view.schedule(lambda s=secs: self._view.dashboard_add_audio(s))
+
+            if self._view:
+                self._view.put_log(f"{prefix} {text}")
 
     def _wait_process(self, proc, name: str,
                       timeout_sec: int | None = None,
@@ -552,32 +677,54 @@ class Presenter:
         if not proc:
             return True
         start    = time.monotonic()
-        next_log = 0
+        next_log = interval_sec
+        _recording_msg_shown = False
+        _last_seen_activity  = self._tr_last_activity
+
         while proc.poll() is None:
             elapsed = int(time.monotonic() - start)
-            if elapsed >= next_log:
-                self._view and self._view.put_log(
-                    f"[UI] Waiting for {name} to finish... elapsed={elapsed}s"
-                )
-                next_log = elapsed + interval_sec
+
+            if name == "transcriber.py":
+                now_act = self._tr_last_activity
+                if now_act != _last_seen_activity:
+                    _last_seen_activity  = now_act
+                    _recording_msg_shown = False
+                    next_log = elapsed + interval_sec
+
+                if elapsed >= next_log:
+                    quiet = (time.monotonic() - self._tr_last_activity) > 3.0
+                    if self._running and quiet and not _recording_msg_shown:
+                        self._view and self._view.put_log(
+                            "[UI] 収録中... 次のチャンクを待っています")
+                        _recording_msg_shown = True
+                        next_log = elapsed + interval_sec
+                    elif not self._running:
+                        if self._tr_current_file:
+                            self._view and self._view.put_log(
+                                f"[UI] 転写中: {self._tr_current_file}  elapsed={elapsed}s")
+                        next_log = elapsed + interval_sec
+            else:
+                if elapsed >= next_log:
+                    self._view and self._view.put_log(
+                        f"[UI] Waiting for {name} to finish... elapsed={elapsed}s")
+                    next_log = elapsed + interval_sec
+
             if timeout_sec is not None and elapsed >= timeout_sec:
                 self._view and self._view.put_log(
-                    f"[UI] {name} did not finish within {timeout_sec}s. Terminating."
-                )
+                    f"[UI] {name} did not finish within {timeout_sec}s. Terminating.")
                 proc.terminate()
                 try:
                     proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     self._view and self._view.put_log(
-                        f"[UI] {name} still running. Killing process."
-                    )
+                        f"[UI] {name} still running. Killing process.")
                     proc.kill()
                     proc.wait()
                 return False
             time.sleep(0.5)
+
         self._view and self._view.put_log(
-            f"[UI] {name} exited with code {proc.returncode}"
-        )
+            f"[UI] {name} exited with code {proc.returncode}")
         return True
 
     def _wav_secs(self, path: str) -> float:
