@@ -12,9 +12,15 @@ config.ini
 
 # ── ランタイム状態ファイル ────────────────────────────
 .last_transcript
+.last_corrected
 .last_language
 .stop_signal
+.recording_start
+.ptt_stop
 .tmp_*.wav
+
+# ── ログファイル ──────────────────────────────────────
+*.log
 
 # ── ビルド成果物 ──────────────────────────────────────
 dist/
