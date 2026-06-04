@@ -16,7 +16,8 @@ from datetime import datetime
 STATE_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_transcript")
 LANG_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_language")
 CORRECTED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_corrected")
-VOCAB_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vocabulary.txt")
+_BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
+_VOCAB_DEFAULT = os.path.join(_BASE_DIR, "vocabulary.txt")
 
 
 def _network_kwargs(cfg: configparser.ConfigParser) -> dict:
@@ -40,12 +41,26 @@ def _network_kwargs(cfg: configparser.ConfigParser) -> dict:
     return kwargs
 
 
-def _load_vocabulary() -> list[str]:
+def _resolve_vocab_file(cfg: configparser.ConfigParser) -> str:
+    """config.ini の vocab_file パスを取得し、初回は program dir からコピーする。"""
+    path = cfg.get("paths", "vocab_file", fallback="").strip()
+    if not path:
+        return _VOCAB_DEFAULT
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.exists(path) and os.path.exists(_VOCAB_DEFAULT):
+        import shutil
+        shutil.copy2(_VOCAB_DEFAULT, path)
+        print(f"[Summarizer] vocabulary.txt を {path} にコピーしました")
+    return path
+
+
+def _load_vocabulary(vocab_file: str = "") -> list[str]:
     """vocabulary.txt から有効な用語を読み込む（transcriber と共有）。"""
-    if not os.path.exists(VOCAB_FILE):
+    path = vocab_file or _VOCAB_DEFAULT
+    if not os.path.exists(path):
         return []
     terms = []
-    with open(VOCAB_FILE, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             term = line.strip()
             if term and not term.startswith("#"):
@@ -261,10 +276,11 @@ def correct_transcript(raw: str, corrected_dir: str, ts: str,
 
     system = ((_lang_guard + "\n\n") if _lang_guard else "") + CORRECT_SYSTEM
 
-    vocab = _load_vocabulary()
+    vocab_file = _resolve_vocab_file(cfg)
+    vocab = _load_vocabulary(vocab_file)
     vocab_section = ""
     if vocab:
-        print(f"[Summarizer] vocabulary: {len(vocab)} terms loaded")
+        print(f"[Summarizer] vocabulary: {len(vocab)} terms loaded ({vocab_file})")
         vocab_section = (
             "\n\nKnown proper nouns / technical terms in this recording"
             " (treat these as correct spellings, do not alter them):\n"

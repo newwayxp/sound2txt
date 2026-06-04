@@ -197,7 +197,20 @@ def _parse_file_start_time(wav_path: str):
             pass
     return None
 
-VOCAB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vocabulary.txt")
+_BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
+_VOCAB_DEFAULT = os.path.join(_BASE_DIR, "vocabulary.txt")
+
+def _resolve_vocab_file(cfg: configparser.ConfigParser) -> str:
+    """config.ini の vocab_file パスを取得し、初回は program dir からコピーする。"""
+    path = cfg.get("paths", "vocab_file", fallback="").strip()
+    if not path:
+        return _VOCAB_DEFAULT
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.exists(path) and os.path.exists(_VOCAB_DEFAULT):
+        import shutil
+        shutil.copy2(_VOCAB_DEFAULT, path)
+        print(f"[Transcriber] vocabulary.txt を {path} にコピーしました")
+    return path
 
 # 言語ごとのトランスクリプトヘッダー / フッター
 _TRANSCRIPT_HEADER = {
@@ -226,12 +239,13 @@ _LANG_PROMPT_BASE: dict[str, str] = {
 }
 
 
-def load_vocabulary() -> list[str]:
+def load_vocabulary(vocab_file: str = "") -> list[str]:
     """vocabulary.txt から有効な用語を読み込む。"""
-    if not os.path.exists(VOCAB_FILE):
+    path = vocab_file or _VOCAB_DEFAULT
+    if not os.path.exists(path):
         return []
     terms = []
-    with open(VOCAB_FILE, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             term = line.strip()
             if term and not term.startswith("#"):
@@ -372,9 +386,10 @@ def main():
     seen        = set()
     self_label  = ""  # resolved after language detection
 
-    vocab = load_vocabulary()
+    vocab_file = _resolve_vocab_file(_cfg)
+    vocab = load_vocabulary(vocab_file)
     if vocab:
-        print(f"[Transcriber] 用語リスト: {len(vocab)} 件読み込み")
+        print(f"[Transcriber] 用語リスト: {len(vocab)} 件 ({vocab_file})")
 
     def _transcribe(wav_path, lang):
         """For language detection: returns (full_text, info)."""
