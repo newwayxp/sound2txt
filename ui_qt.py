@@ -414,11 +414,6 @@ class App(QMainWindow):
         if rb_lang:
             rb_lang.setChecked(True)
 
-        # Mic checkbox
-        mic = cfg.getboolean("recording", "enable_mic", fallback=True)
-        if hasattr(self, "_mic_check"):
-            self._mic_check.setChecked(mic)
-
         # Chunk duration slider
         try:
             rec_sec = int(cfg.get("recording", "record_sec", fallback="30"))
@@ -668,13 +663,6 @@ class App(QMainWindow):
         grid.setColumnStretch(1, 1)
         row = 0
 
-        # Mic enable checkbox
-        grid.addWidget(QLabel(t("mic_enable")), row, 0, Qt.AlignmentFlag.AlignRight)
-        self._mic_check = QCheckBox(t("mic_enable_hint"))
-        self._mic_check.setChecked(cfg.getboolean("recording", "enable_mic", fallback=True))
-        grid.addWidget(self._mic_check, row, 1)
-        row += 1
-
         # Device radio buttons
         grid.addWidget(QLabel(t("device_label")), row, 0, Qt.AlignmentFlag.AlignRight)
         dev_widget = QWidget()
@@ -820,7 +808,6 @@ class App(QMainWindow):
                 ("recording", "language"):    _get_lang(),
                 ("recording", "device"):      device,
                 ("recording", "model_size"):  model,
-                ("recording", "enable_mic"):  str(self._mic_check.isChecked()),
             }
             self._presenter.save_config(updates)
             self._presenter.apply_startup_defaults(log=True)
