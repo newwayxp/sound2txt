@@ -11,6 +11,25 @@ echo.
 
 set SCRIPT_DIR=%~dp0
 set ERROR=0
+set PROXY_ARG=
+
+:: ─────────────────────────────────────────────
+:: Step 0: プロキシ設定（任意）
+:: ─────────────────────────────────────────────
+echo [0/4] 社内プロキシを使用しますか？
+echo  使用する場合は アドレス:ポート を入力してください。
+echo  例: proxy.company.com:8080
+echo  使用しない場合はそのまま Enter を押してください。
+echo.
+set /p PROXY_INPUT="  プロキシアドレス (空欄でスキップ): "
+if not "%PROXY_INPUT%"=="" (
+    set PROXY_ARG=--proxy http://%PROXY_INPUT% --trusted-host pypi.org --trusted-host files.pythonhosted.org
+    echo  OK: プロキシ設定: http://%PROXY_INPUT%
+    echo.
+    :: config.ini にプロキシを反映する（Step 4 で config.ini 作成後に追記）
+    set PROXY_HOST=%PROXY_INPUT%
+)
+echo.
 
 :: ─────────────────────────────────────────────
 :: Step 1: Python チェック (3.10 以上)
@@ -50,12 +69,11 @@ echo [2/4] Python パッケージをインストールしています...
 echo  (faster-whisper / PyQt6 のダウンロードに数分かかる場合があります)
 echo.
 
-pip install -r "%SCRIPT_DIR%requirements.txt"
+pip install -r "%SCRIPT_DIR%requirements.txt" %PROXY_ARG%
 if %errorlevel% neq 0 (
     echo.
     echo  [ERROR] パッケージのインストールに失敗しました。
-    echo  社内プロキシを使用している場合は以下のコマンドを試してください:
-    echo    pip install -r requirements.txt --proxy http://プロキシアドレス:ポート
+    echo  プロキシを使用している場合は最初の手順でアドレスを入力してください。
     echo.
     set ERROR=1
     goto :end
@@ -96,6 +114,24 @@ if not exist "%SCRIPT_DIR%config.ini" (
     echo  OK: config.ini を config_default.ini から作成しました
 ) else (
     echo  OK: config.ini は既に存在します (上書きしません)
+)
+
+:: プロキシが入力されていれば config.ini に書き込む
+if not "%PROXY_HOST%"=="" (
+    python -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+f = r'%SCRIPT_DIR%config.ini'
+cfg.read(f, encoding='utf-8')
+if not cfg.has_section('network'):
+    cfg.add_section('network')
+cfg.set('network', 'https_proxy', 'http://%PROXY_HOST%')
+cfg.set('network', 'http_proxy',  'http://%PROXY_HOST%')
+cfg.set('network', 'ssl_verify',  'false')
+with open(f, 'w', encoding='utf-8') as fp:
+    cfg.write(fp)
+print('  OK: config.ini にプロキシ設定を書き込みました')
+"
 )
 
 :: run.bat 作成（ダブルクリックで GUI 起動）

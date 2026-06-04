@@ -17,7 +17,7 @@
 - **GPU 加速** — 有 NVIDIA GPU 时自动启用 CUDA，速度提升约 10 倍
 - **AI 纠错** — LLM 修正同音字、补全标点、整理段落
 - **会议纪要** — 自动生成结构化纪要，语言与录音一致
-- **自定义术语** — `vocabulary.txt` 提升专有名词识别准确率
+- **自定义术语** — 术语表文件提升专有名词识别准确率
 - **企业代理支持** — 支持 HTTP/HTTPS 代理及自签名证书
 
 ---
@@ -42,6 +42,9 @@
 
 脚本会自动完成：安装 Python 依赖、安装 ffmpeg、创建 `run.bat` 和桌面快捷方式。
 
+> **企业代理环境：** 运行 `setup.bat` 时会询问代理地址，填入后自动应用。  
+> 也可以在启动后的 **🌐 Network** 设置标签页中配置。
+
 ### 方法二：手动安装
 
 ```powershell
@@ -52,15 +55,21 @@ winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreement
 copy config_default.ini config.ini
 ```
 
+企业代理环境の場合：
+
+```powershell
+pip install -r requirements.txt --proxy http://プロキシアドレス:ポート --trusted-host pypi.org --trusted-host files.pythonhosted.org
+```
+
 ---
 
 ## 启动
 
+双击 `run.bat`，或者：
+
 ```powershell
 python ui_qt.py
 ```
-
-或者双击 `run.bat`。
 
 ---
 
@@ -72,7 +81,7 @@ python ui_qt.py
 
 | 服务 | 地址 | 费用 |
 |---|---|---|
-| **Groq**（推荐） | https://console.groq.com | 每天 14,400 次免费 |
+| **Groq**（推荐） | https://console.groq.com | 每天免费额度 |
 | DeepSeek | https://platform.deepseek.com | 极低（按量计费）|
 | 阿里云百炼 | https://bailian.console.aliyun.com | 新用户有赠送 |
 | Ollama（本地） | 本地运行，无需 Key | 完全免费 |
@@ -132,8 +141,9 @@ python ui_qt.py
 | 会议纪要 | `C:\Users\Public\Sound2Text\memo\summary_*.md` |
 | 音频（系统）| `C:\Users\Public\Sound2Text\audio\audio_*.wav` |
 | 音频（麦克风）| `C:\Users\Public\Sound2Text\mic\mic_*.wav` |
+| **术语表** | `C:\Users\Public\Sound2Text\corrected\vocabulary.txt` |
 
-路径可在 **路径** 设置标签页中修改。
+路径可在 **📁 路径** 设置标签页中修改。
 
 ---
 
@@ -146,13 +156,19 @@ python ui_qt.py
 | medium | ~15s | ~0.8s | 高 | 769 MB |
 | large-v3 | ~40s | ~2s | 最高 | 1.5 GB |
 
-首次使用时自动下载，存储在 `~/.cache/huggingface/`。
+首次使用时自动下载，存储在 `%USERPROFILE%\.cache\huggingface\`。
 
 ---
 
 ## 自定义术语
 
-编辑 `vocabulary.txt`，每行一个词：
+编辑术语表文件（**与输出文件放在一起，方便管理**）：
+
+```
+C:\Users\Public\Sound2Text\corrected\vocabulary.txt
+```
+
+每行一个词：
 
 ```
 Anthropic
@@ -161,7 +177,23 @@ ChatGPT
 Docker Compose
 ```
 
-术语同时传入 Whisper `initial_prompt` 和 LLM 提示词，提升专有名词识别准确率。
+术语同时传入 Whisper `initial_prompt` 和 LLM 提示词，提升专有名词识别准确率。  
+首次启动时，程序会自动将程序目录的 `vocabulary.txt` 复制到上記位置。
+
+路径は **📁 路径** 设置标签页的 `vocab_file` 项目で変更可能。
+
+---
+
+## 企业代理设置
+
+在 **🌐 Network** 设置标签页中填入代理地址，或直接编辑 `config.ini`：
+
+```ini
+[network]
+https_proxy = http://proxy.company.com:8080
+http_proxy  = http://proxy.company.com:8080
+ssl_verify  = true   # 自签名证书时设为 false
+```
 
 ---
 
@@ -184,7 +216,6 @@ python debug_modules.py pipeline
 
 # 自定义时长（秒）
 python debug_modules.py audio 30
-python debug_modules.py pipeline 20
 ```
 
 ---
@@ -197,32 +228,21 @@ widgets_qt.py       # 自定义 QPainter 控件（VU 表、七段数码管）
 presenter.py        # 业务逻辑（MVP Presenter）
 appconfig.py        # 配置读写 + CUDA 检测
 i18n.py             # 多语言翻译
-start.py            # 命令行启动器（无 GUI 模式）
 recorder.py         # 系统音频录制进程（WASAPI 环回）
 mic_recorder.py     # 麦克风录制进程
 transcriber.py      # 转写进程（faster-whisper）
 summarizer.py       # AI 纠错 + 会议纪要生成
 device_utils.py     # WASAPI 设备自动选择
 debug_modules.py    # 诊断测试工具
-config.ini          # 用户配置（机器相关，不应提交到 git）
-config_default.ini  # 默认配置模板
-vocabulary.txt      # 自定义术语表
+start.py            # 命令行启动器（无 GUI 模式）
+config_default.ini  # 默认配置模板（config.ini のテンプレート）
+vocabulary.txt      # 術語表テンプレート（初回起動時にデータフォルダへコピー）
 requirements.txt    # Python 依赖
 setup.bat           # 新机器一键安装脚本
+run.bat             # 启动脚本（setup.bat 生成）
 ```
 
----
-
-## 企业代理设置
-
-在 **Network** 设置标签页或直接编辑 `config.ini`：
-
-```ini
-[network]
-https_proxy = http://proxy.company.com:8080
-http_proxy  = http://proxy.company.com:8080
-ssl_verify  = true   # 自签名证书时设为 false
-```
+> `config.ini` は機器固有の設定のため `.gitignore` で除外。
 
 ---
 
@@ -232,20 +252,24 @@ ssl_verify  = true   # 自签名证书时设为 false
 > 控制面板 → 声音 → 录制 → 立体声混音 → 启用
 
 **音量条没有反应**
-> 运行 `python debug_modules.py loopback` 查看设备选择和音量。
+> 运行 `python debug_modules.py loopback` 查看设备选择和音量。  
 > 会议软件可能使用了独立的音频输出设备，需在 Windows 声音设置中检查默认输出。
 
 **FP16 警告**
 > 使用 CUDA GPU 时自动解决；CPU 模式下不影响运行。
 
-**模型下载慢**
-> 设置环境变量：`HF_ENDPOINT=https://hf-mirror.com`（中国大陆镜像）
+**模型下载慢 / SSL 错误**
+> 在 **🌐 Network** 标签页设置企业代理并将 `ssl_verify` 设为 `false`。  
+> 中国大陆可设置镜像：`HF_ENDPOINT=https://hf-mirror.com`
+
+**停止后长时间不结束**
+> 正在处理录音结束前残留的音频文件，进度显示在日志中，请等待完成。
 
 ---
 
 ## 注意事项
 
-> **录音和转写前，请务必取得所有参会者的同意。**
+> **录音和转写前，请务必取得所有参会者的同意。**  
 > 未经许可的录音可能违反相关法律法规。
 
 ---
