@@ -448,7 +448,8 @@ class Presenter:
                 arr   = np.frombuffer(data, dtype=np.int16)
                 rms   = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
                 level = min(rms / 4000.0, 1.0)
-                if self._view:
+                # Re-check flag: meter may have been stopped while read() blocked
+                if self._meter_active and self._view:
                     v = level
                     self._view.schedule(lambda l=v: self._view.set_onair_level(l))
         except Exception:

@@ -317,12 +317,13 @@ class App(QMainWindow):
         self.put_log("[UI-STATE] ON AIR: recording (red)")
 
     def hide_onair(self) -> None:
-        """Mic recording stopped — LED turns blue."""
+        """Mic recording stopped — LED turns blue, VU resets to 0."""
         self._onair_dot.setStyleSheet(
             "background-color: #1565C0;"
             "border-radius: 11px;"
             "border: 2px solid rgba(255,255,255,0.25);"
         )
+        self._vu_meter.set_level(0.0)   # discard any in-flight level update
         self.put_log("[UI-STATE] ON AIR: idle (blue)")
 
     def set_onair_level(self, level: float) -> None:
