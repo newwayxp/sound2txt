@@ -302,9 +302,14 @@ class App(QMainWindow):
 
     def set_stop_enabled(self, v: bool) -> None:
         if v:
+            # Switch button to Stop mode and enable
             self._btn_toggle_recording = True
             self._btn_toggle.setText(t("stop"))
-        self._apply_toggle_style(enabled=v)
+            self._apply_toggle_style(enabled=True)
+        elif self._btn_toggle_recording:
+            # Disable only when currently in Stop mode;
+            # if already back in Start mode (set_start_enabled ran first), ignore.
+            self._apply_toggle_style(enabled=False)
         self.put_log(f"[UI-STATE] Stop: {'enabled' if v else 'disabled'}")
 
     def show_onair(self) -> None:
