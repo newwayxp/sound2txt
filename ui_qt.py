@@ -320,13 +320,21 @@ class App(QMainWindow):
         self.put_log(f"[UI-STATE] Stop button: {'enabled' if v else 'disabled'}")
 
     def show_onair(self) -> None:
-        """Mic recording active — dot turns red."""
-        self._onair_dot.setStyleSheet("color: #E53935; font-size: 15px;")
+        """Mic recording active — LED turns red."""
+        self._onair_dot.setStyleSheet(
+            "background-color: #E53935;"
+            "border-radius: 11px;"
+            "border: 2px solid rgba(255,255,255,0.40);"
+        )
         self.put_log("[UI-STATE] ON AIR: recording (red)")
 
     def hide_onair(self) -> None:
-        """Mic recording stopped — dot turns blue."""
-        self._onair_dot.setStyleSheet("color: #1565C0; font-size: 15px;")
+        """Mic recording stopped — LED turns blue."""
+        self._onair_dot.setStyleSheet(
+            "background-color: #1565C0;"
+            "border-radius: 11px;"
+            "border: 2px solid rgba(255,255,255,0.25);"
+        )
         self.put_log("[UI-STATE] ON AIR: idle (blue)")
 
     def set_onair_level(self, level: float) -> None:
@@ -520,22 +528,33 @@ class App(QMainWindow):
         hbox.addWidget(self._btn_mode_meeting)
         hbox.addWidget(self._btn_mode_local_mic)
 
-        # ON AIR dot + VU meter container (hidden until recording starts)
-        # Click VU meter → toggle mic recording in both meeting and local_mic modes
-        self._vumeter_bar = QWidget(bar)
-        self._vumeter_bar.setFixedHeight(40)
-        self._vumeter_bar.setFixedWidth(158)
+        # ON AIR + VU meter — pill-shaped box, hidden until recording starts
+        self._vumeter_bar = QFrame(bar)
+        self._vumeter_bar.setObjectName("vuContainer")
+        self._vumeter_bar.setFixedHeight(46)
+        self._vumeter_bar.setMinimumWidth(200)
+        self._vumeter_bar.setMaximumWidth(260)
+        self._vumeter_bar.setStyleSheet(
+            "QFrame#vuContainer {"
+            "  background-color: #0d1b2a;"
+            "  border: 1.5px solid #2c3e50;"
+            "  border-radius: 23px;"
+            "}"
+        )
         self._vumeter_bar.setVisible(False)
         vum_hbox = QHBoxLayout(self._vumeter_bar)
-        vum_hbox.setContentsMargins(2, 0, 2, 0)
-        vum_hbox.setSpacing(6)
+        vum_hbox.setContentsMargins(12, 0, 12, 0)
+        vum_hbox.setSpacing(10)
 
-        # ON AIR dot: blue = idle, red = mic recording
-        self._onair_dot = QLabel("●")
-        self._onair_dot.setFixedSize(16, 40)
-        self._onair_dot.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-        self._onair_dot.setStyleSheet("color: #1565C0; font-size: 15px;")
-        vum_hbox.addWidget(self._onair_dot)
+        # ON AIR LED — circular, blue=idle / red=recording
+        self._onair_dot = QLabel(self._vumeter_bar)
+        self._onair_dot.setFixedSize(22, 22)
+        self._onair_dot.setStyleSheet(
+            "background-color: #1565C0;"
+            "border-radius: 11px;"
+            "border: 2px solid rgba(255,255,255,0.25);"
+        )
+        vum_hbox.addWidget(self._onair_dot, 0, Qt.AlignmentFlag.AlignVCenter)
 
         # VU meter — click to toggle mic
         self._vu_meter = VUMeterWidget()
@@ -1057,15 +1076,17 @@ class App(QMainWindow):
         threading.Thread(target=self._presenter.toggle_mic, daemon=True).start()
 
     def show_ptt_button(self) -> None:
-        """Show VU meter bar when recording starts (both modes)."""
+        """Show VU bar when recording starts; activate meter animation."""
         if hasattr(self, "_vumeter_bar"):
             self._vumeter_bar.setVisible(True)
+            self._vu_meter.show()   # sets _active=True so animation runs
 
     def hide_ptt_button(self) -> None:
-        """Hide VU meter bar when recording stops."""
+        """Hide VU bar when recording stops; stop meter animation."""
         if hasattr(self, "_vumeter_bar"):
-            self._vumeter_bar.setVisible(False)
             self._vu_meter.set_level(0.0)
+            self._vu_meter.hide()   # sets _active=False
+            self._vumeter_bar.setVisible(False)
 
     def _on_mode_change(self, btn: QPushButton) -> None:
         code = "local_mic" if btn is self._btn_mode_local_mic else "meeting"

@@ -58,7 +58,6 @@ class VUMeterWidget(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(self.FPS)
-        self.setVisible(False)
 
     def set_level(self, v: float) -> None:
         self._level = max(0.0, min(float(v), 1.0))
