@@ -15,7 +15,7 @@ CFG_FILE    = os.path.join(BASE, "config.ini")
 STOP_SIGNAL = os.path.join(BASE, ".stop_signal")
 STATE_FILE  = os.path.join(BASE, ".last_transcript")
 LANG_FILE   = os.path.join(BASE, ".last_language")
-START_FILE  = os.path.join(BASE, ".start_signal")
+START_FILE  = os.path.join(BASE, ".recording_start")
 
 # ── CUDA detection ─────────────────────────────────────────────────────────────
 

@@ -2,16 +2,25 @@
 debug_modules.py — Individual module tests using existing recordings.
 
 Usage:
-  python debug_modules.py loopback      # list loopback devices + 5s capture test (meeting mode)
-  python debug_modules.py transcriber   # test transcriber with latest WAV file
-  python debug_modules.py summarizer    # test summarizer with latest transcript
-  python debug_modules.py ui            # launch UI in debug mode (extra logging)
+  python debug_modules.py loopback      # list loopback devices + 5s capture test
+  python debug_modules.py audio         # record 15s from loopback → transcribe
+  python debug_modules.py mic           # record 15s from mic → transcribe
+  python debug_modules.py pipeline      # record loopback+mic simultaneously → merge+verify
+  python debug_modules.py transcriber   # transcribe the latest existing WAV file
+  python debug_modules.py summarizer    # run summarizer on the latest transcript
+  python debug_modules.py ui            # launch UI in debug mode (3s auto-close)
   python debug_modules.py all           # run all tests sequentially
+
+Optional duration override (seconds):
+  python debug_modules.py audio 30      # record 30s instead of default 15s
+  python debug_modules.py pipeline 20
 """
 import sys
 import os
 import glob
 import subprocess
+import threading
+import time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
@@ -308,6 +317,322 @@ sys.exit(app.exec())
         print(output[-600:])
         return False
 
+# ── recording helpers ─────────────────────────────────────────────────────────
+
+def _record_loopback_wav(audio_dir: str, duration: int) -> tuple:
+    """Record loopback for `duration` seconds. Returns (wav_path, peak_level)."""
+    try:
+        import pyaudiowpatch as pyaudio, numpy as np, wave
+        from device_utils import select_active_device
+        from datetime import datetime
+        pa  = pyaudio.PyAudio()
+        idx, info = select_active_device(pa)
+        ch  = info["maxInputChannels"]
+        sr  = int(info["defaultSampleRate"])
+        n   = int(sr / 1024 * duration)
+        stream = pa.open(format=pyaudio.paInt16, channels=ch, rate=sr,
+                         frames_per_buffer=1024, input=True, input_device_index=idx)
+        frames, peak = [], 0
+        for _ in range(n):
+            data = stream.read(1024, exception_on_overflow=False)
+            frames.append(data)
+            lvl = int(np.abs(np.frombuffer(data, dtype=np.int16)).mean())
+            if lvl > peak:
+                peak = lvl
+        stream.stop_stream(); stream.close(); pa.terminate()
+        ts   = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        path = os.path.join(audio_dir, f"audio_{ts}.wav")
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(ch); wf.setsampwidth(2)
+            wf.setframerate(sr); wf.writeframes(b"".join(frames))
+        return path, peak
+    except Exception:
+        import traceback; traceback.print_exc()
+        return None, 0
+
+
+def _record_mic_wav(mic_dir: str, duration: int) -> tuple:
+    """Record from default mic for `duration` seconds. Returns (wav_path, peak_level)."""
+    try:
+        import pyaudiowpatch as pyaudio, numpy as np, wave
+        from datetime import datetime
+        pa   = pyaudio.PyAudio()
+        info = pa.get_default_input_device_info()
+        idx  = int(info["index"])
+        ch   = min(info["maxInputChannels"], 1)
+        sr   = int(info["defaultSampleRate"])
+        n    = int(sr / 1024 * duration)
+        stream = pa.open(format=pyaudio.paInt16, channels=ch, rate=sr,
+                         frames_per_buffer=1024, input=True, input_device_index=idx)
+        frames, peak = [], 0
+        for _ in range(n):
+            data = stream.read(1024, exception_on_overflow=False)
+            frames.append(data)
+            lvl = int(np.abs(np.frombuffer(data, dtype=np.int16)).mean())
+            if lvl > peak:
+                peak = lvl
+        stream.stop_stream(); stream.close(); pa.terminate()
+        ts   = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        path = os.path.join(mic_dir, f"mic_{ts}.wav")
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(ch); wf.setsampwidth(2)
+            wf.setframerate(sr); wf.writeframes(b"".join(frames))
+        return path, peak
+    except Exception:
+        import traceback; traceback.print_exc()
+        return None, 0
+
+
+def _load_whisper(cfg):
+    """Load WhisperModel using config settings. Returns (model, device) or (None, None)."""
+    try:
+        from appconfig import _setup_cuda_dlls
+        _setup_cuda_dlls()
+        from faster_whisper import WhisperModel
+        import ctranslate2
+        model_size = cfg.get("recording", "model_size", fallback="small")
+        device     = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+        compute    = "float16" if device == "cuda" else "int8"
+        print(f"  Loading Whisper {model_size} on {device}...")
+        return WhisperModel(model_size, device=device, compute_type=compute), device
+    except Exception as e:
+        print(f"  ❌ Model load failed: {e}")
+        return None, None
+
+
+def _transcribe_to_lines(model, wav_path: str, speaker_label: str = "") -> list:
+    """
+    Transcribe wav_path with the given model.
+    Returns list of '[HH:MM:SS] [label] text' strings, sorted by segment start time.
+    """
+    from datetime import datetime, timedelta
+    try:
+        from transcriber import (
+            _parse_file_start_time, HALLUCINATION_PHRASES,
+            build_initial_prompt, load_vocabulary,
+        )
+        vocab = load_vocabulary()
+    except Exception:
+        vocab = []
+        HALLUCINATION_PHRASES = []
+        def _parse_file_start_time(_): return None  # type: ignore
+        def build_initial_prompt(l, v): return None  # type: ignore
+
+    try:
+        segments, info = model.transcribe(
+            wav_path, language=None,
+            initial_prompt=build_initial_prompt(None, vocab),
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+        )
+        seg_list = list(segments)
+    except Exception as e:
+        print(f"  ❌ Transcription error: {e}")
+        return []
+
+    print(f"  Detected language: {info.language} ({info.language_probability:.0%})")
+
+    file_start = _parse_file_start_time(wav_path)
+    lines = []
+    for seg in seg_list:
+        text = seg.text.strip()
+        if not text or any(p in text for p in HALLUCINATION_PHRASES):
+            continue
+        if file_start:
+            actual = file_start + timedelta(seconds=seg.start)
+            ts     = actual.strftime("%H:%M:%S")
+        else:
+            ts = datetime.now().strftime("%H:%M:%S")
+        label_part = f" {speaker_label}" if speaker_label else ""
+        lines.append(f"[{ts}]{label_part} {text}")
+    return lines
+
+
+# ── test_audio_to_text ────────────────────────────────────────────────────────
+
+def test_audio_to_text(duration: int = 15):
+    """Record from loopback for duration seconds, then transcribe."""
+    section(f"TEST: audio (loopback) → text  [{duration}s recording]")
+
+    from appconfig import AppConfig
+    cfg       = AppConfig()
+    audio_dir = cfg.get("paths", "audio_dir", fallback=r"C:\Users\Public\Sound2Text\audio")
+    os.makedirs(audio_dir, exist_ok=True)
+
+    print(f"Recording {duration}s from loopback (play system / meeting audio now)...")
+    wav, peak = _record_loopback_wav(audio_dir, duration)
+    if not wav:
+        print("❌ Loopback recording failed."); return False
+
+    bar = "█" * min(peak // 100, 30)
+    print(f"  Saved: {os.path.basename(wav)}  peak={peak}  |{bar}|")
+    if peak < 10:
+        print("⚠  Near-silent — run `python debug_modules.py loopback` to diagnose.")
+
+    model, _ = _load_whisper(cfg)
+    if not model:
+        return False
+
+    print("  Transcribing...")
+    lines = _transcribe_to_lines(model, wav)
+    if lines:
+        print(f"✓  {len(lines)} segment(s) transcribed:")
+        for line in lines:
+            print(f"     {line}")
+        return True
+    else:
+        print("⚠  No speech detected. (Recording may be silent or hallucinations filtered.)")
+        return peak > 10   # pass if audio was present
+
+
+# ── test_mic_to_text ──────────────────────────────────────────────────────────
+
+def test_mic_to_text(duration: int = 15):
+    """Record from default mic for duration seconds, then transcribe."""
+    section(f"TEST: mic → text  [{duration}s recording]")
+
+    from appconfig import AppConfig
+    cfg     = AppConfig()
+    mic_dir = cfg.get("paths", "mic_dir", fallback=r"C:\Users\Public\Sound2Text\mic")
+    os.makedirs(mic_dir, exist_ok=True)
+
+    print(f"Recording {duration}s from microphone (please speak now)...")
+    wav, peak = _record_mic_wav(mic_dir, duration)
+    if not wav:
+        print("❌ Mic recording failed."); return False
+
+    bar = "█" * min(peak // 30, 30)
+    print(f"  Saved: {os.path.basename(wav)}  peak={peak}  |{bar}|")
+    if peak < 10:
+        print("⚠  Near-silent — is the microphone connected and unmuted?")
+
+    model, _ = _load_whisper(cfg)
+    if not model:
+        return False
+
+    print("  Transcribing...")
+    lines = _transcribe_to_lines(model, wav, speaker_label="[自分]")
+    if lines:
+        print(f"✓  {len(lines)} segment(s) transcribed:")
+        for line in lines:
+            print(f"     {line}")
+        return True
+    else:
+        print("⚠  No speech detected in mic recording.")
+        return False
+
+
+# ── test_merge_pipeline ───────────────────────────────────────────────────────
+
+def test_merge_pipeline(duration: int = 20):
+    """
+    Record loopback + mic simultaneously, transcribe both, then verify merge.
+    The merge step sorts all segments by absolute timestamp (same logic as
+    transcriber.py _seg_buf) so loopback and mic lines are interleaved correctly.
+    """
+    section(f"TEST: loopback + mic → merge  [{duration}s simultaneous recording]")
+
+    from appconfig import AppConfig
+    cfg       = AppConfig()
+    audio_dir = cfg.get("paths", "audio_dir", fallback=r"C:\Users\Public\Sound2Text\audio")
+    mic_dir   = cfg.get("paths", "mic_dir",   fallback=r"C:\Users\Public\Sound2Text\mic")
+    for d in (audio_dir, mic_dir):
+        os.makedirs(d, exist_ok=True)
+
+    # ── 1. Simultaneous recording ─────────────────────────────────────────────
+    print(f"Recording {duration}s simultaneously.")
+    print("  → Play audio on speakers  AND  speak into the microphone now.\n")
+
+    results = {}
+
+    def _do_lb():
+        results["loopback"] = _record_loopback_wav(audio_dir, duration)
+
+    def _do_mic():
+        results["mic"] = _record_mic_wav(mic_dir, duration)
+
+    t1 = threading.Thread(target=_do_lb,  daemon=True)
+    t2 = threading.Thread(target=_do_mic, daemon=True)
+    t1.start(); t2.start()
+
+    for remaining in range(duration, 0, -1):
+        print(f"\r  {remaining:3d}s remaining...", end="", flush=True)
+        time.sleep(1)
+    print("\r  Recording complete.          ")
+
+    t1.join(); t2.join()
+
+    lb_wav,  lb_peak  = results.get("loopback", (None, 0))
+    mic_wav, mic_peak = results.get("mic",      (None, 0))
+
+    lb_bar  = "█" * min(lb_peak  // 100, 20) if lb_wav  else "FAILED"
+    mic_bar = "█" * min(mic_peak // 30,  20) if mic_wav else "FAILED"
+    print(f"  [Loopback] peak={lb_peak:5d}  |{lb_bar:<20}|  {os.path.basename(lb_wav)  if lb_wav  else '---'}")
+    print(f"  [Mic]      peak={mic_peak:5d}  |{mic_bar:<20}|  {os.path.basename(mic_wav) if mic_wav else '---'}")
+
+    if not lb_wav and not mic_wav:
+        print("❌ Both recordings failed."); return False
+
+    # ── 2. Load model once, transcribe both ───────────────────────────────────
+    model, _ = _load_whisper(cfg)
+    if not model:
+        return False
+
+    from datetime import datetime, timedelta
+    all_segs = []   # list of (datetime | None, str)
+
+    def _collect(wav_path, label):
+        if not wav_path:
+            return
+        print(f"\n  Transcribing {os.path.basename(wav_path)} ...")
+        from transcriber import _parse_file_start_time, HALLUCINATION_PHRASES, build_initial_prompt, load_vocabulary
+        vocab = load_vocabulary()
+        try:
+            segs, info = model.transcribe(
+                wav_path, language=None,
+                initial_prompt=build_initial_prompt(None, vocab),
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500},
+            )
+            file_start = _parse_file_start_time(wav_path)
+            count = 0
+            lp = f" {label}" if label else ""
+            for seg in segs:
+                text = seg.text.strip()
+                if not text or any(p in text for p in HALLUCINATION_PHRASES):
+                    continue
+                dt = (file_start + timedelta(seconds=seg.start)) if file_start else None
+                ts = dt.strftime("%H:%M:%S") if dt else datetime.now().strftime("%H:%M:%S")
+                all_segs.append((dt, f"[{ts}]{lp} {text}"))
+                count += 1
+            print(f"  Detected: {info.language} ({info.language_probability:.0%})  → {count} segment(s)")
+        except Exception as e:
+            print(f"  ❌ Transcription error: {e}")
+
+    _collect(lb_wav,  "")        # loopback: no speaker label
+    _collect(mic_wav, "[自分]")  # mic: speaker label
+
+    # ── 3. Merge: sort by absolute timestamp ──────────────────────────────────
+    all_segs.sort(key=lambda x: x[0] if x[0] else datetime.min)
+
+    section("MERGED TRANSCRIPT")
+    if not all_segs:
+        print("⚠  No speech detected in either source.")
+        return lb_peak > 10 or mic_peak > 10
+
+    for _, line in all_segs:
+        print(f"  {line}")
+
+    lb_lines  = [l for _, l in all_segs if "[自分]" not in l and l.startswith("[")]
+    mic_lines = [l for _, l in all_segs if "[自分]" in l]
+
+    print(f"\n  Total segments  : {len(all_segs)}")
+    print(f"  Loopback lines  : {len(lb_lines)}  {'✓' if lb_lines else '⚠ silent/empty'}")
+    print(f"  Mic lines       : {len(mic_lines)}  {'✓' if mic_lines else '⚠ silent/empty (speak during test)'}")
+
+    return len(all_segs) > 0
+
+
 # ── check_signal_files ────────────────────────────────────────────────────────
 
 def check_signal_files():
@@ -334,14 +659,21 @@ def check_signal_files():
 # ── main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
+    cmd      = sys.argv[1] if len(sys.argv) > 1 else "all"
+    duration = int(sys.argv[2]) if len(sys.argv) > 2 else 15
 
     print(f"\nSound2Text Debug Tool  BASE: {BASE}")
     check_signal_files()
 
     results = {}
     if cmd in ("loopback", "all"):
-        results["loopback"]    = test_loopback()
+        results["loopback"]  = test_loopback()
+    if cmd in ("audio", "all"):
+        results["audio"]     = test_audio_to_text(duration)
+    if cmd in ("mic", "all"):
+        results["mic"]       = test_mic_to_text(duration)
+    if cmd in ("pipeline",):
+        results["pipeline"]  = test_merge_pipeline(duration if len(sys.argv) > 2 else 20)
     if cmd in ("transcriber", "all"):
         results["transcriber"] = test_transcriber()
     if cmd in ("summarizer", "all"):
