@@ -275,6 +275,15 @@ class Presenter:
             self._view.schedule(lambda: self._view.show_onair())
         self._start_meter()
 
+    def toggle_mic(self) -> None:
+        """Toggle mic recording. Called when user clicks the VU meter."""
+        if not self._running:
+            return
+        if self._mic_proc and self._mic_proc.poll() is None:
+            self.stop_mic()
+        else:
+            self.start_mic()
+
     def stop_mic(self) -> None:
         """Stop mic_recorder.py (Push-to-Talk OFF) — save partial frames first."""
         self._stop_meter()
@@ -486,13 +495,9 @@ class Presenter:
         self._view.schedule(lambda: self._view.set_tr_status("running",  "#44dd44"))
         self._view.schedule(lambda: self._view.set_sum_status("standby", "gray60"))
         self._view.schedule(lambda: self._view.dashboard_start())
-        # In meeting mode show PTT button; hide VU meter until PTT is pressed
-        _rm = self._config.get("recording", "mode", fallback="meeting").strip().lower()
-        if _rm == "meeting":
-            self._view.schedule(lambda: self._view.hide_onair())
-            self._view.schedule(lambda: self._view.show_ptt_button())
-        else:
-            self._view.schedule(lambda: self._view.show_onair())
+        # Both modes: show VU bar with blue dot; user clicks VU to start mic
+        self._view.schedule(lambda: self._view.hide_onair())      # dot = blue
+        self._view.schedule(lambda: self._view.show_ptt_button()) # show VU container
 
         audio_dir      = self._config.get("paths", "audio_dir",     fallback="")
         transcript_dir = self._config.get("paths", "transcript_dir", fallback="")
@@ -533,22 +538,10 @@ class Presenter:
         else:
             self._view.put_log("[UI] Local Mic mode: loopback recorder skipped")
 
-        # Mic recorder
-        # In meeting mode: use Push-to-Talk (mic starts only when user presses 発言 button)
-        # In local_mic mode: start immediately (mic is the only audio source)
+        # Mic is not auto-started in either mode.
+        # User clicks the VU meter to start/stop mic via toggle_mic().
         self._mic_proc = None
-        if enable_mic and rec_mode != "meeting":
-            self._view.put_log("[UI] Launching mic_recorder.py")
-            self._mic_proc = subprocess.Popen(
-                [sys.executable, "-X", "utf8", os.path.join(BASE, "mic_recorder.py")],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", env=self._env,
-            )
-            threading.Thread(target=self._pipe, args=(self._mic_proc, "[Mic]"), daemon=True).start()
-            self._view.schedule(lambda: self._view.show_onair())
-            self._start_meter()
-        elif rec_mode == "meeting" and enable_mic:
-            self._view.put_log("[UI] 会議モード: 発言ボタンを押してからマイク録音を開始してください")
+        self._view.put_log("[UI] VU メーターをクリックするとマイク録音を開始/停止します")
 
         # Transcriber (pre-loaded or fresh start)
         if self._tr_proc and self._tr_proc.poll() is None:

@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QRadioButton, QSlider, QSizePolicy,
-    QSpacerItem, QStackedWidget, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QSpacerItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from appconfig import AppConfig
@@ -92,25 +92,6 @@ QPushButton#btnSave {
 }
 QPushButton#btnSave:hover { background-color: #1565C0; }
 
-/* ── Push-to-Talk (発言) button ── */
-QPushButton#btnPTT {
-    background-color: #F5F5F5;
-    color: #424242;
-    border: 2px solid #BDBDBD;
-    border-radius: 20px;
-    padding: 8px 18px;
-    font-size: 13px;
-    font-weight: bold;
-    min-width: 110px;
-    min-height: 40px;
-}
-QPushButton#btnPTT:hover    { background-color: #EEEEEE; border-color: #9E9E9E; }
-QPushButton#btnPTT:checked  {
-    background-color: #E53935;
-    color: white;
-    border-color: #C62828;
-}
-QPushButton#btnPTT:checked:hover { background-color: #C62828; }
 
 /* ── Mode segmented control — left button ── */
 QPushButton#modeBtnLeft {
@@ -339,15 +320,14 @@ class App(QMainWindow):
         self.put_log(f"[UI-STATE] Stop button: {'enabled' if v else 'disabled'}")
 
     def show_onair(self) -> None:
-        """Switch stack to VU meter (speaking active)."""
-        self._ptt_stack.setCurrentIndex(1)
-        self._ptt_stack.setVisible(True)
-        self.put_log("[UI-STATE] PTT stack → VU meter (speaking)")
+        """Mic recording active — dot turns red."""
+        self._onair_dot.setStyleSheet("color: #E53935; font-size: 15px;")
+        self.put_log("[UI-STATE] ON AIR: recording (red)")
 
     def hide_onair(self) -> None:
-        """Switch stack back to PTT button (not speaking)."""
-        self._ptt_stack.setCurrentIndex(0)
-        # Keep stack visible if in recording mode (PTT button should stay visible)
+        """Mic recording stopped — dot turns blue."""
+        self._onair_dot.setStyleSheet("color: #1565C0; font-size: 15px;")
+        self.put_log("[UI-STATE] ON AIR: idle (blue)")
 
     def set_onair_level(self, level: float) -> None:
         self._vu_meter.set_level(level)
@@ -540,27 +520,29 @@ class App(QMainWindow):
         hbox.addWidget(self._btn_mode_meeting)
         hbox.addWidget(self._btn_mode_local_mic)
 
-        # PTT / VU stacked widget — same slot, mutually exclusive:
-        #   slot 0: PTT button (default, shown in meeting mode during recording)
-        #   slot 1: VU meter  (shown while speaking; click = stop speaking)
-        self._ptt_stack = QStackedWidget(bar)
-        self._ptt_stack.setFixedWidth(130)
-        self._ptt_stack.setFixedHeight(40)
-        self._ptt_stack.setVisible(False)   # hidden until recording starts
+        # ON AIR dot + VU meter container (hidden until recording starts)
+        # Click VU meter → toggle mic recording in both meeting and local_mic modes
+        self._vumeter_bar = QWidget(bar)
+        self._vumeter_bar.setFixedHeight(40)
+        self._vumeter_bar.setFixedWidth(158)
+        self._vumeter_bar.setVisible(False)
+        vum_hbox = QHBoxLayout(self._vumeter_bar)
+        vum_hbox.setContentsMargins(2, 0, 2, 0)
+        vum_hbox.setSpacing(6)
 
-        self._btn_ptt = QPushButton("🎙  " + t("ptt_speak"))
-        self._btn_ptt.setObjectName("btnPTT")
-        self._btn_ptt.setCheckable(False)
-        self._btn_ptt.clicked.connect(lambda: self._on_ptt_toggle(True))
-        self._ptt_stack.addWidget(self._btn_ptt)   # index 0
+        # ON AIR dot: blue = idle, red = mic recording
+        self._onair_dot = QLabel("●")
+        self._onair_dot.setFixedSize(16, 40)
+        self._onair_dot.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+        self._onair_dot.setStyleSheet("color: #1565C0; font-size: 15px;")
+        vum_hbox.addWidget(self._onair_dot)
 
+        # VU meter — click to toggle mic
         self._vu_meter = VUMeterWidget()
-        self._vu_meter.setVisible(True)            # visible inside its stack layer
-        self._vu_meter.clicked.connect(lambda: self._on_ptt_toggle(False))
-        self._ptt_stack.addWidget(self._vu_meter)  # index 1
+        self._vu_meter.clicked.connect(self._on_vumeter_click)
+        vum_hbox.addWidget(self._vu_meter)
 
-        self._ptt_stack.setCurrentIndex(0)         # start showing PTT button
-        hbox.addWidget(self._ptt_stack)
+        hbox.addWidget(self._vumeter_bar)
 
         # Expanding spacer
         hbox.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
@@ -1063,9 +1045,6 @@ class App(QMainWindow):
         threading.Thread(target=_run, daemon=True).start()
 
     def _on_stop(self) -> None:
-        # Reset stack to PTT button if VU was showing
-        if hasattr(self, "_ptt_stack") and self._ptt_stack.currentIndex() == 1:
-            self._ptt_stack.setCurrentIndex(0)
         def _run():
             try:
                 self._presenter.stop()
@@ -1073,27 +1052,20 @@ class App(QMainWindow):
                 self.put_log(f"[ERROR] Stop failed: {e}")
         threading.Thread(target=_run, daemon=True).start()
 
-    def _on_ptt_toggle(self, speaking: bool) -> None:
-        if speaking:
-            # Show VU meter, start recording
-            self._ptt_stack.setCurrentIndex(1)
-            threading.Thread(target=self._presenter.start_mic, daemon=True).start()
-        else:
-            # Show PTT button again, stop recording
-            self._ptt_stack.setCurrentIndex(0)
-            threading.Thread(target=self._presenter.stop_mic, daemon=True).start()
+    def _on_vumeter_click(self) -> None:
+        """Toggle mic recording on/off (works in both meeting and local_mic modes)."""
+        threading.Thread(target=self._presenter.toggle_mic, daemon=True).start()
 
     def show_ptt_button(self) -> None:
-        """Show the PTT/VU stack (recording started in meeting mode)."""
-        if hasattr(self, "_ptt_stack"):
-            self._ptt_stack.setCurrentIndex(0)   # ensure PTT button is on top
-            self._ptt_stack.setVisible(True)
+        """Show VU meter bar when recording starts (both modes)."""
+        if hasattr(self, "_vumeter_bar"):
+            self._vumeter_bar.setVisible(True)
 
     def hide_ptt_button(self) -> None:
-        """Hide the entire PTT/VU stack (recording stopped)."""
-        if hasattr(self, "_ptt_stack"):
-            self._ptt_stack.setCurrentIndex(0)   # reset to PTT button
-            self._ptt_stack.setVisible(False)
+        """Hide VU meter bar when recording stops."""
+        if hasattr(self, "_vumeter_bar"):
+            self._vumeter_bar.setVisible(False)
+            self._vu_meter.set_level(0.0)
 
     def _on_mode_change(self, btn: QPushButton) -> None:
         code = "local_mic" if btn is self._btn_mode_local_mic else "meeting"
