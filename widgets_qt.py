@@ -7,8 +7,8 @@ from __future__ import annotations
 import time
 
 from PyQt6.QtCore import QTimer, Qt, QRect, QPoint, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QFont
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QFont, QLinearGradient
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy
 
 from i18n import _LANG
 
@@ -33,23 +33,23 @@ def _dim_color(hex_color: str, factor: int = 9) -> QColor:
 
 class VUMeterWidget(QWidget):
     """
-    Horizontal LED VU-meter: 12 colored segments, green→yellow→red.
-    Animated at ~25 fps via QTimer.
-    Public: set_level(float), show(), hide()
-    Emits clicked() when user clicks — used as PTT-stop trigger.
+    Pill-shaped horizontal VU meter.
+    Blue gradient fill grows with audio level; white vertical bars show segments.
+    Height 40 px — identical to Start / Stop buttons.
+    Color shifts: blue (quiet) → cyan (loud).
+    Emits clicked() — used as PTT-stop trigger.
     """
     clicked = pyqtSignal()
+    FPS = 33   # ~30 fps
 
-    N   = 12   # number of segments
-    SW  = 9    # segment width
-    SH  = 22   # segment height
-    GAP = 3    # gap between segments
-    FPS = 40   # milliseconds per frame
+    # Number of white tick bars drawn over the fill
+    N_BARS = 10
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        w = self.N * (self.SW + self.GAP) - self.GAP + 8
-        self.setFixedSize(w, self.SH + 8)
+        self.setFixedHeight(40)
+        self.setMinimumWidth(110)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._level    = 0.0
         self._smoothed = 0.0
@@ -58,8 +58,6 @@ class VUMeterWidget(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(self.FPS)
-
-        # Hidden by default
         self.setVisible(False)
 
     def set_level(self, v: float) -> None:
@@ -79,36 +77,53 @@ class VUMeterWidget(QWidget):
         self.update()
 
     def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        # Background
-        painter.fillRect(self.rect(), QColor("#1a1a2a"))
+        w, h  = self.width(), self.height()
+        r     = h / 2.0
 
-        lit = int(self._smoothed * self.N)
-        for i in range(self.N):
-            x    = 4 + i * (self.SW + self.GAP)
-            frac = i / (self.N - 1)
-            if i < lit:
-                if frac < 0.60:
-                    c = QColor("#00e676")
-                elif frac < 0.80:
-                    c = QColor("#ffea00")
-                else:
-                    c = QColor("#ff1744")
+        # ── Pill-shaped clip path ─────────────────────────────────
+        clip = QPainterPath()
+        clip.addRoundedRect(0.0, 0.0, float(w), float(h), r, r)
+        p.setClipPath(clip)
+
+        # ── Dark navy background ──────────────────────────────────
+        p.fillRect(0, 0, w, h, QColor("#0d1b2a"))
+
+        # ── Blue gradient fill (grows left→right with level) ──────
+        fill_w = self._smoothed * w
+        if fill_w >= 1.0:
+            lv = self._smoothed
+            if lv < 0.75:
+                c_l, c_r = QColor("#1565C0"), QColor("#1E88E5")
+            elif lv < 0.92:
+                c_l, c_r = QColor("#0277BD"), QColor("#26C6DA")
             else:
-                if frac < 0.60:
-                    c = QColor("#0a2a18")
-                elif frac < 0.80:
-                    c = QColor("#2a2a06")
-                else:
-                    c = QColor("#2a0a10")
-            painter.fillRect(x, 4, self.SW, self.SH, c)
+                c_l, c_r = QColor("#006064"), QColor("#00E5FF")  # loud: cyan
 
-        painter.end()
+            grad = QLinearGradient(0.0, 0.0, fill_w, 0.0)
+            grad.setColorAt(0.0, c_l)
+            grad.setColorAt(1.0, c_r)
+            p.fillRect(0, 0, int(fill_w) + 1, h, grad)
+
+        # ── White vertical bars (segments) ────────────────────────
+        pad   = int(r)                          # avoid drawing into rounded ends
+        avail = max(1, w - 2 * pad)
+        step  = avail / self.N_BARS
+        bar_w = max(2, int(step * 0.40))        # bar ≈ 40% of cell width
+        bar_h = int(h * 0.48)                   # bars ≈ 48% of height
+        bar_y = (h - bar_h) // 2
+
+        for i in range(self.N_BARS):
+            bar_x = int(pad + i * step + (step - bar_w) / 2)
+            frac  = (i + 0.5) / self.N_BARS
+            alpha = 215 if frac < self._smoothed else 45
+            p.fillRect(bar_x, bar_y, bar_w, bar_h, QColor(255, 255, 255, alpha))
+
+        p.end()
 
     def mousePressEvent(self, event) -> None:
-        """Clicking the VU meter acts as PTT stop."""
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)

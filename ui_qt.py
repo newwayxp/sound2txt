@@ -98,11 +98,11 @@ QPushButton#btnPTT {
     color: #424242;
     border: 2px solid #BDBDBD;
     border-radius: 20px;
-    padding: 6px 18px;
+    padding: 8px 18px;
     font-size: 13px;
     font-weight: bold;
     min-width: 110px;
-    min-height: 36px;
+    min-height: 40px;
 }
 QPushButton#btnPTT:hover    { background-color: #EEEEEE; border-color: #9E9E9E; }
 QPushButton#btnPTT:checked  {
@@ -303,8 +303,8 @@ class App(QMainWindow):
 
         # Window basics
         self.setWindowTitle(t("title"))
-        self.resize(860, 680)
-        self.setMinimumSize(700, 560)
+        self.resize(1000, 680)
+        self.setMinimumSize(860, 560)
 
         # Wire view before building (so presenter can call us during initialize)
         presenter.set_view(self)
@@ -545,7 +545,7 @@ class App(QMainWindow):
         #   slot 1: VU meter  (shown while speaking; click = stop speaking)
         self._ptt_stack = QStackedWidget(bar)
         self._ptt_stack.setFixedWidth(130)
-        self._ptt_stack.setFixedHeight(44)
+        self._ptt_stack.setFixedHeight(40)
         self._ptt_stack.setVisible(False)   # hidden until recording starts
 
         self._btn_ptt = QPushButton("🎙  " + t("ptt_speak"))
