@@ -157,7 +157,8 @@ def _detect_os_language() -> str:
 _OS_DEFAULT_LANG = _detect_os_language()
 
 # UI からの停止シグナルファイル（ui.py が作成する）
-STOP_SIGNAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".stop_signal")
+STOP_SIGNAL  = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".stop_signal")
+START_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".recording_start")
 DRAIN_WAIT_SEC  = 3
 
 STATE_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_transcript")
@@ -523,8 +524,10 @@ def main():
         time.sleep(DRAIN_WAIT_SEC)
 
         # Collect late loopback + mic files
-        late_loopback = [(f, "loopback") for f in sorted(glob.glob(os.path.join(audio_dir, "audio_*.wav"))) if f not in seen] if use_loopback else []
-        late_mic      = [(f, "mic")      for f in sorted(glob.glob(os.path.join(mic_dir, "mic_*.wav")))     if f not in seen] if mic_dir else []
+        late_loopback = [(f, "loopback") for f in sorted(glob.glob(os.path.join(audio_dir, "audio_*.wav")))
+                         if f not in seen and os.path.getmtime(f) >= _start_cutoff] if use_loopback else []
+        late_mic      = [(f, "mic")      for f in sorted(glob.glob(os.path.join(mic_dir, "mic_*.wav")))
+                         if f not in seen and os.path.getmtime(f) >= _start_cutoff] if mic_dir else []
         late_files    = sorted(late_loopback + late_mic, key=lambda x: os.path.basename(x[0]).split("_", 1)[-1])
 
         total = len(late_files) + len(pending)

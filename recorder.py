@@ -55,12 +55,21 @@ def _restart_stream(pa, device_index, channels, sample_rate) -> pyaudio.Stream |
     return None
 
 
+START_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".recording_start")
+
+
 def main():
     _cfg = configparser.ConfigParser()
     _cfg.read(os.path.join(os.path.dirname(__file__), "config.ini"), encoding="utf-8")
     audio_dir  = _cfg.get("paths", "audio_dir")
     record_sec = _cfg.getint("recording", "record_sec", fallback=30)
     os.makedirs(audio_dir, exist_ok=True)
+
+    # 録音開始時刻を Unix timestamp で書き込む（transcriber が旧ファイルをスキップするために使用）
+    session_start_ts = time.time()
+    with open(START_FILE, "w", encoding="utf-8") as f:
+        f.write(str(session_start_ts))
+    print(f"[Recorder] セッション開始: {datetime.fromtimestamp(session_start_ts).strftime('%Y-%m-%d %H:%M:%S')}")
 
     pa = pyaudio.PyAudio()
     device_index, dev_info = select_active_device(pa)
