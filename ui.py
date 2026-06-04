@@ -113,8 +113,6 @@ class App(ctk.CTk):
             self._model_var.set(cfg.get("recording", "model_size",  fallback="small"))
         if hasattr(self, "_lang_var"):
             self._lang_var.set(cfg.get("recording", "language",     fallback="auto"))
-        if hasattr(self, "_mic_var"):
-            self._mic_var.set(cfg.getboolean("recording", "enable_mic", fallback=True))
         if hasattr(self, "_rec_sec"):
             try:
                 self._rec_sec.set(int(cfg.get("recording", "record_sec", fallback="30")))
@@ -281,24 +279,13 @@ class App(ctk.CTk):
         tab.grid_columnconfigure(1, weight=1)
         cfg = self._presenter._config
 
-        # Mic enable
-        ctk.CTkLabel(tab, text=t("mic_enable"), anchor="w", width=170).grid(
-            row=0, column=0, sticky="w", padx=(12, 4), pady=7)
-        self._mic_var = ctk.BooleanVar(
-            value=cfg.getboolean("recording", "enable_mic", fallback=True))
-        mic_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        mic_frame.grid(row=0, column=1, sticky="w", pady=7)
-        ctk.CTkSwitch(mic_frame, text=t("mic_enable_hint"),
-                      variable=self._mic_var,
-                      onvalue=True, offvalue=False).pack(side="left")
-
         # Device
         ctk.CTkLabel(tab, text=t("device_label"), anchor="w", width=170).grid(
-            row=1, column=0, sticky="w", padx=(12, 4), pady=7)
+            row=0, column=0, sticky="w", padx=(12, 4), pady=7)
         self._device_var = ctk.StringVar(
             value=cfg.get("recording", "device", fallback="auto"))
         dev_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        dev_frame.grid(row=1, column=1, sticky="w", pady=7)
+        dev_frame.grid(row=0, column=1, sticky="w", pady=7)
         btn_auto = ctk.CTkRadioButton(dev_frame, text=t("device_auto"),
                                       variable=self._device_var, value="auto")
         btn_auto.pack(side="left", padx=(0, 14))
@@ -311,11 +298,11 @@ class App(ctk.CTk):
 
         # Model
         ctk.CTkLabel(tab, text=t("model_label"), anchor="w", width=170).grid(
-            row=2, column=0, sticky="w", padx=(12, 4), pady=7)
+            row=1, column=0, sticky="w", padx=(12, 4), pady=7)
         self._model_var = ctk.StringVar(
             value=cfg.get("recording", "model_size", fallback="small"))
         model_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        model_frame.grid(row=2, column=1, sticky="w", pady=7)
+        model_frame.grid(row=1, column=1, sticky="w", pady=7)
         for val, desc in [("tiny",     "tiny"),
                           ("small",    "small"),
                           ("medium",   "medium"),
@@ -328,11 +315,11 @@ class App(ctk.CTk):
 
         # Language
         ctk.CTkLabel(tab, text=t("lang_label"), anchor="w", width=170).grid(
-            row=3, column=0, sticky="w", padx=(12, 4), pady=7)
+            row=2, column=0, sticky="w", padx=(12, 4), pady=7)
         self._lang_var = ctk.StringVar(
             value=cfg.get("recording", "language", fallback="auto"))
         lang_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        lang_frame.grid(row=3, column=1, sticky="w", pady=7)
+        lang_frame.grid(row=2, column=1, sticky="w", pady=7)
         for val, lk in [("auto","lang_auto"),("zh","lang_zh"),
                         ("ja","lang_ja"),("en","lang_en")]:
             ctk.CTkRadioButton(lang_frame, text=t(lk),
@@ -341,15 +328,15 @@ class App(ctk.CTk):
 
         # Chunk duration
         ctk.CTkLabel(tab, text=t("rec_sec"), anchor="w", width=170).grid(
-            row=4, column=0, sticky="w", padx=(12, 4), pady=7)
+            row=3, column=0, sticky="w", padx=(12, 4), pady=7)
         self._rec_sec = ctk.IntVar(
             value=int(cfg.get("recording", "record_sec", fallback="30")))
         lbl = ctk.CTkLabel(tab, text=f"{self._rec_sec.get()} s", width=50)
         ctk.CTkSlider(tab, from_=10, to=120, number_of_steps=11,
                       variable=self._rec_sec,
                       command=lambda v: lbl.configure(text=f"{int(v)} s")
-                      ).grid(row=4, column=1, sticky="ew", padx=(0, 60), pady=7)
-        lbl.grid(row=4, column=2, padx=4)
+                      ).grid(row=3, column=1, sticky="ew", padx=(0, 60), pady=7)
+        lbl.grid(row=3, column=2, padx=4)
 
         def _save():
             updates = {
@@ -357,7 +344,6 @@ class App(ctk.CTk):
                 ("recording", "language"):    self._lang_var.get(),
                 ("recording", "device"):      self._device_var.get(),
                 ("recording", "model_size"):  self._model_var.get(),
-                ("recording", "enable_mic"):  str(self._mic_var.get()),
             }
             if not _CUDA_AVAILABLE:
                 updates[("recording", "device")]    = "cpu"
