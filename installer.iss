@@ -1,17 +1,17 @@
 ; ============================================================
-;  Sound2Text Installer Script  v1.1.0
+;  Sound2Text Installer Script  v1.3.11
 ;  Inno Setup 6.x  --  build with build_installer.bat
 ;
 ;  Dependency check flow:
 ;    1. Check winget availability
-;    2. Check Python 3.8+
+;    2. Check Python 3.10+
 ;       If missing: offer auto-install via winget
 ;       If no winget: open download page
 ;    3. Post-install: auto setup pip + ffmpeg
 ; ============================================================
 
 #define AppName    "Sound2Text"
-#define AppVersion "1.1.0"
+#define AppVersion "1.3.11"
 #define AppPublisher "Sound2Text"
 
 [Setup]
@@ -41,30 +41,41 @@ Name: "ja"; MessagesFile: "compiler:Languages\Japanese.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "ui.py";              DestDir: "{app}"; Flags: ignoreversion
-Source: "start.py";           DestDir: "{app}"; Flags: ignoreversion
-Source: "recorder.py";        DestDir: "{app}"; Flags: ignoreversion
-Source: "transcriber.py";     DestDir: "{app}"; Flags: ignoreversion
-Source: "summarizer.py";      DestDir: "{app}"; Flags: ignoreversion
-Source: "device_utils.py";    DestDir: "{app}"; Flags: ignoreversion
+; ── GUI + architecture ─────────────────────────────────────────────────────────
+Source: "ui_qt.py";       DestDir: "{app}"; Flags: ignoreversion
+Source: "widgets_qt.py";  DestDir: "{app}"; Flags: ignoreversion
+Source: "presenter.py";   DestDir: "{app}"; Flags: ignoreversion
+Source: "appconfig.py";   DestDir: "{app}"; Flags: ignoreversion
+Source: "i18n.py";        DestDir: "{app}"; Flags: ignoreversion
+; ── Recording / transcription pipeline ────────────────────────────────────────
+Source: "start.py";       DestDir: "{app}"; Flags: ignoreversion
+Source: "recorder.py";    DestDir: "{app}"; Flags: ignoreversion
+Source: "mic_recorder.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "transcriber.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "summarizer.py";  DestDir: "{app}"; Flags: ignoreversion
+Source: "device_utils.py"; DestDir: "{app}"; Flags: ignoreversion
+; ── Tools ──────────────────────────────────────────────────────────────────────
+Source: "debug_modules.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "record_test.py"; DestDir: "{app}"; Flags: ignoreversion
+; ── Setup / config ─────────────────────────────────────────────────────────────
 Source: "requirements.txt";   DestDir: "{app}"; Flags: ignoreversion
 Source: "setup.bat";          DestDir: "{app}"; Flags: ignoreversion
 Source: "config_default.ini"; DestDir: "{app}"; DestName: "config.ini"; Flags: ignoreversion onlyifdoesntexist
 Source: "vocabulary.txt";     DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist
 
 [Icons]
-Name: "{autoprograms}\{#AppName}\{#AppName}"; Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui.py"""; WorkingDir: "{app}"
-Name: "{autoprograms}\{#AppName}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui.py"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}\{#AppName}";                          Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"
+Name: "{autoprograms}\{#AppName}\{cm:UninstallProgram,{#AppName}}";    Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#AppName}";                                       Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 ; Upgrade pip then install packages
 Filename: "python"; Parameters: "-m pip install --upgrade pip --quiet"; WorkingDir: "{app}"; StatusMsg: "Upgrading pip..."; Flags: postinstall waituntilterminated runascurrentuser
-Filename: "pip"; Parameters: "install -r ""{app}\requirements.txt"""; WorkingDir: "{app}"; StatusMsg: "Installing Python packages (faster-whisper, customtkinter ...)"; Description: "Install Python packages (faster-whisper, customtkinter, etc.)"; Flags: postinstall waituntilterminated runascurrentuser
+Filename: "pip"; Parameters: "install -r ""{app}\requirements.txt"""; WorkingDir: "{app}"; StatusMsg: "Installing Python packages (faster-whisper, PyQt6 ...)"; Description: "Install Python packages (faster-whisper, PyQt6, etc.)"; Flags: postinstall waituntilterminated runascurrentuser
 ; ffmpeg: install if not present, skip if already installed
 Filename: "powershell"; Parameters: "-NoProfile -Command ""if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {{ winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements }} else {{ Write-Host 'ffmpeg already installed' }}"""; StatusMsg: "Checking ffmpeg..."; Description: "Install ffmpeg (required for audio processing)"; Flags: postinstall waituntilterminated runascurrentuser
 ; Launch app after install (optional)
-Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui.py"""; WorkingDir: "{app}"; Description: "Launch {#AppName} now"; Flags: postinstall nowait skipifsilent unchecked
+Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"; Description: "Launch {#AppName} now"; Flags: postinstall nowait skipifsilent unchecked
 
 ; ============================================================
 [Code]
@@ -104,7 +115,7 @@ begin
   Result := RunAndCapture('python', '--version');
 end;
 
-// Check Python >= 3.8
+// Check Python >= 3.10
 function IsPythonVersionOK: Boolean;
 var
   VerStr: String;
@@ -127,7 +138,7 @@ begin
         Minor := StrToIntDef(Copy(VerStr, 1, DotPos - 1), 0)
       else
         Minor := StrToIntDef(VerStr, 0);
-      Result := (Major > 3) or ((Major = 3) and (Minor >= 8));
+      Result := (Major > 3) or ((Major = 3) and (Minor >= 10));
     end;
   end;
 end;
@@ -196,7 +207,7 @@ begin
     begin
       // Offer auto-install if winget is available
       if PyVerStr <> '' then
-        Msg := 'Python 3.8 or later is required.' + #13#10 +
+        Msg := 'Python 3.10 or later is required.' + #13#10 +
                'Detected: ' + PyVerStr + #13#10 + #13#10
       else
         Msg := 'Python is not installed.' + #13#10 + #13#10;
@@ -223,7 +234,7 @@ begin
         end else
         begin
           MsgBox('Python installation failed.' + #13#10 +
-                 'Please install Python 3.8+ manually from:' + #13#10 +
+                 'Please install Python 3.10+ manually from:' + #13#10 +
                  'https://www.python.org/downloads/' + #13#10 +
                  '(Check "Add Python to PATH" during installation)',
                  mbError, MB_OK);
@@ -242,13 +253,13 @@ begin
     begin
       // No winget available
       if PyVerStr <> '' then
-        Msg := 'Python 3.8 or later is required.' + #13#10 +
+        Msg := 'Python 3.10 or later is required.' + #13#10 +
                'Detected: ' + PyVerStr + #13#10 + #13#10
       else
         Msg := 'Python is not installed.' + #13#10 + #13#10;
 
       Msg := Msg +
-        'Please install Python 3.8+ from python.org' + #13#10 +
+        'Please install Python 3.10+ from python.org' + #13#10 +
         'and check "Add Python to PATH" during installation.' + #13#10 + #13#10 +
         'Open the download page now?';
 

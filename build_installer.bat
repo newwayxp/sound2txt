@@ -79,7 +79,7 @@ if !errorlevel! neq 0 (
 echo.
 echo +------------------------------------------+
 echo ^|  Build complete!                        ^|
-echo ^|  dist\Sound2Text_Setup_1.0.0.exe        ^|
+echo ^|  dist\Sound2Text_Setup_1.3.11.exe       ^|
 echo +------------------------------------------+
 echo.
 explorer "%~dp0dist"

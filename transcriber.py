@@ -156,14 +156,13 @@ def _detect_os_language() -> str:
 
 _OS_DEFAULT_LANG = _detect_os_language()
 
-# UI からの停止シグナルファイル（ui.py が作成する）
-STOP_SIGNAL  = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".stop_signal")
-START_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".recording_start")
-DRAIN_WAIT_SEC  = 3
-
-STATE_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_transcript")
-LANG_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_language")
-START_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".recording_start")
+# シグナルファイル（presenter / recorder が書き込み、transcriber が読み取る）
+_BASE = os.path.dirname(os.path.abspath(__file__))
+STOP_SIGNAL    = os.path.join(_BASE, ".stop_signal")
+START_FILE     = os.path.join(_BASE, ".recording_start")
+STATE_FILE     = os.path.join(_BASE, ".last_transcript")
+LANG_FILE      = os.path.join(_BASE, ".last_language")
+DRAIN_WAIT_SEC = 3
 
 HALLUCINATION_PHRASES = [
     # Japanese
