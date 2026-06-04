@@ -61,7 +61,6 @@ Source: "record_test.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "requirements.txt";   DestDir: "{app}"; Flags: ignoreversion
 Source: "setup.bat";          DestDir: "{app}"; Flags: ignoreversion
 Source: "config_default.ini"; DestDir: "{app}"; DestName: "config.ini"; Flags: ignoreversion onlyifdoesntexist
-Source: "vocabulary.txt";     DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist
 
 [Icons]
 Name: "{autoprograms}\{#AppName}\{#AppName}";                          Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"

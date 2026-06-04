@@ -56,11 +56,23 @@ copy config_default.ini config.ini
 
 ## 启动
 
+### 使用安装包（.exe）安装后
+
+- 点击**开始菜单** → `Sound2Text` 即可启动
+- 安装时若选择了创建桌面图标，也可以直接双击桌面图标启动
+
+### 使用 setup.bat 安装后
+
+- 双击桌面上自动创建的 **Sound2Text 快捷方式**
+- 或者打开安装目录，双击 `run.bat`
+
+### 命令行启动（开发者）
+
+在安装目录下运行：
+
 ```powershell
 python ui_qt.py
 ```
-
-或者双击 `run.bat`。
 
 ---
 

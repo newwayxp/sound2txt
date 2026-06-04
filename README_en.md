@@ -56,11 +56,23 @@ copy config_default.ini config.ini
 
 ## Launch
 
+### Installed via the installer (.exe)
+
+- **Start Menu** → click `Sound2Text` to launch
+- If you chose to create a desktop icon during installation, double-click it to launch
+
+### Installed via setup.bat
+
+- Double-click the **Sound2Text shortcut** automatically created on your desktop
+- Or open the install folder and double-click `run.bat`
+
+### Command line (developers)
+
+From the install folder:
+
 ```powershell
 python ui_qt.py
 ```
-
-Or double-click `run.bat`.
 
 ---
 
