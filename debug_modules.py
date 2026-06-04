@@ -540,19 +540,76 @@ def test_merge_pipeline(duration: int = 20):
         os.makedirs(d, exist_ok=True)
 
     # ── 1. Simultaneous recording ─────────────────────────────────────────────
+    # Open both audio streams sequentially in the main thread (PyAudio/PortAudio
+    # Pa_Initialize is not thread-safe), then read from both in parallel threads.
     print(f"Recording {duration}s simultaneously.")
     print("  → Play audio on speakers  AND  speak into the microphone now.\n")
 
-    results = {}
+    try:
+        import pyaudiowpatch as pyaudio, numpy as np, wave
+        from device_utils import select_active_device
+        from datetime import datetime as _dt
+    except ImportError as e:
+        print(f"❌ Missing dependency: {e}"); return False
 
-    def _do_lb():
-        results["loopback"] = _record_loopback_wav(audio_dir, duration)
+    CHUNK = 1024
 
-    def _do_mic():
-        results["mic"] = _record_mic_wav(mic_dir, duration)
+    # ── Open loopback stream ──────────────────────────────────────────────────
+    pa_lb   = pyaudio.PyAudio()
+    lb_idx, lb_info = select_active_device(pa_lb)
+    lb_ch   = lb_info["maxInputChannels"]
+    lb_sr   = int(lb_info["defaultSampleRate"])
+    lb_n    = int(lb_sr / CHUNK * duration)
+    try:
+        stream_lb = pa_lb.open(format=pyaudio.paInt16, channels=lb_ch, rate=lb_sr,
+                               frames_per_buffer=CHUNK, input=True,
+                               input_device_index=lb_idx)
+    except Exception as e:
+        print(f"⚠  Cannot open loopback stream: {e}")
+        pa_lb.terminate(); stream_lb = None
 
-    t1 = threading.Thread(target=_do_lb,  daemon=True)
-    t2 = threading.Thread(target=_do_mic, daemon=True)
+    # ── Open mic stream ───────────────────────────────────────────────────────
+    pa_mic = pyaudio.PyAudio()
+    try:
+        mic_info = pa_mic.get_default_input_device_info()
+        mic_idx  = int(mic_info["index"])
+        mic_ch   = min(mic_info["maxInputChannels"], 1)
+        mic_sr   = int(mic_info["defaultSampleRate"])
+        mic_n    = int(mic_sr / CHUNK * duration)
+        stream_mc = pa_mic.open(format=pyaudio.paInt16, channels=mic_ch, rate=mic_sr,
+                                frames_per_buffer=CHUNK, input=True,
+                                input_device_index=mic_idx)
+    except Exception as e:
+        print(f"⚠  Cannot open mic stream: {e}")
+        pa_mic.terminate(); stream_mc = None
+
+    if not stream_lb and not stream_mc:
+        print("❌ Both streams failed to open."); return False
+
+    # ── Read both streams in parallel threads ─────────────────────────────────
+    lb_frames, lb_peak   = [], 0
+    mic_frames, mic_peak = [], 0
+
+    def _read_lb():
+        nonlocal lb_peak
+        if not stream_lb: return
+        for _ in range(lb_n):
+            data = stream_lb.read(CHUNK, exception_on_overflow=False)
+            lb_frames.append(data)
+            lvl = int(np.abs(np.frombuffer(data, dtype=np.int16)).mean())
+            if lvl > lb_peak: lb_peak = lvl
+
+    def _read_mic():
+        nonlocal mic_peak
+        if not stream_mc: return
+        for _ in range(mic_n):
+            data = stream_mc.read(CHUNK, exception_on_overflow=False)
+            mic_frames.append(data)
+            lvl = int(np.abs(np.frombuffer(data, dtype=np.int16)).mean())
+            if lvl > mic_peak: mic_peak = lvl
+
+    t1 = threading.Thread(target=_read_lb,  daemon=True)
+    t2 = threading.Thread(target=_read_mic, daemon=True)
     t1.start(); t2.start()
 
     for remaining in range(duration, 0, -1):
@@ -562,8 +619,28 @@ def test_merge_pipeline(duration: int = 20):
 
     t1.join(); t2.join()
 
-    lb_wav,  lb_peak  = results.get("loopback", (None, 0))
-    mic_wav, mic_peak = results.get("mic",      (None, 0))
+    # ── Close streams ─────────────────────────────────────────────────────────
+    for st, pa in ((stream_lb, pa_lb), (stream_mc, pa_mic)):
+        if st:
+            try: st.stop_stream(); st.close()
+            except Exception: pass
+        pa.terminate()
+
+    # ── Save WAV files ────────────────────────────────────────────────────────
+    def _save_wav(frames, channels, rate, directory, prefix):
+        if not frames: return None
+        ts   = _dt.now().strftime("%Y%m%d_%H%M%S_%f")
+        path = os.path.join(directory, f"{prefix}_{ts}.wav")
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(channels); wf.setsampwidth(2)
+            wf.setframerate(rate); wf.writeframes(b"".join(frames))
+        return path
+
+    lb_wav  = _save_wav(lb_frames,  lb_ch,  lb_sr,  audio_dir, "audio") if stream_lb  else None
+    mic_wav = _save_wav(mic_frames, mic_ch, mic_sr, mic_dir,   "mic")   if stream_mc  else None
+
+    lb_wav,  lb_peak
+    mic_wav, mic_peak
 
     lb_bar  = "█" * min(lb_peak  // 100, 20) if lb_wav  else "FAILED"
     mic_bar = "█" * min(mic_peak // 30,  20) if mic_wav else "FAILED"
