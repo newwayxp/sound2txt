@@ -49,35 +49,17 @@ QFrame#controlBar {
     border-bottom: 1px solid #E0E0E0;
 }
 
-/* ── Start button — pill shaped, bright green ── */
-QPushButton#btnStart {
-    background-color: #28a745;
+/* ── Start/Stop toggle button — same height as mode buttons ── */
+QPushButton#btnToggle {
     color: white;
     border: none;
-    border-radius: 20px;
-    padding: 8px 20px;
-    font-size: 14px;
+    border-radius: 17px;
+    padding: 6px 20px;
+    font-size: 13px;
     font-weight: bold;
-    min-width: 110px;
-    min-height: 40px;
+    min-width: 100px;
+    min-height: 34px;
 }
-QPushButton#btnStart:hover    { background-color: #218838; }
-QPushButton#btnStart:disabled { background-color: #7cb990; color: #e0e0e0; }
-
-/* ── Stop button — pill shaped, bright red ── */
-QPushButton#btnStop {
-    background-color: #dc3545;
-    color: white;
-    border: none;
-    border-radius: 20px;
-    padding: 8px 20px;
-    font-size: 14px;
-    font-weight: bold;
-    min-width: 110px;
-    min-height: 40px;
-}
-QPushButton#btnStop:hover    { background-color: #c82333; }
-QPushButton#btnStop:disabled { background-color: #e88a93; color: #e0e0e0; }
 
 /* ── Save button — blue, centered ── */
 QPushButton#btnSave {
@@ -312,12 +294,18 @@ class App(QMainWindow):
         self._call_signal.emit(fn)
 
     def set_start_enabled(self, v: bool) -> None:
-        self._btn_start.setEnabled(v)
-        self.put_log(f"[UI-STATE] Start button: {'enabled' if v else 'disabled'}")
+        if v:
+            self._btn_toggle_recording = False
+            self._btn_toggle.setText(t("start"))
+        self._apply_toggle_style(enabled=v)
+        self.put_log(f"[UI-STATE] Start: {'enabled' if v else 'disabled'}")
 
     def set_stop_enabled(self, v: bool) -> None:
-        self._btn_stop.setEnabled(v)
-        self.put_log(f"[UI-STATE] Stop button: {'enabled' if v else 'disabled'}")
+        if v:
+            self._btn_toggle_recording = True
+            self._btn_toggle.setText(t("stop"))
+        self._apply_toggle_style(enabled=v)
+        self.put_log(f"[UI-STATE] Stop: {'enabled' if v else 'disabled'}")
 
     def show_onair(self) -> None:
         """Mic recording active — LED turns red."""
@@ -491,18 +479,13 @@ class App(QMainWindow):
         hbox.setContentsMargins(16, 10, 16, 10)
         hbox.setSpacing(8)
 
-        # Start button
-        self._btn_start = QPushButton(t("start"), bar)
-        self._btn_start.setObjectName("btnStart")
-        self._btn_start.clicked.connect(self._on_start)
-        hbox.addWidget(self._btn_start)
-
-        # Stop button
-        self._btn_stop = QPushButton(t("stop"), bar)
-        self._btn_stop.setObjectName("btnStop")
-        self._btn_stop.setEnabled(False)
-        self._btn_stop.clicked.connect(self._on_stop)
-        hbox.addWidget(self._btn_stop)
+        # Single Start/Stop toggle button
+        self._btn_toggle_recording = False   # False = "Start" mode
+        self._btn_toggle = QPushButton(t("start"), bar)
+        self._btn_toggle.setObjectName("btnToggle")
+        self._btn_toggle.clicked.connect(self._on_toggle)
+        self._apply_toggle_style(enabled=True)
+        hbox.addWidget(self._btn_toggle)
 
         hbox.addWidget(_vsep(bar))
 
@@ -1053,22 +1036,29 @@ class App(QMainWindow):
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
-    def _on_start(self) -> None:
+    def _apply_toggle_style(self, enabled: bool) -> None:
+        """Apply green (start) or red (stop) style to the toggle button."""
+        rec  = self._btn_toggle_recording
+        bg   = "#dc3545" if rec else "#28a745"
+        bg_h = "#c82333" if rec else "#218838"
+        bg_d = "#e88a93" if rec else "#7cb990"
+        self._btn_toggle.setStyleSheet(
+            f"QPushButton#btnToggle           {{ background-color: {bg};   }}"
+            f"QPushButton#btnToggle:hover     {{ background-color: {bg_h}; }}"
+            f"QPushButton#btnToggle:disabled  {{ background-color: {bg_d}; color: #e0e0e0; }}"
+        )
+        self._btn_toggle.setEnabled(enabled)
+
+    def _on_toggle(self) -> None:
         def _run():
             try:
-                self._presenter.start()
+                if self._btn_toggle_recording:
+                    self._presenter.stop()
+                else:
+                    self._presenter.start()
             except Exception as e:
                 import traceback
-                self.put_log(f"[ERROR] Start failed: {e}")
-                self.put_log(traceback.format_exc())
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _on_stop(self) -> None:
-        def _run():
-            try:
-                self._presenter.stop()
-            except Exception as e:
-                self.put_log(f"[ERROR] Stop failed: {e}")
+                self.put_log(f"[ERROR] {e}\n{traceback.format_exc()}")
         threading.Thread(target=_run, daemon=True).start()
 
     def _on_vumeter_click(self) -> None:
