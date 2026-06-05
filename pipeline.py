@@ -225,9 +225,34 @@ def run():
         device = device_cfg
     compute_type = "float16" if device == "cuda" else "int8"
 
-    sys_info(f"pipeline: model={model_size} device={device}")
-    whisper = WhisperModel(model_size, device=device, compute_type=compute_type)
+    # 言語ごとの推奨モデルマッピング
+    # config に [models] セクションで上書き可能
+    _LANG_MODELS = {
+        "ja": cfg.get("models", "ja", fallback="kotoba-whisper-v2.0-ct2"),
+        "zh": cfg.get("models", "zh", fallback=model_size),
+        "en": cfg.get("models", "en", fallback=model_size),
+    }
+    _models_dir = os.path.join(_BASE, "models")
+
+    def _resolve_model(lang: str | None) -> str:
+        """言語に合わせたモデルパスを返す。ローカルに存在しなければ標準モデルにフォールバック。"""
+        candidate = _LANG_MODELS.get(lang or "", model_size)
+        local_path = os.path.join(_models_dir, candidate)
+        if os.path.isdir(local_path):
+            sys_info(f"言語特化モデル使用: {candidate} (lang={lang})")
+            return local_path
+        # ローカルになければ標準モデルで代替
+        if candidate != model_size:
+            sys_info(f"言語特化モデル未検出({candidate}) → {model_size} で代替")
+        return model_size
+
+    # 初期モデルロード（config 言語が確定している場合はすぐ言語特化を使用）
+    initial_lang = session_lang  # config で固定されている場合のみ非 None
+    model_path   = _resolve_model(initial_lang)
+    sys_info(f"pipeline: model={model_path} device={device}")
+    whisper = WhisperModel(model_path, device=device, compute_type=compute_type)
     sys_info("model ready")
+    _current_model_lang = initial_lang  # どの言語用のモデルを使っているか
 
     # ── session language ──────────────────────────────────────────────────────
     cfg_lang = cfg.get("recording", "language", fallback="auto").strip().lower()
@@ -349,7 +374,7 @@ def run():
     # ── transcribe one segment ────────────────────────────────────────────────
     def _process(audio_bytes: bytes) -> tuple[str, str]:
         """Returns (original_text, display_text). display=translated if dst set."""
-        nonlocal session_lang
+        nonlocal session_lang, whisper, _current_model_lang
 
         seg_dur = len(audio_bytes) / (SAMPLE_RATE * 2)
         tr_debug(f"WHISPER_IN  dur={seg_dur:.1f}s lang={session_lang} model={model_size}")
@@ -405,6 +430,14 @@ def run():
                 tr_info(f"言語確定: {session_lang}")
                 with open(LANG_FILE, "w", encoding="utf-8") as f:
                     f.write(session_lang)
+                # 言語確定後、その言語専用モデルがあれば切り替え
+                if _current_model_lang != session_lang:
+                    new_path = _resolve_model(session_lang)
+                    if new_path != model_path:
+                        tr_info(f"モデルを {session_lang} 専用に切り替え中...")
+                        whisper = WhisperModel(new_path, device=device, compute_type=compute_type)
+                        _current_model_lang = session_lang
+                        tr_info("モデル切り替え完了")
 
         # filter hallucinations and low-confidence segments
         lines = []

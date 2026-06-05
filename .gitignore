@@ -32,6 +32,10 @@ config.ini
 dist/
 run.bat
 
+# ── ローカルモデル（大容量のためgit管理外）───────────
+models/*/model.bin
+models/*/model.bin.1
+
 # ── Python キャッシュ ─────────────────────────────────
 __pycache__/
 *.pyc
