@@ -143,20 +143,7 @@ if not exist "%SCRIPT_DIR%config.ini" (
 )
 
 if not "%PROXY_HOST%"=="" (
-    python -c "
-import configparser, os
-cfg = configparser.ConfigParser()
-f = r'%SCRIPT_DIR%config.ini'
-cfg.read(f, encoding='utf-8')
-if not cfg.has_section('network'):
-    cfg.add_section('network')
-cfg.set('network', 'https_proxy', 'http://%PROXY_HOST%')
-cfg.set('network', 'http_proxy',  'http://%PROXY_HOST%')
-cfg.set('network', 'ssl_verify',  'false')
-with open(f, 'w', encoding='utf-8') as fp:
-    cfg.write(fp)
-print('  OK: Proxy settings written to config.ini')
-"
+    python -c "import configparser; f=r'%SCRIPT_DIR%config.ini'; cfg=configparser.ConfigParser(); cfg.read(f,encoding='utf-8'); cfg.has_section('network') or cfg.add_section('network'); cfg.set('network','https_proxy','http://%PROXY_HOST%'); cfg.set('network','http_proxy','http://%PROXY_HOST%'); cfg.set('network','ssl_verify','false'); fp=open(f,'w',encoding='utf-8'); cfg.write(fp); fp.close(); print('  OK: Proxy settings saved')"
 )
 
 (
