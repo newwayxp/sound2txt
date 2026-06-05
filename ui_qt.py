@@ -419,12 +419,6 @@ class App(QMainWindow):
         if rb_model:
             rb_model.setChecked(True)
 
-        # Language radio (recording tab)
-        lang = cfg.get("recording", "language", fallback="auto")
-        rb_lang = getattr(self, f"_rb_lang_{lang}", None)
-        if rb_lang:
-            rb_lang.setChecked(True)
-
         # Chunk duration slider
         try:
             rec_sec = int(cfg.get("recording", "record_sec", fallback="30"))
@@ -769,31 +763,6 @@ class App(QMainWindow):
         rb_cur_model.setChecked(True)
         row += 1
 
-        # Language radio buttons
-        grid.addWidget(QLabel(t("lang_label")), row, 0, Qt.AlignmentFlag.AlignRight)
-        lang_widget = QWidget()
-        lang_hbox   = QHBoxLayout(lang_widget)
-        lang_hbox.setContentsMargins(0, 0, 0, 0)
-
-        lang_group = QButtonGroup(w)
-        cur_lang   = cfg.get("recording", "language", fallback="auto")
-
-        lang_rbs = {}
-        for val, lk in [("auto", "lang_auto"), ("zh", "lang_zh"),
-                        ("ja", "lang_ja"),     ("en", "lang_en")]:
-            rb = QRadioButton(t(lk))
-            lang_group.addButton(rb)
-            lang_hbox.addWidget(rb)
-            setattr(self, f"_rb_lang_{val}", rb)
-            lang_rbs[val] = rb
-
-        lang_hbox.addStretch()
-        grid.addWidget(lang_widget, row, 1)
-
-        rb_cur_lang = lang_rbs.get(cur_lang, lang_rbs["auto"])
-        rb_cur_lang.setChecked(True)
-        row += 1
-
         # Chunk duration slider
         grid.addWidget(QLabel(t("rec_sec")), row, 0, Qt.AlignmentFlag.AlignRight)
         slider_widget = QWidget()
@@ -836,12 +805,6 @@ class App(QMainWindow):
                     return val
             return "small"
 
-        def _get_lang():
-            for val, rb in lang_rbs.items():
-                if rb.isChecked():
-                    return val
-            return "auto"
-
         def _save():
             device = _get_device()
             model  = _get_model()
@@ -852,7 +815,6 @@ class App(QMainWindow):
                 self._rb_model_tiny.setChecked(True)
             updates = {
                 ("recording", "record_sec"):  str(self._slider_rec_sec.value()),
-                ("recording", "language"):    _get_lang(),
                 ("recording", "device"):      device,
                 ("recording", "model_size"):  model,
             }
@@ -1125,10 +1087,6 @@ class App(QMainWindow):
     def _on_quick_lang_change(self, index: int) -> None:
         code = ["auto", "zh", "ja", "en"][index]
         self._presenter.save_config({("recording", "language"): code})
-        # Sync the recording-tab language radio
-        rb = getattr(self, f"_rb_lang_{code}", None)
-        if rb:
-            rb.setChecked(True)
 
     def _on_subtitle_toggle(self, checked: bool) -> None:
         """字幕ボタン ON/OFF。"""
