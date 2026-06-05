@@ -124,41 +124,58 @@ class AccumulatingVAD:
         or None to keep buffering.
         """
         is_speech = self._is_speech(chunk)
+        prev_speaking = self._speaking
         self._accum.append(chunk)
         self._accum_dur += self._chunk_dur
 
         if is_speech:
+            if not prev_speaking:
+                tr_debug(f"VAD speech start  accum={self._accum_dur:.1f}s")
             self._speaking    = True
             self._silence_dur = 0.0
         else:
             if self._speaking:
                 self._silence_dur += self._chunk_dur
+                # 無音が始まったタイミングだけログ
+                if abs(self._silence_dur - self._chunk_dur) < 0.01:
+                    tr_debug(f"VAD silence start accum={self._accum_dur:.1f}s")
 
         # 強制送信: 最大蓄積時間超過
         if self._accum_dur >= self._max_sec:
-            return self._flush()
+            tr_debug(f"VAD force flush   accum={self._accum_dur:.1f}s (max reached)")
+            return self._flush("force")
 
         # 通常送信: 無音が silence_sec 以上 かつ 蓄積が min_accum_sec 以上
         if (self._speaking
                 and self._silence_dur >= self._silence_sec
                 and self._accum_dur   >= self._min_accum):
-            return self._flush()
+            tr_debug(f"VAD normal flush  accum={self._accum_dur:.1f}s "
+                     f"silence={self._silence_dur:.1f}s")
+            return self._flush("silence")
+
+        # 蓄積不足で無音閾値超過した場合
+        if (self._speaking
+                and self._silence_dur >= self._silence_sec
+                and self._accum_dur   <  self._min_accum):
+            tr_debug(f"VAD waiting more  accum={self._accum_dur:.1f}s "
+                     f"(< min={self._min_accum}s) silence={self._silence_dur:.1f}s")
 
         return None
 
-    def _flush(self) -> bytes:
+    def _flush(self, reason: str = "") -> bytes:
         seg = np.concatenate(self._accum).tobytes()
+        dur = len(seg) / (SAMPLE_RATE * 2)
+        tr_debug(f"VAD flushed [{reason}] dur={dur:.1f}s")
         self._accum.clear()
         self._accum_dur  = 0.0
         self._speaking   = False
         self._silence_dur = 0.0
-        tr_debug(f"VAD flush: {len(seg)//(SAMPLE_RATE*2):.1f}s")
         return seg
 
     def force_flush(self) -> bytes | None:
         """停止時: 残バッファを返す（min_accum 未満でも）。"""
         if self._accum and self._speaking:
-            return self._flush()
+            return self._flush("stop")
         self._accum.clear()
         return None
 
@@ -342,6 +359,12 @@ def run():
         """Returns (original_text, display_text). display=translated if dst set."""
         nonlocal session_lang
 
+        seg_dur = len(audio_bytes) / (SAMPLE_RATE * 2)
+        tr_debug(f"WHISPER_IN  dur={seg_dur:.1f}s lang={session_lang} model={model_size}")
+
+        import time as _time
+        t0 = _time.monotonic()
+
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             tmp = f.name
         try:
@@ -376,6 +399,11 @@ def run():
             except Exception:
                 pass
 
+        elapsed = _time.monotonic() - t0
+        tr_debug(f"WHISPER_OUT elapsed={elapsed:.1f}s "
+                 f"lang={info.language}({info.language_probability:.2f}) "
+                 f"segments={len(seg_list)}")
+
         # language detection on first segment
         if not session_lang:
             from transcriber import LANG_ALIAS
@@ -388,20 +416,24 @@ def run():
 
         # filter hallucinations and low-confidence segments
         lines = []
-        for s in seg_list:
+        for i, s in enumerate(seg_list):
             text = s.text.strip()
+            nsp  = getattr(s, "no_speech_prob", 0.0)
+            avg_logprob = getattr(s, "avg_logprob", 0.0)
             if not text:
                 continue
             if any(h in text for h in HALLUCINATION):
-                tr_debug(f"ハルシネーション除外: {text[:30]}")
+                tr_debug(f"  seg[{i}] HALLUCINATION: {text[:40]}")
                 continue
-            if hasattr(s, "no_speech_prob") and s.no_speech_prob > 0.7:
-                tr_debug(f"低信頼除外 (no_speech={s.no_speech_prob:.2f}): {text[:30]}")
+            if nsp > 0.7:
+                tr_debug(f"  seg[{i}] LOW_CONF no_speech={nsp:.2f}: {text[:40]}")
                 continue
+            tr_debug(f"  seg[{i}] OK no_speech={nsp:.2f} logprob={avg_logprob:.2f}: {text[:60]}")
             lines.append(text)
 
         original = " ".join(lines).strip()
         if not original:
+            tr_debug("WHISPER_EMPTY (all segments filtered)")
             return "", ""
 
         tr_info(f"[pipeline] original: {original}")
