@@ -684,15 +684,7 @@ class Presenter:
                 except Exception:
                     pass
 
-            # dashboard 更新
-            if self._view and self._running:
-                done_base = mic_dir if source == "mic" else audio_dir
-                secs = self._wav_secs(os.path.join(done_base, "done", os.path.basename(wav)))
-                if secs <= 0:
-                    secs = float(rec_sec)
-                primary = "loopback" if rec_mode == "meeting" else "mic"
-                if source == primary:
-                    self._view.schedule(lambda s=secs: self._view.dashboard_add_trans(s))
+            # dashboard_add_trans は _pipe が stdout 解析で実施するため、ここでは不要
 
         # ── メインループ ──────────────────────────────────────────────────────
         _log("SYS", "INFO", "file_watch_loop started")
