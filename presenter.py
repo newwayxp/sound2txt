@@ -736,33 +736,33 @@ class Presenter:
             # dashboard_add_trans は _pipe が stdout 解析で実施するため、ここでは不要
 
         # ── メインループ ──────────────────────────────────────────────────────
-        _log("SYS", "INFO", "file_watch_loop started")
-        while True:
-            # ループバック音声
-            if use_loopback:
-                for wav in _new_files(audio_dir, "audio_*.wav"):
-                    _process_file(wav, "loopback")
+        # 新方式: recorder が1セッション1ファイルに蓄積
+        # → 録音中は subtitle_processor がリアルタイム転写を担当
+        # → 停止後に最終 WAV ファイルが生成されたら処理する
+        _log("SYS", "INFO", "file_watch_loop started (single-file mode)")
 
-            # マイク音声
-            if mic_dir and os.path.isdir(mic_dir):
-                for wav in _new_files(mic_dir, "mic_*.wav"):
-                    _process_file(wav, "mic")
-
-            # 停止シグナル + 残ファイルなし → 終了
-            if self._fw_stop.is_set():
-                time.sleep(DRAIN_WAIT)  # レコーダーの書き込み完了を待つ
-                # 最終チェック
-                remaining  = ((_new_files(audio_dir, "audio_*.wav") if use_loopback else [])
-                              + (_new_files(mic_dir, "mic_*.wav") if mic_dir and os.path.isdir(mic_dir) else []))
-                if not remaining:
-                    _log("SYS", "INFO", "全ファイル処理完了 → file_watch_loop 終了")
-                    break
-                for wav in remaining:
-                    src = "mic" if os.path.basename(wav).startswith("mic_") else "loopback"
-                    _process_file(wav, src)
-                break
-
+        # 停止シグナルを待つ
+        while not self._fw_stop.is_set():
             time.sleep(POLL_SEC)
+
+        # 停止後: recorder が WAV ファイルを書き終えるまで待つ
+        _log("SYS", "INFO", "停止シグナル受信 → recorder の書き込み完了を待機...")
+        time.sleep(DRAIN_WAIT + 2)   # recorder の WAV 変換を待つ余裕
+
+        # 最終 WAV ファイルを処理（字幕プロセスが既に転写済みの場合はスキップ）
+        subtitle_active = (self._sub_proc and self._sub_proc.poll() is None)
+        if not subtitle_active:
+            # 字幕なしモード: 最終 WAV を転写する
+            final_wavs = _new_files(audio_dir, "audio_*.wav")
+            if use_loopback:
+                for wav in final_wavs:
+                    _process_file(wav, "loopback")
+            mic_wavs = _new_files(mic_dir, "mic_*.wav") if mic_dir and os.path.isdir(mic_dir) else []
+            for wav in mic_wavs:
+                _process_file(wav, "mic")
+            _log("SYS", "INFO", f"最終転写完了: loopback={len(final_wavs)} mic={len(mic_wavs)}")
+        else:
+            _log("SYS", "INFO", "字幕プロセスが転写済み → 転写スキップ")
 
         # transcript が作成されたら STATE_FILE に書く
         if self._transcript_file and os.path.exists(self._transcript_file):

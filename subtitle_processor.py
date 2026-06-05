@@ -159,7 +159,10 @@ def main(test_wav: str | None = None):
     cfg.read(os.path.join(_BASE, "config.ini"), encoding="utf-8")
 
     # ── config ────────────────────────────────────────────────────────────────
-    model_size    = cfg.get("recording", "model_size", fallback="small").strip()
+    # 字幕用モデル: CPU では tiny / small のみ使用可能、デフォルトは small
+    model_size    = cfg.get("subtitle", "model_size", fallback="small").strip()
+    if model_size not in {"tiny", "small"}:
+        model_size = "small"   # CPU では medium/large は非推奨
     device_cfg    = cfg.get("recording", "device",     fallback="auto").strip().lower()
     transcript_dir = cfg.get("paths", "transcript_dir",
                              fallback=r"C:\Users\Public\Sound2Text\transcript")

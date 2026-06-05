@@ -1,8 +1,10 @@
 """
-録音プロセス: 音声をキャプチャし WAV ファイルとして AUDIO_DIR に保存し続ける
-- 個別チャンク読み取りエラー → 無音バイトで代替してループ継続
-- ストリームレベルエラー     → 自動再起動（最大 MAX_RETRIES 回）
-- WAV 保存エラー            → ログして次チャンクへ継続
+録音プロセス: 音声を1セッション1ファイルとして蓄積する
+
+動作:
+  - 録音中は生 PCM を一時ファイル (.tmp_audio_TIMESTAMP.raw) に追記
+  - 停止・終了時に WAV ヘッダを付けて audio_TIMESTAMP.wav として保存
+  - 複数の小さなファイルを生成しない
 """
 import pyaudiowpatch as pyaudio
 import wave
@@ -39,7 +41,7 @@ def _read_chunk(stream) -> bytes:
     try:
         return stream.read(CHUNK, exception_on_overflow=False)
     except Exception:
-        return bytes(CHUNK * 2)
+        return bytes(CHUNK * 2)   # 無音で代替
 
 
 def _restart_stream(pa, device_index, channels, sample_rate):
@@ -56,16 +58,38 @@ def _restart_stream(pa, device_index, channels, sample_rate):
     return None
 
 
+def _finalize_wav(raw_path: str, wav_path: str, channels: int,
+                  sample_size: int, sample_rate: int) -> bool:
+    """生 PCM ファイルを WAV に変換して raw を削除する。"""
+    try:
+        with open(raw_path, "rb") as f:
+            pcm_data = f.read()
+        with wave.open(wav_path, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(sample_size)
+            wf.setframerate(sample_rate)
+            wf.writeframes(pcm_data)
+        os.remove(raw_path)
+        duration = len(pcm_data) / (sample_rate * channels * sample_size)
+        rec_info(f"保存完了: {os.path.basename(wav_path)}  "
+                 f"({duration:.1f}秒 / {len(pcm_data) // 1024} KB)")
+        return True
+    except Exception as e:
+        rec_error(f"WAV変換失敗: {e}  raw={raw_path}")
+        return False
+
+
 def main():
     _cfg = configparser.ConfigParser()
     _cfg.read(os.path.join(os.path.dirname(__file__), "config.ini"), encoding="utf-8")
     audio_dir  = _cfg.get("paths", "audio_dir")
-    record_sec = _cfg.getint("recording", "record_sec", fallback=30)
     os.makedirs(audio_dir, exist_ok=True)
 
+    # 録音開始時刻を書き込む（transcriber / subtitle_processor が旧ファイルをスキップするために使用）
     session_start_ts = time.time()
     with open(START_FILE, "w", encoding="utf-8") as f:
         f.write(str(session_start_ts))
+    session_ts = datetime.fromtimestamp(session_start_ts).strftime("%Y%m%d_%H%M%S")
     sys_info(f"セッション開始: {datetime.fromtimestamp(session_start_ts).strftime('%Y-%m-%d %H:%M:%S')}")
 
     pa = pyaudio.PyAudio()
@@ -73,61 +97,55 @@ def main():
     channels    = dev_info["maxInputChannels"]
     sample_rate = int(dev_info["defaultSampleRate"])
     sample_size = pa.get_sample_size(pyaudio.paInt16)
-    n_chunks    = int(sample_rate / CHUNK * record_sec)
 
     rec_info(f"デバイス: {dev_info['name']}  rate={sample_rate}  ch={channels}")
-    rec_info(f"{record_sec}秒ごとに保存 → {audio_dir}")
+
+    # ── 一時ファイルパス ─────────────────────────────────────────────────────
+    raw_path = os.path.join(audio_dir, f".tmp_audio_{session_ts}.raw")
+    wav_path = os.path.join(audio_dir, f"audio_{session_ts}.wav")
+    rec_info(f"録音先(一時): {raw_path}")
 
     stream             = _open_stream(pa, device_index, channels, sample_rate)
     consecutive_errors = 0
-    _file_count        = 0
+    total_chunks       = 0
 
     try:
-        while True:
-            try:
-                frames = [_read_chunk(stream) for _ in range(n_chunks)]
-                consecutive_errors = 0
-            except Exception as e:
-                consecutive_errors += 1
-                rec_warn(f"ストリームエラー ({consecutive_errors}/{MAX_RETRIES}): {e}")
-                if consecutive_errors >= MAX_RETRIES:
-                    try:
-                        stream.stop_stream(); stream.close()
-                    except Exception:
-                        pass
-                    new_stream = _restart_stream(pa, device_index, channels, sample_rate)
-                    if new_stream is None:
-                        rec_error("復旧失敗。録音を終了します。")
-                        break
-                    stream = new_stream
-                    consecutive_errors = 0
-                continue
-
-            audio_np = np.frombuffer(b"".join(frames), dtype=np.int16)
-            level    = int(np.abs(audio_np).mean())
-            _file_count += 1
-            ts       = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            tmp_path = os.path.join(audio_dir, f".tmp_{ts}.wav")
-            fin_path = os.path.join(audio_dir, f"audio_{ts}.wav")
-
-            if _file_count <= 3 and level < 10:
-                rec_warn(f"音量ほぼゼロ (avg:{level}) — ループバックデバイスを確認してください")
-
-            try:
-                with wave.open(tmp_path, "wb") as wf:
-                    wf.setnchannels(channels)
-                    wf.setsampwidth(sample_size)
-                    wf.setframerate(sample_rate)
-                    wf.writeframes(b"".join(frames))
-                os.rename(tmp_path, fin_path)
-                rec_info(f"保存: {os.path.basename(fin_path)}  avg={level}")
-                rec_debug(f"ファイル #{_file_count}  path={fin_path}  samples={len(audio_np)}")
-            except Exception as e:
-                rec_error(f"ファイル保存エラー: {e}")
+        with open(raw_path, "wb") as raw_file:
+            rec_info("録音開始 (Ctrl+C または停止シグナルで終了)")
+            while True:
                 try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
+                    data = _read_chunk(stream)
+                    consecutive_errors = 0
+                except Exception as e:
+                    consecutive_errors += 1
+                    rec_warn(f"チャンク読み取りエラー ({consecutive_errors}/{MAX_RETRIES}): {e}")
+                    if consecutive_errors >= MAX_RETRIES:
+                        try:
+                            stream.stop_stream(); stream.close()
+                        except Exception:
+                            pass
+                        new_stream = _restart_stream(pa, device_index, channels, sample_rate)
+                        if new_stream is None:
+                            rec_error("復旧失敗。録音を終了します。")
+                            break
+                        stream = new_stream
+                        consecutive_errors = 0
+                    data = bytes(CHUNK * 2)
+
+                raw_file.write(data)
+                total_chunks += 1
+
+                # 音量監視（最初の数チャンクで警告）
+                if total_chunks <= 3:
+                    level = int(np.abs(np.frombuffer(data, dtype=np.int16)).mean())
+                    if level < 10:
+                        rec_warn(f"音量ほぼゼロ (avg:{level}) — ループバックデバイスを確認してください")
+
+                # 定期的な進捗ログ（30秒ごと相当）
+                if total_chunks % int(sample_rate / CHUNK * 30) == 0:
+                    elapsed = total_chunks * CHUNK / sample_rate
+                    size_kb = total_chunks * CHUNK * sample_size // 1024
+                    rec_debug(f"録音中: {elapsed:.0f}秒 / {size_kb} KB")
 
     except KeyboardInterrupt:
         rec_info("停止シグナル受信")
@@ -137,7 +155,15 @@ def main():
         except Exception:
             pass
         pa.terminate()
-        rec_info("録音プロセス終了")
+
+    # ── WAV に変換して保存 ────────────────────────────────────────────────────
+    if os.path.exists(raw_path) and os.path.getsize(raw_path) > 0:
+        rec_info("WAV ファイルに変換中...")
+        _finalize_wav(raw_path, wav_path, channels, sample_size, sample_rate)
+    else:
+        rec_warn("録音データなし。ファイルを保存しません。")
+
+    rec_info("録音プロセス終了")
 
 
 if __name__ == "__main__":

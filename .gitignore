@@ -19,6 +19,7 @@ config.ini
 .recording_start
 .ptt_stop
 .tmp_*.wav
+.tmp_*.raw
 
 # ── ログファイル ──────────────────────────────────────
 *.log
