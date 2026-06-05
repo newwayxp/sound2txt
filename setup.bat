@@ -82,24 +82,22 @@ if %errorlevel% equ 0 (
     goto :ct2_ok
 )
 
-rem Detect NVIDIA GPU - install CUDA runtime if present
-nvidia-smi >nul 2>&1
+rem Upgrade ctranslate2 (v4.7+ fixes the bundled CUDA DLL issue)
+echo  Upgrading ctranslate2...
+pip install "ctranslate2>=4.7.0" %PROXY_ARG%
+python -c "from faster_whisper import WhisperModel" >nul 2>&1
 if %errorlevel% equ 0 (
-    echo  NVIDIA GPU detected. Installing CUDA 12 runtime for GPU support...
-    pip install --upgrade ctranslate2 %PROXY_ARG%
-    pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 %PROXY_ARG%
-    python -c "from faster_whisper import WhisperModel" >nul 2>&1
+    nvidia-smi >nul 2>&1
     if %errorlevel% equ 0 (
-        echo  OK: faster-whisper OK (GPU+CUDA mode)
-        goto :ct2_ok
+        echo  OK: faster-whisper OK (GPU detected)
+    ) else (
+        echo  OK: faster-whisper OK (CPU mode)
     )
-    echo  GPU CUDA setup incomplete. Install CUDA 12 toolkit for GPU acceleration:
-    echo    https://developer.nvidia.com/cuda-downloads
-    echo  Falling back to CPU mode...
+    goto :ct2_ok
 )
 
-rem CPU fallback: remove bundled CUDA DLLs so ctranslate2 skips CUDA loading
-echo  Removing bundled CUDA DLLs (CPU mode)...
+rem Upgrade did not fix it - remove bundled CUDA DLLs as final fallback
+echo  Removing bundled CUDA DLLs (CPU fallback)...
 python -c "import os,importlib.util,glob; s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else ''; removed=[f for p in ['cu*.dll','nv*.dll'] for f in glob.glob(os.path.join(d,p))]; [os.remove(f) for f in removed]; print(len(removed), 'CUDA DLL(s) removed')"
 
 python -c "from faster_whisper import WhisperModel" >nul 2>&1
