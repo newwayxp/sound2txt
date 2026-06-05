@@ -429,7 +429,7 @@ def run():
     # ── transcribe one segment ────────────────────────────────────────────────
     def _process(audio_bytes: bytes) -> tuple[str, str]:
         """Returns (original_text, display_text). display=translated if dst set."""
-        nonlocal session_lang, whisper, _current_model_lang
+        nonlocal session_lang, whisper, _current_model_lang, device, compute_type
 
         seg_dur = len(audio_bytes) / (SAMPLE_RATE * 2)
         tr_debug(f"WHISPER_IN  dur={seg_dur:.1f}s lang={session_lang} model={model_size}")
@@ -465,7 +465,6 @@ def run():
         except Exception as e:
             if device == "cuda" and ("cublas" in str(e).lower() or "cuda" in str(e).lower()):
                 tr_info(f"CUDA error during transcribe, switching to CPU: {e}")
-                nonlocal device, compute_type
                 device = "cpu"
                 compute_type = "int8"
                 whisper = WhisperModel(model_path, device="cpu", compute_type="int8")
