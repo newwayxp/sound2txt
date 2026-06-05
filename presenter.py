@@ -615,7 +615,7 @@ class Presenter:
                 self._view.schedule(self._set_controls_idle)
 
     def _after_trans_impl(self) -> None:
-        self._wait_process(self._tr_proc, "transcriber.py", timeout_sec=900)
+        self._wait_process(self._tr_proc, "transcriber.py", timeout_sec=None)
         if self._view:
             self._view.schedule(lambda: self._view.set_tr_status("stopped", "gray60"))
 
@@ -829,6 +829,10 @@ class Presenter:
                 self._view and self._view.put_log(
                     f"[UI] {name} did not finish within {timeout_sec}s. Terminating.")
                 proc.terminate()
+                # タイムアウト時はレコーダーも停止する
+                if self._rec_proc and self._rec_proc.poll() is None:
+                    self._view and self._view.put_log("[UI] Stopping recorder due to transcriber timeout.")
+                    self._rec_proc.terminate()
                 try:
                     proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:
