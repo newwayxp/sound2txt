@@ -574,41 +574,6 @@ class App(QMainWindow):
         self._quick_lang_combo.currentIndexChanged.connect(self._on_quick_lang_change)
         hbox.addWidget(self._quick_lang_combo)
 
-        hbox.addWidget(_vsep(bar))
-
-        # ── Subtitle button ───────────────────────────────────────────────────
-        self._btn_subtitle = QPushButton(t("subtitle_btn"), bar)
-        self._btn_subtitle.setObjectName("btnSubtitle")
-        self._btn_subtitle.setCheckable(True)
-        self._btn_subtitle.setFixedHeight(38)
-        self._btn_subtitle.setFixedWidth(80)
-        self._btn_subtitle.setStyleSheet(
-            "QPushButton#btnSubtitle {"
-            "  background-color: #1a4a7a; color: white;"
-            "  border-radius: 6px; font-weight: bold; font-size: 13px;"
-            "}"
-            "QPushButton#btnSubtitle:checked {"
-            "  background-color: #e65c00;"
-            "}"
-            "QPushButton#btnSubtitle:hover { background-color: #1e5a92; }"
-        )
-        self._btn_subtitle.toggled.connect(self._on_subtitle_toggle)
-        hbox.addWidget(self._btn_subtitle)
-
-        # Subtitle destination language combo (shown only when subtitle is ON)
-        self._sub_dst_combo = QComboBox(bar)
-        self._sub_dst_combo.addItems([
-            t("sub_dst_same"), t("lang_zh"), t("lang_ja"), t("lang_en"),
-        ])
-        self._sub_dst_combo.setFixedWidth(120)
-        self._sub_dst_combo.setVisible(False)
-        cur_dst = self._presenter._config.get("subtitle", "dst_lang", fallback="")
-        self._sub_dst_combo.setCurrentIndex(
-            {"": 0, "zh": 1, "ja": 2, "en": 3}.get(cur_dst, 0)
-        )
-        self._sub_dst_combo.currentIndexChanged.connect(self._on_sub_dst_change)
-        hbox.addWidget(self._sub_dst_combo)
-
         return bar
 
     # ── Settings tabs ─────────────────────────────────────────────────────────
@@ -1087,25 +1052,6 @@ class App(QMainWindow):
     def _on_quick_lang_change(self, index: int) -> None:
         code = ["auto", "zh", "ja", "en"][index]
         self._presenter.save_config({("recording", "language"): code})
-
-    def _on_subtitle_toggle(self, checked: bool) -> None:
-        """字幕ボタン ON/OFF。"""
-        self._sub_dst_combo.setVisible(checked)
-        if checked:
-            dst = ["", "zh", "ja", "en"][self._sub_dst_combo.currentIndex()]
-            self._presenter.start_subtitle(dst)
-            self.put_log(f"[UI] 字幕開始 dst={dst or '(原語)'}")
-        else:
-            self._presenter.stop_subtitle()
-            self.put_log("[UI] 字幕停止")
-
-    def _on_sub_dst_change(self, index: int) -> None:
-        dst = ["", "zh", "ja", "en"][index]
-        self._presenter.save_config({("subtitle", "dst_lang"): dst})
-        if self._btn_subtitle.isChecked():
-            # restart with new language
-            self._presenter.stop_subtitle()
-            self._presenter.start_subtitle(dst)
 
     # ── Log helpers ───────────────────────────────────────────────────────────
 
