@@ -123,8 +123,13 @@ class AccumulatingVAD:
                                  f"speech={self._speech_dur:.1f}s")
                         return self._flush("turn")
                     else:
-                        tr_debug(f"VAD noise-skip speech={self._speech_dur:.1f}s")
-                        self._reset()
+                        # Short noise - reset speech tracking but keep accumulated buffer
+                        # so force-flush can still trigger at max_sec
+                        tr_debug(f"VAD noise-skip speech={self._speech_dur:.1f}s "
+                                 f"accum={self._accum_dur:.1f}s kept")
+                        self._speaking    = False
+                        self._speech_dur  = 0.0
+                        self._silence_dur = 0.0
 
         if self._accum_dur >= self._max_sec:
             tr_debug(f"VAD force    accum={self._accum_dur:.1f}s")
