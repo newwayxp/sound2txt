@@ -313,24 +313,32 @@ def run():
     model_path = _resolve_model(session_lang)
     sys_info(f"pipeline: model={model_path} device={device}")
 
-    # Add nvidia pip-package DLL dirs to search path so ctranslate2 can
-    # find cublas/cudart when using GPU (pip install nvidia-cublas-cu12 etc.)
-    # nvidia packages are namespace packages (__file__ is None), so locate
-    # via site-packages directory instead.
+    # Pre-load CUDA DLLs from nvidia pip packages using full path.
+    # ctranslate2's C extension calls LoadLibrary("cublas64_12.dll") by name
+    # at inference time. Once a DLL is loaded into the process by full path,
+    # subsequent LoadLibrary calls by name return the cached handle.
     if device == "cuda" and sys.platform == "win32":
         try:
-            import site as _site
+            import ctypes as _ct, site as _site
             _site_dirs = _site.getsitepackages()
             try:
                 _site_dirs = _site_dirs + [_site.getusersitepackages()]
             except Exception:
                 pass
+            _cuda_dlls = [
+                ("nvidia/cuda_runtime/bin", "cudart64_12.dll"),
+                ("nvidia/cublas/bin",       "cublas64_12.dll"),
+                ("nvidia/cublas/bin",       "cublasLt64_12.dll"),
+            ]
             for _site_dir in _site_dirs:
-                for _sub in ["nvidia/cublas/bin", "nvidia/cuda_runtime/bin"]:
-                    _dll_dir = os.path.join(_site_dir, _sub.replace("/", os.sep))
-                    if os.path.isdir(_dll_dir):
-                        os.add_dll_directory(_dll_dir)
-                        sys_info(f"CUDA DLL path: {_dll_dir}")
+                for _sub, _dll in _cuda_dlls:
+                    _dll_path = os.path.join(_site_dir, _sub.replace("/", os.sep), _dll)
+                    if os.path.exists(_dll_path):
+                        try:
+                            _ct.CDLL(_dll_path)
+                            sys_info(f"CUDA pre-loaded: {_dll}")
+                        except OSError as _e:
+                            sys_info(f"CUDA pre-load failed ({_dll}): {_e}")
         except Exception:
             pass
 
