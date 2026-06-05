@@ -72,7 +72,7 @@ if %errorlevel% neq 0 (
 echo  OK: Packages installed
 
 rem --------------------------------------------------
-rem Step 3: Verify faster-whisper import (fix CUDA DLL issues)
+rem Step 3: Verify faster-whisper / fix CUDA DLL issues
 rem --------------------------------------------------
 echo.
 echo [3/6] Checking faster-whisper...
@@ -82,19 +82,33 @@ if %errorlevel% equ 0 (
     goto :ct2_ok
 )
 
-rem faster-whisper import failed - remove bundled CUDA DLLs from ctranslate2
-echo  CUDA DLL error detected. Removing bundled CUDA DLLs...
-python -c "import os,importlib.util,glob; s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else ''; removed=[f for p in ['cu*.dll','nv*.dll'] for f in glob.glob(os.path.join(d,p))]; [os.remove(f) for f in removed]; print(len(removed), 'CUDA DLL(s) removed from', d)"
+rem Detect NVIDIA GPU - install CUDA runtime if present
+nvidia-smi >nul 2>&1
+if %errorlevel% equ 0 (
+    echo  NVIDIA GPU detected. Installing CUDA 12 runtime for GPU support...
+    pip install --upgrade ctranslate2 %PROXY_ARG%
+    pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 %PROXY_ARG%
+    python -c "from faster_whisper import WhisperModel" >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo  OK: faster-whisper OK (GPU+CUDA mode)
+        goto :ct2_ok
+    )
+    echo  GPU CUDA setup incomplete. Install CUDA 12 toolkit for GPU acceleration:
+    echo    https://developer.nvidia.com/cuda-downloads
+    echo  Falling back to CPU mode...
+)
+
+rem CPU fallback: remove bundled CUDA DLLs so ctranslate2 skips CUDA loading
+echo  Removing bundled CUDA DLLs (CPU mode)...
+python -c "import os,importlib.util,glob; s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else ''; removed=[f for p in ['cu*.dll','nv*.dll'] for f in glob.glob(os.path.join(d,p))]; [os.remove(f) for f in removed]; print(len(removed), 'CUDA DLL(s) removed')"
 
 python -c "from faster_whisper import WhisperModel" >nul 2>&1
 if %errorlevel% neq 0 (
-    echo  [ERROR] faster-whisper still fails after CUDA DLL removal.
-    echo  Please reinstall ctranslate2: pip install --upgrade ctranslate2
+    echo  [ERROR] faster-whisper repair failed.
     set ERROR=1
     goto :end
 )
 echo  OK: faster-whisper OK (CPU mode)
-echo  Note: GPU acceleration requires CUDA 12 toolkit from nvidia.com
 :ct2_ok
 
 rem --------------------------------------------------
