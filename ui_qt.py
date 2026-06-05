@@ -373,8 +373,7 @@ class App(QMainWindow):
     def lock_to_cpu_tiny(self) -> None:
         if hasattr(self, "_rb_device_cpu"):
             self._rb_device_cpu.setChecked(True)
-        if hasattr(self, "_rb_model_tiny"):
-            self._rb_model_tiny.setChecked(True)
+        # CPU では medium/large-v3 を無効化、small はそのまま使用可
         for w in self._gpu_locked_buttons:
             w.setEnabled(False)
 
@@ -602,6 +601,17 @@ class App(QMainWindow):
         self._btn_subtitle.toggled.connect(self._on_subtitle_toggle)
         hbox.addWidget(self._btn_subtitle)
 
+        # Subtitle model selector (tiny/small, CPU only — shown always near subtitle btn)
+        self._sub_model_combo = QComboBox(bar)
+        self._sub_model_combo.addItems(["tiny", "small"])
+        self._sub_model_combo.setFixedWidth(70)
+        cur_sub_model = self._presenter._config.get("subtitle", "model_size", fallback="small")
+        self._sub_model_combo.setCurrentText(cur_sub_model if cur_sub_model in ("tiny", "small") else "small")
+        self._sub_model_combo.currentTextChanged.connect(
+            lambda v: self._presenter.save_config({("subtitle", "model_size"): v})
+        )
+        hbox.addWidget(self._sub_model_combo)
+
         # Subtitle destination language combo (shown only when subtitle is ON)
         self._sub_dst_combo = QComboBox(bar)
         self._sub_dst_combo.addItems([
@@ -759,7 +769,8 @@ class App(QMainWindow):
             safe_key = val.replace("-", "_")
             setattr(self, f"_rb_model_{safe_key}", rb)
             model_rbs[val] = rb
-            if val != "tiny":
+            # CPU でも tiny / small は使用可能 → medium / large-v3 のみロック
+            if val in ("medium", "large-v3"):
                 self._gpu_locked_buttons.append(rb)
 
         model_hbox.addStretch()
