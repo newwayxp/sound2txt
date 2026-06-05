@@ -66,46 +66,43 @@ HALLUCINATION = [
     "请不吝点赞", "订阅", "感谢观看", "字幕由",
 ]
 
-# ── Accumulating VAD ─────────────────────────────────────────────────────────
+# ── Turn-based VAD ───────────────────────────────────────────────────────────
 class AccumulatingVAD:
     """
-    Two-stage VAD:
-      Stage 1 (Silero/amplitude): detects speech vs silence at chunk level
-      Stage 2 (accumulator): collects detected speech until ready to submit
+    会話ターン単位 VAD。
 
-    Submission triggers:
-      A. Silence detected AND accumulated speech >= min_accum_sec
-      B. Total accumulated audio >= max_sec (force flush)
+    Python 側は「話者の発話ターンが終わった」だけを検出し、
+    文内の細かい区切り（息継ぎ等）は Whisper の内部 VAD に委ねる。
 
-    This ensures Whisper always gets enough context (>= min_accum_sec)
-    for accurate recognition, regardless of short pauses within speech.
+    送信トリガー:
+      A. ターン終了: turn_silence_sec 以上の沈黙 かつ min_sec 以上の音声
+      B. 強制:      max_sec 超過（長い1発話）
+
+    turn_silence_sec は文中の「間」(~0.5-1s) より長い値にすること。
     """
     def __init__(self, threshold: float = 0.5,
-                 silence_sec: float = 1.5,
-                 min_accum_sec: float = 3.0,
-                 max_sec: float = 15.0):
-        self._threshold    = threshold
-        self._silence_sec  = silence_sec   # 無音がこの秒数続いたら文末候補
-        self._min_accum    = min_accum_sec # 最低蓄積時間（これ未満では送らない）
-        self._max_sec      = max_sec       # 最大蓄積時間（強制送信）
-        # 蓄積バッファ（送信単位）
+                 silence_sec: float = 2.0,
+                 min_accum_sec: float = 1.0,
+                 max_sec: float = 20.0):
+        self._turn_silence = silence_sec   # ターン終了と判定する沈黙時間
+        self._min_sec      = min_accum_sec # 最低発話時間（これ未満は無視）
+        self._max_sec      = max_sec       # 強制送信上限
+
         self._accum: list[np.ndarray] = []
-        self._accum_dur  = 0.0
-
-        # 発話追跡
-        self._speaking    = False
+        self._accum_dur   = 0.0
+        self._speech_dur  = 0.0
         self._silence_dur = 0.0
+        self._speaking    = False
 
-        # Silero モデル
         self._model = None
         try:
             from faster_whisper.vad import SileroVADModel
             self._model = SileroVADModel()
-            sys_info(f"AccumulatingVAD: Silero ready "
-                     f"(min={min_accum_sec}s silence={silence_sec}s max={max_sec}s)")
+            sys_info(f"TurnVAD Silero "
+                     f"turn_silence={silence_sec}s min={min_accum_sec}s max={max_sec}s")
         except Exception:
-            tr_warn(f"AccumulatingVAD: amplitude mode "
-                    f"(min={min_accum_sec}s silence={silence_sec}s max={max_sec}s)")
+            tr_warn(f"TurnVAD amplitude "
+                    f"turn_silence={silence_sec}s min={min_accum_sec}s max={max_sec}s")
 
     def _is_speech(self, chunk: np.ndarray) -> bool:
         if self._model:
@@ -117,64 +114,56 @@ class AccumulatingVAD:
         return int(np.abs(chunk).mean()) >= 300
 
     def feed(self, chunk: np.ndarray) -> bytes | None:
-        """
-        Feed chunk. Returns accumulated audio bytes when ready for Whisper,
-        or None to keep buffering.
-        """
-        is_speech = self._is_speech(chunk)
-        prev_speaking = self._speaking
+        is_speech  = self._is_speech(chunk)
+        chunk_dur  = len(chunk) / SAMPLE_RATE
+        prev_spk   = self._speaking
+
         self._accum.append(chunk)
-        # 実際のチャンク長から時間を計算（リサンプリング後のサンプル数を使用）
-        actual_dur = len(chunk) / SAMPLE_RATE
-        self._accum_dur += actual_dur
+        self._accum_dur += chunk_dur
 
         if is_speech:
-            if not prev_speaking:
-                tr_debug(f"VAD speech start  accum={self._accum_dur:.1f}s")
+            if not prev_spk:
+                tr_debug(f"TurnVAD speech    accum={self._accum_dur:.1f}s")
             self._speaking    = True
+            self._speech_dur += chunk_dur
             self._silence_dur = 0.0
         else:
             if self._speaking:
-                self._silence_dur += actual_dur
-                # 無音が始まったタイミングだけログ
-                if self._silence_dur <= actual_dur * 1.5:
-                    tr_debug(f"VAD silence start accum={self._accum_dur:.1f}s")
+                self._silence_dur += chunk_dur
+                if self._silence_dur >= self._turn_silence:
+                    if self._speech_dur >= self._min_sec:
+                        tr_debug(f"TurnVAD turn-end  accum={self._accum_dur:.1f}s "
+                                 f"speech={self._speech_dur:.1f}s "
+                                 f"silence={self._silence_dur:.1f}s")
+                        return self._flush("turn")
+                    else:
+                        # 発話が短すぎ（雑音）→ リセット
+                        tr_debug(f"TurnVAD noise-skip speech={self._speech_dur:.1f}s")
+                        self._accum.clear()
+                        self._accum_dur  = 0.0
+                        self._speech_dur = 0.0
+                        self._silence_dur = 0.0
+                        self._speaking   = False
 
-        # 強制送信: 最大蓄積時間超過
         if self._accum_dur >= self._max_sec:
-            tr_debug(f"VAD force flush   accum={self._accum_dur:.1f}s (max reached)")
+            tr_debug(f"TurnVAD force     accum={self._accum_dur:.1f}s (max)")
             return self._flush("force")
-
-        # 通常送信: 無音が silence_sec 以上 かつ 蓄積が min_accum_sec 以上
-        if (self._speaking
-                and self._silence_dur >= self._silence_sec
-                and self._accum_dur   >= self._min_accum):
-            tr_debug(f"VAD normal flush  accum={self._accum_dur:.1f}s "
-                     f"silence={self._silence_dur:.1f}s")
-            return self._flush("silence")
-
-        # 蓄積不足で無音閾値超過した場合
-        if (self._speaking
-                and self._silence_dur >= self._silence_sec
-                and self._accum_dur   <  self._min_accum):
-            tr_debug(f"VAD waiting more  accum={self._accum_dur:.1f}s "
-                     f"(< min={self._min_accum}s) silence={self._silence_dur:.1f}s")
 
         return None
 
     def _flush(self, reason: str = "") -> bytes:
         seg = np.concatenate(self._accum).tobytes()
-        dur = len(seg) / (SAMPLE_RATE * 2)
-        tr_debug(f"VAD flushed [{reason}] dur={dur:.1f}s")
+        dur = len(seg) / 2 / SAMPLE_RATE
+        tr_debug(f"TurnVAD flushed [{reason}] speech={self._speech_dur:.1f}s total={dur:.1f}s")
         self._accum.clear()
         self._accum_dur  = 0.0
-        self._speaking   = False
+        self._speech_dur = 0.0
         self._silence_dur = 0.0
+        self._speaking   = False
         return seg
 
     def force_flush(self) -> bytes | None:
-        """停止時: 残バッファを返す（min_accum 未満でも）。"""
-        if self._accum and self._speaking:
+        if self._accum and self._speech_dur >= self._min_sec:
             return self._flush("stop")
         self._accum.clear()
         return None
@@ -270,15 +259,13 @@ def run():
         return base or None
 
     # ── VAD ───────────────────────────────────────────────────────────────────
-    vad_thr       = cfg.getfloat("subtitle", "vad_threshold",  fallback=400)
-    silence_s     = cfg.getfloat("subtitle", "silence_sec",     fallback=1.5)
-    min_accum_s   = cfg.getfloat("subtitle", "min_accum_sec",   fallback=3.0)
-    max_s         = cfg.getfloat("subtitle", "max_sec",          fallback=15.0)
+    silence_s   = cfg.getfloat("subtitle", "silence_sec",   fallback=2.0)
+    min_s       = cfg.getfloat("subtitle", "min_accum_sec", fallback=1.0)
+    max_s       = cfg.getfloat("subtitle", "max_sec",       fallback=20.0)
     vad = AccumulatingVAD(
-        threshold    = vad_thr / 32768.0,
-        silence_sec  = silence_s,
-        min_accum_sec = min_accum_s,
-        max_sec      = max_s,
+        silence_sec   = silence_s,
+        min_accum_sec = min_s,
+        max_sec       = max_s,
     )
 
     # ── subtitle / session state ──────────────────────────────────────────────
