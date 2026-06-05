@@ -4,7 +4,7 @@ Last updated: 2026-06-05
 
 ---
 
-## 🔴 Active: pipeline.py 転写ゼロ（アプリ起動時）
+## ✅ 解決: pipeline.py 転写ゼロ（アプリ起動時）
 
 **症状:**
 - debug_modules.py audio → ✅ 正常に日本語転写される（GPU large-v3 動作確認済み）
