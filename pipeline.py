@@ -255,6 +255,34 @@ def run():
     # ── model setup ───────────────────────────────────────────────────────────
     # Import faster-whisper first so ctranslate2 is cached in sys.modules
     # before device detection reuses it (avoids double DLL load attempts)
+    # Pre-load CUDA DLLs from nvidia pip packages BEFORE importing ctranslate2.
+    # ctranslate2 determines CUDA availability at import time; cublas must be
+    # in the process DLL cache before ctranslate2's C extension initialises.
+    if sys.platform == "win32":
+        try:
+            import ctypes as _ct, site as _site
+            _site_dirs = _site.getsitepackages()
+            try:
+                _site_dirs = _site_dirs + [_site.getusersitepackages()]
+            except Exception:
+                pass
+            _cuda_dlls = [
+                ("nvidia/cuda_runtime/bin", "cudart64_12.dll"),
+                ("nvidia/cublas/bin",       "cublas64_12.dll"),
+                ("nvidia/cublas/bin",       "cublasLt64_12.dll"),
+            ]
+            for _site_dir in _site_dirs:
+                for _sub, _dll in _cuda_dlls:
+                    _dll_path = os.path.join(_site_dir, _sub.replace("/", os.sep), _dll)
+                    if os.path.exists(_dll_path):
+                        try:
+                            _ct.CDLL(_dll_path)
+                            sys_info(f"CUDA pre-loaded: {_dll}")
+                        except OSError as _e:
+                            sys_info(f"CUDA pre-load failed ({_dll}): {_e}")
+        except Exception:
+            pass
+
     try:
         from faster_whisper import WhisperModel
     except (OSError, ImportError) as e:
@@ -312,35 +340,6 @@ def run():
     # モデルロード（session_lang 確定後）
     model_path = _resolve_model(session_lang)
     sys_info(f"pipeline: model={model_path} device={device}")
-
-    # Pre-load CUDA DLLs from nvidia pip packages using full path.
-    # ctranslate2's C extension calls LoadLibrary("cublas64_12.dll") by name
-    # at inference time. Once a DLL is loaded into the process by full path,
-    # subsequent LoadLibrary calls by name return the cached handle.
-    if device == "cuda" and sys.platform == "win32":
-        try:
-            import ctypes as _ct, site as _site
-            _site_dirs = _site.getsitepackages()
-            try:
-                _site_dirs = _site_dirs + [_site.getusersitepackages()]
-            except Exception:
-                pass
-            _cuda_dlls = [
-                ("nvidia/cuda_runtime/bin", "cudart64_12.dll"),
-                ("nvidia/cublas/bin",       "cublas64_12.dll"),
-                ("nvidia/cublas/bin",       "cublasLt64_12.dll"),
-            ]
-            for _site_dir in _site_dirs:
-                for _sub, _dll in _cuda_dlls:
-                    _dll_path = os.path.join(_site_dir, _sub.replace("/", os.sep), _dll)
-                    if os.path.exists(_dll_path):
-                        try:
-                            _ct.CDLL(_dll_path)
-                            sys_info(f"CUDA pre-loaded: {_dll}")
-                        except OSError as _e:
-                            sys_info(f"CUDA pre-load failed ({_dll}): {_e}")
-        except Exception:
-            pass
 
     try:
         whisper = WhisperModel(model_path, device=device, compute_type=compute_type)
