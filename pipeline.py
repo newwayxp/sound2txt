@@ -265,10 +265,20 @@ def run():
         return model_size
 
     # モデルロード（session_lang 確定後）
-    model_path          = _resolve_model(session_lang)
+    model_path = _resolve_model(session_lang)
     sys_info(f"pipeline: model={model_path} device={device}")
-    whisper             = WhisperModel(model_path, device=device, compute_type=compute_type)
-    sys_info("model ready")
+    try:
+        whisper = WhisperModel(model_path, device=device, compute_type=compute_type)
+    except Exception as e:
+        if device == "cuda":
+            sys_info(f"CUDA unavailable ({e}), falling back to CPU")
+            device = "cpu"
+            compute_type = "int8"
+            whisper = WhisperModel(model_path, device="cpu", compute_type="int8")
+        else:
+            sys_error(f"Failed to load model: {e}")
+            return
+    sys_info(f"model ready (device={device})")
     _current_model_lang = session_lang
 
     # ── vocabulary ───────────────────────────────────────────────────────────
@@ -435,8 +445,24 @@ def run():
             )
             seg_list = list(segs)
         except Exception as e:
-            tr_error(f"transcribe error: {e}")
-            return "", ""
+            if device == "cuda" and ("cublas" in str(e).lower() or "cuda" in str(e).lower()):
+                tr_info(f"CUDA error during transcribe, switching to CPU: {e}")
+                nonlocal device, compute_type
+                device = "cpu"
+                compute_type = "int8"
+                whisper = WhisperModel(model_path, device="cpu", compute_type="int8")
+                try:
+                    segs, info = whisper.transcribe(
+                        tmp, language=session_lang, beam_size=5, temperature=0.0,
+                        vad_filter=True, no_speech_threshold=0.6, log_prob_threshold=-1.0,
+                    )
+                    seg_list = list(segs)
+                except Exception as e2:
+                    tr_error(f"transcribe error (CPU fallback): {e2}")
+                    return "", ""
+            else:
+                tr_error(f"transcribe error: {e}")
+                return "", ""
         finally:
             try:
                 os.remove(tmp)
