@@ -1,6 +1,5 @@
 @echo off
 setlocal enabledelayedexpansion
-chcp 65001 >nul
 title Sound2Text Setup
 
 echo.
@@ -15,32 +14,32 @@ set PROXY_ARG=
 set PROXY_HOST=
 
 rem --------------------------------------------------
-:: Step 0: プロキシ設定（任意）
+rem Step 0: Proxy configuration (optional)
 rem --------------------------------------------------
-echo [0/6] 社内プロキシを使用しますか？
-echo  使用する場合は アドレス:ポート を入力してください。
-echo  例: proxy.company.com:8080
-echo  使用しない場合はそのまま Enter を押してください。
+echo [0/6] Proxy configuration
+echo  Enter your corporate proxy address if required.
+echo  Example: proxy.company.com:8080
+echo  Leave blank and press Enter to skip.
 echo.
-set /p PROXY_INPUT="  プロキシアドレス (空欄でスキップ): "
+set /p PROXY_INPUT="  Proxy address (blank to skip): "
 if not "%PROXY_INPUT%"=="" (
     set PROXY_ARG=--proxy http://%PROXY_INPUT% --trusted-host pypi.org --trusted-host files.pythonhosted.org
     set PROXY_HOST=%PROXY_INPUT%
-    echo  OK: プロキシ設定: http://%PROXY_INPUT%
+    echo  OK: Proxy set to http://%PROXY_INPUT%
 )
 echo.
 
 rem --------------------------------------------------
-:: Step 1: Python チェック (3.10 以上)
+rem Step 1: Check Python (3.10+)
 rem --------------------------------------------------
-echo [1/6] Python を確認しています...
+echo [1/6] Checking Python...
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
-    echo  [ERROR] Python が見つかりません。
-    echo  以下からインストールしてください:
+    echo  [ERROR] Python not found.
+    echo  Please install Python from:
     echo    https://www.python.org/downloads/
-    echo  インストール時に "Add Python to PATH" にチェックを入れてください。
+    echo  Check "Add Python to PATH" during installation.
     echo.
     set ERROR=1
     goto :end
@@ -53,94 +52,94 @@ for /f "tokens=1,2 delims=." %%a in ("%PY_VER%") do (
     set PY_MINOR=%%b
 )
 if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 10 (
-    echo  [WARNING] Python 3.10 以上を推奨します。現在: %PY_VER%
+    echo  [WARNING] Python 3.10+ is recommended. Found: %PY_VER%
 )
 
 rem --------------------------------------------------
-:: Step 2: pip パッケージインストール
+rem Step 2: Install pip packages
 rem --------------------------------------------------
 echo.
-echo [2/6] Python パッケージをインストールしています...
-echo  (faster-whisper / PyQt6 のダウンロードに数分かかる場合があります)
+echo [2/6] Installing Python packages...
+echo  (faster-whisper and PyQt6 may take a few minutes to download)
 echo.
 pip install -r "%SCRIPT_DIR%requirements.txt" %PROXY_ARG%
 if %errorlevel% neq 0 (
     echo.
-    echo  [ERROR] パッケージのインストールに失敗しました。
+    echo  [ERROR] Package installation failed.
     set ERROR=1
     goto :end
 )
-echo  OK: パッケージのインストール完了
+echo  OK: Packages installed
 
 rem --------------------------------------------------
-rem Step 3: ctranslate2 / CUDA 確認
+rem Step 3: Verify ctranslate2 (fix CUDA DLL issues)
 rem --------------------------------------------------
 echo.
-echo [3/6] ctranslate2 の動作確認...
+echo [3/6] Checking ctranslate2...
 python -c "import ctranslate2" >nul 2>&1
 if %errorlevel% equ 0 (
-    echo  OK: ctranslate2 正常
+    echo  OK: ctranslate2 OK
     goto :ct2_ok
 )
 
-rem --- NVIDIA GPU があるか確認 ---
+rem Check for NVIDIA GPU
 nvidia-smi >nul 2>&1
 if %errorlevel% equ 0 (
-    echo  NVIDIA GPU 検出。CUDA 12 ランタイムをインストールします...
+    echo  NVIDIA GPU detected. Installing CUDA 12 runtime...
     pip install --upgrade ctranslate2 %PROXY_ARG%
     pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 %PROXY_ARG%
     python -c "import ctranslate2" >nul 2>&1
     if %errorlevel% equ 0 (
-        echo  OK: GPU+CUDA モードで動作確認
+        echo  OK: ctranslate2 running in GPU+CUDA mode
         goto :ct2_ok
     )
-    echo  CUDA 修復失敗。CPU モードにフォールバックします...
+    echo  CUDA fix failed. Falling back to CPU mode...
 ) else (
-    echo  GPU なし環境を検出しました。
+    echo  No NVIDIA GPU detected.
 )
 
-rem --- CPU モード: ctranslate2 パッケージ内の CUDA DLL を除去 ---
-echo  CUDA DLL を除去して CPU モードに設定します...
+rem CPU fallback: remove bundled CUDA DLLs from ctranslate2 package
+echo  Removing CUDA DLLs to enable CPU mode...
 python -c "import os,importlib.util,glob; s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else None; [os.remove(f) for p in ['cu*.dll','nv*.dll'] for f in (glob.glob(os.path.join(d,p)) if d else [])]"
 
 python -c "import ctranslate2" >nul 2>&1
 if %errorlevel% neq 0 (
-    echo  [ERROR] ctranslate2 の修復に失敗しました。
+    echo  [ERROR] ctranslate2 repair failed.
     set ERROR=1
     goto :end
 )
-echo  OK: CPU モードで動作確認
+echo  OK: ctranslate2 running in CPU mode
 :ct2_ok
 
 rem --------------------------------------------------
-:: Step 3: ffmpeg インストール
+rem Step 4: Install ffmpeg
 rem --------------------------------------------------
 echo.
-echo [4/6] ffmpeg を確認・インストールしています...
+echo [4/6] Checking ffmpeg...
 ffmpeg -version >nul 2>&1
 if %errorlevel% equ 0 (
-    echo  OK: ffmpeg はインストール済みです
+    echo  OK: ffmpeg already installed
 ) else (
     winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements
     if %errorlevel% neq 0 (
-        echo  [WARNING] ffmpeg の自動インストールに失敗しました。
-        echo  手動でインストールしてください: winget install Gyan.FFmpeg
+        echo  [WARNING] ffmpeg auto-install failed.
+        echo  Please install manually: winget install Gyan.FFmpeg
     ) else (
-        echo  OK: ffmpeg のインストール完了
+        echo  OK: ffmpeg installed
     )
 )
 
 rem --------------------------------------------------
-:: Step 4: 設定ファイルと起動ファイルを準備
+rem Step 5: Create config and launcher files
 rem --------------------------------------------------
 echo.
-echo [5/6] 設定ファイルと起動ファイルを準備しています...
+echo [5/6] Setting up config and launcher...
 
 if not exist "%SCRIPT_DIR%config.ini" (
     copy "%SCRIPT_DIR%config_default.ini" "%SCRIPT_DIR%config.ini" >nul
-    echo  OK: config.ini を config_default.ini から作成しました
+    echo  OK: config.ini created from config_default.ini
 ) else (
-    echo  OK: config.ini は既に存在します (上書きしません)
+    echo  OK: config.ini already exists (skipping)
 )
 
 if not "%PROXY_HOST%"=="" (
@@ -156,7 +155,7 @@ cfg.set('network', 'http_proxy',  'http://%PROXY_HOST%')
 cfg.set('network', 'ssl_verify',  'false')
 with open(f, 'w', encoding='utf-8') as fp:
     cfg.write(fp)
-print('  OK: config.ini にプロキシ設定を書き込みました')
+print('  OK: Proxy settings written to config.ini')
 "
 )
 
@@ -166,7 +165,7 @@ print('  OK: config.ini にプロキシ設定を書き込みました')
     echo python -X utf8 ui_qt.py
     echo if %%errorlevel%% neq 0 pause
 ) > "%SCRIPT_DIR%run.bat"
-echo  OK: run.bat を作成しました
+echo  OK: run.bat created
 
 set SHORTCUT=%USERPROFILE%\Desktop\Sound2Text.lnk
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
@@ -176,27 +175,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$s.Description='Sound2Text';" ^
     "$s.Save()" >nul 2>&1
 if exist "%SHORTCUT%" (
-    echo  OK: デスクトップにショートカットを作成しました
+    echo  OK: Desktop shortcut created
 )
 
 rem --------------------------------------------------
-:: Step 5: 日本語専用モデル (kotoba-whisper) 準備
+rem Step 6: Download Japanese recognition model (kotoba-whisper)
 rem --------------------------------------------------
 echo.
-echo [6/6] 日本語認識モデル (kotoba-whisper-v2.0) を準備しています...
-echo  ※ 約1.5GB のダウンロードが発生します（初回のみ）
+echo [6/6] Preparing Japanese recognition model (kotoba-whisper-v2.0)...
+echo  Note: ~1.5GB download on first run
 echo.
 
 set MODEL_DIR=%SCRIPT_DIR%models\kotoba-whisper-v2.0-ct2
 set MODEL_BIN=%MODEL_DIR%\model.bin
 
 if exist "%MODEL_BIN%" (
-    echo  OK: kotoba-whisper は既に存在します (スキップ)
+    echo  OK: kotoba-whisper already exists (skipping)
     goto :model_done
 )
 
-echo  ダウンロードと変換を開始します（10〜30分かかる場合があります）...
-echo  プロキシ環境の場合、環境変数を設定してから変換します。
+echo  Starting download and conversion (may take 10-30 minutes)...
 
 if not "%PROXY_HOST%"=="" (
     set HTTPS_PROXY=http://%PROXY_HOST%
@@ -205,7 +203,7 @@ if not "%PROXY_HOST%"=="" (
 )
 set HUGGINGFACE_HUB_DISABLE_SYMLINKS_WARNING=1
 
-:: ct2-transformers-converter を実行
+rem Find ct2-transformers-converter
 set CT2_CONV=
 for /f "delims=" %%i in ('python -c "import sys,os; print(os.path.join(os.path.dirname(sys.executable), 'Scripts', 'ct2-transformers-converter.exe'))" 2^>nul') do set CT2_CONV=%%i
 
@@ -214,13 +212,13 @@ if not exist "%CT2_CONV%" (
 )
 
 if not exist "%CT2_CONV%" (
-    echo  [WARNING] ct2-transformers-converter が見つかりません。
-    echo  手動で変換してください:
+    echo  [WARNING] ct2-transformers-converter not found.
+    echo  Convert manually:
     echo    ct2-transformers-converter --model kotoba-tech/kotoba-whisper-v2.0 --output_dir models\kotoba-whisper-v2.0-ct2 --quantization int8
     goto :model_done
 )
 
-echo  コンバーター: %CT2_CONV%
+echo  Converter: %CT2_CONV%
 "%CT2_CONV%" --model kotoba-tech/kotoba-whisper-v2.0 ^
     --output_dir "%MODEL_DIR%" ^
     --quantization int8 ^
@@ -228,38 +226,35 @@ echo  コンバーター: %CT2_CONV%
 
 if %errorlevel% neq 0 (
     echo.
-    echo  [WARNING] kotoba-whisper の変換に失敗しました。
-    echo  標準の Whisper モデルで動作します。
-    echo  後で手動で再実行してください:
+    echo  [WARNING] kotoba-whisper conversion failed.
+    echo  Standard Whisper model will be used instead.
+    echo  To retry manually:
     echo    cd "%SCRIPT_DIR%"
     echo    ct2-transformers-converter --model kotoba-tech/kotoba-whisper-v2.0 --output_dir models\kotoba-whisper-v2.0-ct2 --quantization int8
 ) else (
-    echo  OK: kotoba-whisper 変換完了
+    echo  OK: kotoba-whisper ready
 )
 
 :model_done
 
 rem --------------------------------------------------
-:: 完了
-rem --------------------------------------------------
 :end
 echo.
 if %ERROR% equ 0 (
     echo  +=========================================+
-    echo  ^|  セットアップ完了！                   ^|
+    echo  ^|  Setup complete!                       ^|
     echo  ^|                                        ^|
-    echo  ^|  起動方法:                             ^|
-    echo  ^|    run.bat をダブルクリック            ^|
-    echo  ^|    または: python ui_qt.py             ^|
+    echo  ^|  To launch:                            ^|
+    echo  ^|    Double-click run.bat                ^|
+    echo  ^|    or: python ui_qt.py                 ^|
     echo  ^|                                        ^|
-    echo  ^|  日本語認識: kotoba-whisper-v2.0        ^|
-    echo  ^|  纪要/API タブで API Key を設定して    ^|
-    echo  ^|  から録音を開始してください。          ^|
+    echo  ^|  Set API Key in the Summary/API tab    ^|
+    echo  ^|  before starting recording.            ^|
     echo  +=========================================+
 ) else (
     echo  +=========================================+
-    echo  ^|  エラーが発生しました。               ^|
-    echo  ^|  上記のメッセージを確認してください。 ^|
+    echo  ^|  Setup encountered errors.             ^|
+    echo  ^|  Check the messages above.             ^|
     echo  +=========================================+
 )
 echo.
