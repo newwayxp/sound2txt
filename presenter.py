@@ -118,9 +118,11 @@ class Presenter:
         self._session_lang: str | None = None    # detected/fixed language for session
         self._transcript_file: str | None = None # current session transcript path
 
-        # ── subtitle ──────────────────────────────────────────────────────────
-        self._sub_proc: subprocess.Popen | None = None
-        self._sub_win_proc: subprocess.Popen | None = None
+        # ── pipeline (unified: VAD + Whisper + translation) ───────────────────
+        self._pipeline_proc:  subprocess.Popen | None = None
+        self._sub_win_proc:   subprocess.Popen | None = None
+        # backward compat alias
+        self._sub_proc = None
 
         # ── state flags ───────────────────────────────────────────────────────
         self._running         = False
@@ -487,48 +489,74 @@ class Presenter:
                 _log("REC", "ERROR", f"RAW→WAV変換失敗: {e}  raw={raw_path}")
                 self._view and self._view.put_log(f"[REC] [ERROR] 音声変換失敗: {e}")
 
-    def start_subtitle(self, dst_lang: str = "") -> None:
-        """字幕プロセスと字幕ウィンドウを起動する。"""
-        self.stop_subtitle()   # 既存があれば停止
+    # ── Pipeline control (unified: audio + VAD + Whisper + translation) ────────
 
-        # config に dst_lang を書き込む
-        self.save_config({("subtitle", "dst_lang"): dst_lang})
+    _PIPELINE_SUBTITLE = os.path.join(BASE, ".pipeline_subtitle")
+    _PIPELINE_SESSION  = os.path.join(BASE, ".pipeline_session")
+    _PIPELINE_STOP     = os.path.join(BASE, ".pipeline_stop")
 
-        # subtitle_processor.py を起動
-        self._sub_proc = subprocess.Popen(
-            [sys.executable, "-X", "utf8", os.path.join(BASE, "subtitle_processor.py")],
+    def _ensure_pipeline_running(self) -> None:
+        """pipeline.py が起動していなければ起動する。"""
+        if self._pipeline_proc and self._pipeline_proc.poll() is None:
+            return
+        # stop シグナルをクリア
+        try:
+            os.remove(self._PIPELINE_STOP)
+        except FileNotFoundError:
+            pass
+        self._pipeline_proc = subprocess.Popen(
+            [sys.executable, "-X", "utf8", os.path.join(BASE, "pipeline.py")],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", env=self._env,
         )
         threading.Thread(
-            target=self._pipe, args=(self._sub_proc, "[Sub]"), daemon=True
+            target=self._pipe, args=(self._pipeline_proc, "[PL]"), daemon=True
         ).start()
-        _log("SYS", "INFO", f"subtitle_processor started pid={self._sub_proc.pid}")
+        _log("SYS", "INFO", f"pipeline started pid={self._pipeline_proc.pid}")
+        self._view and self._view.put_log(f"[UI] pipeline 起動 pid={self._pipeline_proc.pid}")
 
-        # subtitle_window.py を起動（別プロセス）
-        self._sub_win_proc = subprocess.Popen(
-            [sys.executable, "-X", "utf8", os.path.join(BASE, "subtitle_window.py")],
-            env=self._env,
-        )
-        _log("SYS", "INFO", f"subtitle_window started pid={self._sub_win_proc.pid}")
-        self._view and self._view.put_log("[UI] 字幕ウィンドウを起動しました")
+    def start_subtitle(self, dst_lang: str = "") -> None:
+        """字幕ボタン ON: pipeline を起動して subtitle シグナルを書く。"""
+        self.save_config({("subtitle", "dst_lang"): dst_lang})
+        # subtitle シグナルを書く
+        with open(self._PIPELINE_SUBTITLE, "w") as f:
+            f.write("1")
+        self._ensure_pipeline_running()
+        # 字幕ウィンドウを起動
+        if not self._sub_win_proc or self._sub_win_proc.poll() is not None:
+            self._sub_win_proc = subprocess.Popen(
+                [sys.executable, "-X", "utf8", os.path.join(BASE, "subtitle_window.py")],
+                env=self._env,
+            )
+            _log("SYS", "INFO", f"subtitle_window started pid={self._sub_win_proc.pid}")
+        self._view and self._view.put_log("[UI] 字幕開始")
 
     def stop_subtitle(self) -> None:
-        """字幕プロセスを停止する。"""
-        for proc, name in [(self._sub_proc, "subtitle_processor"),
-                           (self._sub_win_proc, "subtitle_window")]:
-            if proc and proc.poll() is None:
-                proc.terminate()
-                _log("SYS", "INFO", f"{name} stopped")
-        self._sub_proc     = None
-        self._sub_win_proc = None
-        # 字幕テキストをクリア
+        """字幕ボタン OFF: subtitle シグナルを削除。session も OFF なら pipeline 停止。"""
         try:
-            subtitle_file = os.path.join(BASE, ".subtitle_text")
-            with open(subtitle_file, "w", encoding="utf-8") as f:
-                f.write("")
-        except Exception:
+            os.remove(self._PIPELINE_SUBTITLE)
+        except FileNotFoundError:
             pass
+        # session も非アクティブなら pipeline を停止
+        if not os.path.exists(self._PIPELINE_SESSION):
+            self._stop_pipeline()
+        # 字幕ウィンドウを閉じる
+        if self._sub_win_proc and self._sub_win_proc.poll() is None:
+            self._sub_win_proc.terminate()
+            self._sub_win_proc = None
+        self._view and self._view.put_log("[UI] 字幕停止")
+
+    def _stop_pipeline(self) -> None:
+        """pipeline に停止シグナルを送り、終了を待つ。"""
+        with open(self._PIPELINE_STOP, "w") as f:
+            f.write("1")
+        if self._pipeline_proc and self._pipeline_proc.poll() is None:
+            try:
+                self._pipeline_proc.wait(timeout=10)
+            except Exception:
+                self._pipeline_proc.terminate()
+        self._pipeline_proc = None
+        _log("SYS", "INFO", "pipeline stopped")
 
     def _stop_meter(self) -> None:
         self._meter_active = False
@@ -651,44 +679,17 @@ class Presenter:
         rec_mode   = self._config.get("recording", "mode",       fallback="meeting").strip().lower()
         enable_mic = self._config.getboolean("recording", "enable_mic", fallback=True)
 
-        # Loopback recorder (meeting mode only)
+        # ── Pipeline セッション開始 ────────────────────────────────────────────
+        # pipeline.py が音声取得・VAD・Whisper・翻訳・音声保存・transcript書き込みを担当
         self._rec_proc = None
-        if rec_mode == "meeting":
-            self._view.put_log("[UI] Launching recorder.py (loopback)")
-            self._rec_proc = subprocess.Popen(
-                [sys.executable, "-X", "utf8", os.path.join(BASE, "recorder.py")],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", env=self._env,
-            )
-            threading.Thread(target=self._pipe, args=(self._rec_proc, "[Rec]"), daemon=True).start()
-            self._view.put_log(f"[UI] recorder.py started: pid={self._rec_proc.pid}")
-        else:
-            self._view.put_log("[UI] Local Mic mode: loopback recorder skipped")
-
-        # Mic is not auto-started in either mode.
-        # User clicks the VU meter to start/stop mic via toggle_mic().
         self._mic_proc = None
+
+        # session シグナルを書く → pipeline がこれを検知してセッション開始
+        with open(self._PIPELINE_SESSION, "w") as f:
+            f.write("1")
+        self._ensure_pipeline_running()
+        self._view.put_log("[UI] pipeline セッション開始")
         self._view.put_log("[UI] VU メーターをクリックするとマイク録音を開始/停止します")
-
-        # Transcriber: on-demand per-file mode
-        # セッション用 transcript ファイルを確定
-        transcript_dir = self._config.get("paths", "transcript_dir",
-                                          fallback=r"C:\Users\Public\Sound2Text\transcript")
-        os.makedirs(transcript_dir, exist_ok=True)
-        self._transcript_file = os.path.join(
-            transcript_dir,
-            f"transcript_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        )
-        # 設定言語を読み込む（auto の場合は最初のファイルで検出）
-        cfg_lang = self._config.get("recording", "language", fallback="auto").strip().lower()
-        self._session_lang = cfg_lang if cfg_lang in {"zh", "ja", "en"} else None
-
-        self._fw_stop.clear()
-        self._fw_thread = threading.Thread(
-            target=self._file_watch_loop, daemon=True
-        )
-        self._fw_thread.start()
-        self._view.put_log(f"[UI] ファイル監視開始 → {self._transcript_file}")
         self._view.put_log(t("starting"))
 
     def stop(self) -> None:
@@ -704,20 +705,17 @@ class Presenter:
             from i18n import t
             self._view.put_log(t("stopping"))
 
-        # ファイル監視スレッドに停止を通知（残ファイルを処理してから終了）
-        self._fw_stop.set()
+        # pipeline の session シグナルを削除 → pipeline が終了処理を行う
+        try:
+            os.remove(self._PIPELINE_SESSION)
+        except FileNotFoundError:
+            pass
 
-        if self._rec_proc and self._rec_proc.poll() is None:
-            self._view and self._view.put_log("[UI] Stopping recorder.py")
-            self._rec_proc.terminate()
-            # terminate() は Windows では即時強制終了 → finally が動かない
-            # → RAW ファイルが残る場合は presenter 側で WAV 変換する
-            threading.Thread(target=self._finalize_recorder_raw, daemon=True).start()
-        else:
-            self._view and self._view.put_log("[UI] recorder.py is already stopped")
+        # pipeline の終了を待つスレッドを起動（その後纪要生成）
+        self._fw_stop.set()
+        threading.Thread(target=self._wait_pipeline_and_summarize, daemon=True).start()
 
         if self._mic_proc and self._mic_proc.poll() is None:
-            self._view and self._view.put_log("[UI] Stopping mic_recorder.py")
             self._mic_proc.terminate()
 
         if self._view:
@@ -726,9 +724,32 @@ class Presenter:
             self._view.schedule(lambda: self._view.hide_ptt_button())
             self._view.schedule(lambda: self._view.dashboard_stop())
         self._stop_meter()
-        self._view and self._view.put_log("[UI] 残り音声ファイルを処理してから終了します")
+        self._view and self._view.put_log("[UI] セッション終了中... pipeline の処理完了を待っています")
 
     # ── on-demand file watcher ────────────────────────────────────────────────
+
+    def _wait_pipeline_and_summarize(self) -> None:
+        """pipeline がセッション終了処理を完了するまで待ち、纪要を生成する。"""
+        # pipeline は session シグナル削除を検知して音声保存・transcript 書き込みを完了する
+        # pipeline が終了するか subtitle だけ残って動き続けても最大 30 秒待つ
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            # transcript が書き込まれたら OK
+            if os.path.exists(STATE_FILE):
+                try:
+                    with open(STATE_FILE, encoding="utf-8") as f:
+                        tp = f.read().strip()
+                    if tp and os.path.exists(tp) and os.path.getsize(tp) > 10:
+                        break
+                except Exception:
+                    pass
+            time.sleep(1)
+
+        if self._view:
+            self._view.schedule(lambda: self._view.set_tr_status("stopped", "gray60"))
+
+        # 纪要生成
+        threading.Thread(target=self._run_summary_pipeline, daemon=True).start()
 
     def _file_watch_loop(self) -> None:
         """音声ファイルを監視し、新ファイルごとに transcriber を1回起動して処理する。"""

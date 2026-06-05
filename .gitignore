@@ -12,6 +12,9 @@ config.ini
 
 # ── ランタイム状態ファイル ────────────────────────────
 .subtitle_text
+.pipeline_subtitle
+.pipeline_session
+.pipeline_stop
 .last_transcript
 .last_corrected
 .last_language
