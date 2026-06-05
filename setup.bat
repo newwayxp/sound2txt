@@ -12,11 +12,12 @@ echo.
 set SCRIPT_DIR=%~dp0
 set ERROR=0
 set PROXY_ARG=
+set PROXY_HOST=
 
 :: ─────────────────────────────────────────────
 :: Step 0: プロキシ設定（任意）
 :: ─────────────────────────────────────────────
-echo [0/4] 社内プロキシを使用しますか？
+echo [0/5] 社内プロキシを使用しますか？
 echo  使用する場合は アドレス:ポート を入力してください。
 echo  例: proxy.company.com:8080
 echo  使用しない場合はそのまま Enter を押してください。
@@ -24,17 +25,15 @@ echo.
 set /p PROXY_INPUT="  プロキシアドレス (空欄でスキップ): "
 if not "%PROXY_INPUT%"=="" (
     set PROXY_ARG=--proxy http://%PROXY_INPUT% --trusted-host pypi.org --trusted-host files.pythonhosted.org
-    echo  OK: プロキシ設定: http://%PROXY_INPUT%
-    echo.
-    :: config.ini にプロキシを反映する（Step 4 で config.ini 作成後に追記）
     set PROXY_HOST=%PROXY_INPUT%
+    echo  OK: プロキシ設定: http://%PROXY_INPUT%
 )
 echo.
 
 :: ─────────────────────────────────────────────
 :: Step 1: Python チェック (3.10 以上)
 :: ─────────────────────────────────────────────
-echo [1/4] Python を確認しています...
+echo [1/5] Python を確認しています...
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
@@ -49,13 +48,9 @@ if %errorlevel% neq 0 (
 for /f "tokens=2" %%v in ('python --version 2^>^&1') do set PY_VER=%%v
 echo  OK: Python %PY_VER%
 
-:: 3.10 未満は警告
 for /f "tokens=1,2 delims=." %%a in ("%PY_VER%") do (
     set PY_MAJOR=%%a
     set PY_MINOR=%%b
-)
-if %PY_MAJOR% LSS 3 (
-    echo  [WARNING] Python 3.10 以上を推奨します。現在: %PY_VER%
 )
 if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 10 (
     echo  [WARNING] Python 3.10 以上を推奨します。現在: %PY_VER%
@@ -65,38 +60,31 @@ if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 10 (
 :: Step 2: pip パッケージインストール
 :: ─────────────────────────────────────────────
 echo.
-echo [2/4] Python パッケージをインストールしています...
+echo [2/5] Python パッケージをインストールしています...
 echo  (faster-whisper / PyQt6 のダウンロードに数分かかる場合があります)
 echo.
-
 pip install -r "%SCRIPT_DIR%requirements.txt" %PROXY_ARG%
 if %errorlevel% neq 0 (
     echo.
     echo  [ERROR] パッケージのインストールに失敗しました。
-    echo  プロキシを使用している場合は最初の手順でアドレスを入力してください。
-    echo.
     set ERROR=1
     goto :end
 )
-echo.
 echo  OK: パッケージのインストール完了
 
 :: ─────────────────────────────────────────────
-:: Step 3: ffmpeg インストール（faster-whisper が使用）
+:: Step 3: ffmpeg インストール
 :: ─────────────────────────────────────────────
 echo.
-echo [3/4] ffmpeg を確認・インストールしています...
+echo [3/5] ffmpeg を確認・インストールしています...
 ffmpeg -version >nul 2>&1
 if %errorlevel% equ 0 (
     echo  OK: ffmpeg はインストール済みです
 ) else (
     winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements
     if %errorlevel% neq 0 (
-        echo.
         echo  [WARNING] ffmpeg の自動インストールに失敗しました。
-        echo  手動でインストールしてください:
-        echo    winget install Gyan.FFmpeg
-        echo  ※ ffmpeg がないと音声ファイルの処理に失敗する場合があります
+        echo  手動でインストールしてください: winget install Gyan.FFmpeg
     ) else (
         echo  OK: ffmpeg のインストール完了
     )
@@ -106,9 +94,8 @@ if %errorlevel% equ 0 (
 :: Step 4: 設定ファイルと起動ファイルを準備
 :: ─────────────────────────────────────────────
 echo.
-echo [4/4] 設定ファイルと起動ファイルを準備しています...
+echo [4/5] 設定ファイルと起動ファイルを準備しています...
 
-:: config.ini がなければ config_default.ini からコピー
 if not exist "%SCRIPT_DIR%config.ini" (
     copy "%SCRIPT_DIR%config_default.ini" "%SCRIPT_DIR%config.ini" >nul
     echo  OK: config.ini を config_default.ini から作成しました
@@ -116,7 +103,6 @@ if not exist "%SCRIPT_DIR%config.ini" (
     echo  OK: config.ini は既に存在します (上書きしません)
 )
 
-:: プロキシが入力されていれば config.ini に書き込む
 if not "%PROXY_HOST%"=="" (
     python -c "
 import configparser, os
@@ -134,7 +120,6 @@ print('  OK: config.ini にプロキシ設定を書き込みました')
 "
 )
 
-:: run.bat 作成（ダブルクリックで GUI 起動）
 (
     echo @echo off
     echo cd /d "%%~dp0"
@@ -143,19 +128,76 @@ print('  OK: config.ini にプロキシ設定を書き込みました')
 ) > "%SCRIPT_DIR%run.bat"
 echo  OK: run.bat を作成しました
 
-:: デスクトップショートカット作成
 set SHORTCUT=%USERPROFILE%\Desktop\Sound2Text.lnk
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('%SHORTCUT%');" ^
     "$s.TargetPath='%SCRIPT_DIR%run.bat';" ^
     "$s.WorkingDirectory='%SCRIPT_DIR%';" ^
-    "$s.Description='Sound2Text - 音声文字起こしツール';" ^
+    "$s.Description='Sound2Text';" ^
     "$s.Save()" >nul 2>&1
 if exist "%SHORTCUT%" (
     echo  OK: デスクトップにショートカットを作成しました
-) else (
-    echo  NOTE: デスクトップショートカットの作成をスキップしました
 )
+
+:: ─────────────────────────────────────────────
+:: Step 5: 日本語専用モデル (kotoba-whisper) 準備
+:: ─────────────────────────────────────────────
+echo.
+echo [5/5] 日本語認識モデル (kotoba-whisper-v2.0) を準備しています...
+echo  ※ 約1.5GB のダウンロードが発生します（初回のみ）
+echo.
+
+set MODEL_DIR=%SCRIPT_DIR%models\kotoba-whisper-v2.0-ct2
+set MODEL_BIN=%MODEL_DIR%\model.bin
+
+if exist "%MODEL_BIN%" (
+    echo  OK: kotoba-whisper は既に存在します (スキップ)
+    goto :model_done
+)
+
+echo  ダウンロードと変換を開始します（10〜30分かかる場合があります）...
+echo  プロキシ環境の場合、環境変数を設定してから変換します。
+
+if not "%PROXY_HOST%"=="" (
+    set HTTPS_PROXY=http://%PROXY_HOST%
+    set HTTP_PROXY=http://%PROXY_HOST%
+    set HF_HUB_DISABLE_SSL_VERIFICATION=1
+)
+set HUGGINGFACE_HUB_DISABLE_SYMLINKS_WARNING=1
+
+:: ct2-transformers-converter を実行
+set CT2_CONV=
+for /f "delims=" %%i in ('python -c "import sys,os; print(os.path.join(os.path.dirname(sys.executable), 'Scripts', 'ct2-transformers-converter.exe'))" 2^>nul') do set CT2_CONV=%%i
+
+if not exist "%CT2_CONV%" (
+    for /f "delims=" %%i in ('python -c "import site,os; scripts=[p for p in site.getsitepackages() if 'site-packages' in p]; print(os.path.join(os.path.dirname(scripts[0]), 'Scripts', 'ct2-transformers-converter.exe')) if scripts else print('')" 2^>nul') do set CT2_CONV=%%i
+)
+
+if not exist "%CT2_CONV%" (
+    echo  [WARNING] ct2-transformers-converter が見つかりません。
+    echo  手動で変換してください:
+    echo    ct2-transformers-converter --model kotoba-tech/kotoba-whisper-v2.0 --output_dir models\kotoba-whisper-v2.0-ct2 --quantization int8
+    goto :model_done
+)
+
+echo  コンバーター: %CT2_CONV%
+"%CT2_CONV%" --model kotoba-tech/kotoba-whisper-v2.0 ^
+    --output_dir "%MODEL_DIR%" ^
+    --quantization int8 ^
+    --force
+
+if %errorlevel% neq 0 (
+    echo.
+    echo  [WARNING] kotoba-whisper の変換に失敗しました。
+    echo  標準の Whisper モデルで動作します。
+    echo  後で手動で再実行してください:
+    echo    cd "%SCRIPT_DIR%"
+    echo    ct2-transformers-converter --model kotoba-tech/kotoba-whisper-v2.0 --output_dir models\kotoba-whisper-v2.0-ct2 --quantization int8
+) else (
+    echo  OK: kotoba-whisper 変換完了
+)
+
+:model_done
 
 :: ─────────────────────────────────────────────
 :: 完了
@@ -170,12 +212,9 @@ if %ERROR% equ 0 (
     echo  ^|    run.bat をダブルクリック            ^|
     echo  ^|    または: python ui_qt.py             ^|
     echo  ^|                                        ^|
-    echo  ^|  初回起動時に Whisper モデルを         ^|
-    echo  ^|  ダウンロードします（small: 約244MB、  ^|
-    echo  ^|  large-v3: 約1.5GB）                   ^|
-    echo  ^|                                        ^|
-    echo  ^|  API Key を設定してから録音を開始      ^|
-    echo  ^|  してください（纪要/API タブ）         ^|
+    echo  ^|  日本語認識: kotoba-whisper-v2.0       ^|
+    echo  ^|  纪要/API タブで API Key を設定して    ^|
+    echo  ^|  から録音を開始してください。          ^|
     echo  +=========================================+
 ) else (
     echo  +=========================================+
