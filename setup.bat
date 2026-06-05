@@ -200,15 +200,14 @@ set HUGGINGFACE_HUB_DISABLE_SYMLINKS_WARNING=1
 
 rem PyTorch is required by ct2-transformers-converter to load and convert the model
 python -c "import torch" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  Installing PyTorch CPU for model conversion (approx 200MB)...
-    pip install torch --index-url https://download.pytorch.org/whl/cpu --trusted-host download.pytorch.org %PROXY_ARG%
-    if %errorlevel% neq 0 (
-        echo  [ERROR] PyTorch install failed. Check network/proxy and retry setup.bat.
-        set ERROR=1
-        goto :end
-    )
-)
+if %errorlevel% equ 0 goto :torch_ok
+echo  Installing PyTorch CPU for model conversion (approx 200MB)...
+pip install torch --index-url https://download.pytorch.org/whl/cpu --trusted-host download.pytorch.org %PROXY_ARG%
+if %errorlevel% equ 0 goto :torch_ok
+echo  [ERROR] PyTorch install failed. Check network/proxy and retry setup.bat.
+set ERROR=1
+goto :end
+:torch_ok
 
 rem Find ct2-transformers-converter
 set CT2_CONV=
