@@ -79,7 +79,7 @@ echo [3/6] Checking faster-whisper...
 
 rem Patch ctranslate2 __init__.py: add try/except around CDLL loading
 rem (ctranslate2 tries to load all bundled DLLs without error handling)
-python -c "import importlib.util,os; p=os.path.join(os.path.dirname(importlib.util.find_spec('ctranslate2').origin),'__init__.py'); t=open(p).read(); t2=t.replace('        ctypes.CDLL(library)','        try:\n            ctypes.CDLL(library)\n        except OSError:\n            pass') if 'except OSError' not in t else t; open(p,'w').write(t2); print('  ctranslate2 patch: ' + ('applied' if t2!=t else 'already OK'))"
+python -c "import importlib.util,os; p=os.path.join(os.path.dirname(importlib.util.find_spec('ctranslate2').origin),'__init__.py'); t=open(p).read(); t2=t.replace('        ctypes.CDLL(library)','        try:\n            ctypes.CDLL(library)\n        except OSError:\n            pass') if 'except OSError' not in t else t; open(p,'w').write(t2); print('  ctranslate2 patch: ' + ('applied' if 'except OSError' not in t else 'already OK'))"
 
 python -c "from faster_whisper import WhisperModel" >nul 2>&1
 if %errorlevel% equ 0 (
