@@ -710,8 +710,12 @@ class Presenter:
             os.remove(self._PIPELINE_SESSION)
         except FileNotFoundError:
             pass
+        # subtitle が非アクティブなら pipeline を停止
+        if not os.path.exists(self._PIPELINE_SUBTITLE):
+            with open(self._PIPELINE_STOP, "w") as f:
+                f.write("1")
 
-        # pipeline の終了を待つスレッドを起動（その後纪要生成）
+        # session 完了を待ってから纪要生成
         self._fw_stop.set()
         threading.Thread(target=self._wait_pipeline_and_summarize, daemon=True).start()
 
@@ -730,20 +734,21 @@ class Presenter:
 
     def _wait_pipeline_and_summarize(self) -> None:
         """pipeline がセッション終了処理を完了するまで待ち、纪要を生成する。"""
-        # pipeline は session シグナル削除を検知して音声保存・transcript 書き込みを完了する
-        # pipeline が終了するか subtitle だけ残って動き続けても最大 30 秒待つ
-        deadline = time.time() + 30
+        _SESS_DONE = os.path.join(BASE, ".pipeline_session_done")
+        # pipeline_session_done シグナルを待つ（最大 60 秒）
+        deadline = time.time() + 60
         while time.time() < deadline:
-            # transcript が書き込まれたら OK
-            if os.path.exists(STATE_FILE):
+            if os.path.exists(_SESS_DONE):
                 try:
-                    with open(STATE_FILE, encoding="utf-8") as f:
-                        tp = f.read().strip()
-                    if tp and os.path.exists(tp) and os.path.getsize(tp) > 10:
-                        break
+                    os.remove(_SESS_DONE)
                 except Exception:
                     pass
-            time.sleep(1)
+                _log("SYS", "INFO", "session_done シグナル受信")
+                break
+            time.sleep(0.5)
+        else:
+            _log("SYS", "WARN", "session_done タイムアウト → フォールバック: RAW 変換を試みる")
+            self._finalize_recorder_raw()  # 安全策: 残 RAW ファイルを変換
 
         if self._view:
             self._view.schedule(lambda: self._view.set_tr_status("stopped", "gray60"))

@@ -758,8 +758,8 @@ class App(QMainWindow):
             safe_key = val.replace("-", "_")
             setattr(self, f"_rb_model_{safe_key}", rb)
             model_rbs[val] = rb
-            # CPU でも tiny / small は使用可能 → medium / large-v3 のみロック
-            if val in ("medium", "large-v3"):
+            # CPU でも tiny / small / medium は使用可能 → large-v3 のみロック
+            if val == "large-v3":
                 self._gpu_locked_buttons.append(rb)
 
         model_hbox.addStretch()

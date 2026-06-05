@@ -49,12 +49,13 @@ from faster_whisper import WhisperModel
 from log_util import tr_info, tr_debug, tr_warn, tr_error, sys_info, sys_error
 
 # ── signal files ──────────────────────────────────────────────────────────────
-SIGNAL_SUBTITLE = os.path.join(_BASE, ".pipeline_subtitle")
-SIGNAL_SESSION  = os.path.join(_BASE, ".pipeline_session")
-SIGNAL_STOP     = os.path.join(_BASE, ".pipeline_stop")
-SUBTITLE_FILE   = os.path.join(_BASE, ".subtitle_text")
-LANG_FILE       = os.path.join(_BASE, ".last_language")
-STATE_FILE      = os.path.join(_BASE, ".last_transcript")
+SIGNAL_SUBTITLE  = os.path.join(_BASE, ".pipeline_subtitle")
+SIGNAL_SESSION   = os.path.join(_BASE, ".pipeline_session")
+SIGNAL_STOP      = os.path.join(_BASE, ".pipeline_stop")
+SIGNAL_SESS_DONE = os.path.join(_BASE, ".pipeline_session_done")  # session 完了通知
+SUBTITLE_FILE    = os.path.join(_BASE, ".subtitle_text")
+LANG_FILE        = os.path.join(_BASE, ".last_language")
+STATE_FILE       = os.path.join(_BASE, ".last_transcript")
 
 SAMPLE_RATE = 16000
 CHUNK_SIZE  = 1024
@@ -197,9 +198,11 @@ def run():
     cfg.read(os.path.join(_BASE, "config.ini"), encoding="utf-8")
 
     # ── model setup ───────────────────────────────────────────────────────────
+    # CPU でも medium まで許可（速度は遅くなる）
     model_size = cfg.get("recording", "model_size", fallback="small").strip()
-    if model_size not in ("tiny", "small"):
-        model_size = "small"   # CPU では small 以下推奨
+    if model_size == "large-v3":
+        model_size = "medium"  # large-v3 のみ CPU では非推奨
+        sys_info("large-v3 → medium に変更 (CPU)")
 
     device_cfg = cfg.get("recording", "device", fallback="auto").strip().lower()
     if device_cfg == "auto":
@@ -316,6 +319,10 @@ def run():
         raw_file_path   = None
         transcript_file = None
         session_ts      = None
+        # 完了通知を書き込む（presenter が待機中の場合に通知）
+        with open(SIGNAL_SESS_DONE, "w") as f:
+            f.write("done")
+        sys_info("session 完了シグナル書き込み")
 
     def _write_subtitle(text: str):
         try:

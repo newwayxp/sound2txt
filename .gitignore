@@ -15,6 +15,7 @@ config.ini
 .pipeline_subtitle
 .pipeline_session
 .pipeline_stop
+.pipeline_session_done
 .last_transcript
 .last_corrected
 .last_language
