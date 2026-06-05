@@ -72,31 +72,27 @@ if %errorlevel% neq 0 (
 echo  OK: Packages installed
 
 rem --------------------------------------------------
-rem Step 3: Verify faster-whisper / fix CUDA DLL issues
+rem Step 3: Patch ctranslate2 + verify faster-whisper
 rem --------------------------------------------------
 echo.
 echo [3/6] Checking faster-whisper...
-python -c "from faster_whisper import WhisperModel" >nul 2>&1
-if %errorlevel% equ 0 (
-    echo  OK: faster-whisper OK
-    goto :ct2_ok
-)
 
-rem Upgrade ctranslate2 (v4.7+ fixes the bundled CUDA DLL issue)
-echo  Upgrading ctranslate2...
-pip install "ctranslate2>=4.7.0" %PROXY_ARG%
+rem Patch ctranslate2 __init__.py: add try/except around CDLL loading
+rem (ctranslate2 tries to load all bundled DLLs without error handling)
+python -c "import importlib.util,os; p=os.path.join(os.path.dirname(importlib.util.find_spec('ctranslate2').origin),'__init__.py'); t=open(p).read(); t2=t.replace('        ctypes.CDLL(library)','        try:\n            ctypes.CDLL(library)\n        except OSError:\n            pass') if 'except OSError' not in t else t; open(p,'w').write(t2); print('  ctranslate2 patch: ' + ('applied' if t2!=t else 'already OK'))"
+
 python -c "from faster_whisper import WhisperModel" >nul 2>&1
 if %errorlevel% equ 0 (
     nvidia-smi >nul 2>&1
     if %errorlevel% equ 0 (
-        echo  OK: faster-whisper OK (GPU detected)
+        echo  OK: faster-whisper OK (NVIDIA GPU detected)
     ) else (
         echo  OK: faster-whisper OK (CPU mode)
     )
     goto :ct2_ok
 )
 
-rem Upgrade did not fix it - remove bundled CUDA DLLs as final fallback
+rem Patch did not fix it - remove bundled CUDA DLLs as fallback
 echo  Removing bundled CUDA DLLs (CPU fallback)...
 python -c "import os,importlib.util,glob; s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else ''; removed=[f for p in ['cu*.dll','nv*.dll'] for f in glob.glob(os.path.join(d,p))]; [os.remove(f) for f in removed]; print(len(removed), 'CUDA DLL(s) removed')"
 

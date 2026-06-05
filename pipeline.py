@@ -208,11 +208,14 @@ def run():
     cfg.read(os.path.join(_BASE, "config.ini"), encoding="utf-8")
 
     # ── model setup ───────────────────────────────────────────────────────────
-    # CPU でも medium まで許可（速度は遅くなる）
-    model_size = cfg.get("recording", "model_size", fallback="small").strip()
-    if model_size == "large-v3":
-        model_size = "medium"  # large-v3 のみ CPU では非推奨
-        sys_info("large-v3 → medium に変更 (CPU)")
+    # Import faster-whisper first so ctranslate2 is cached in sys.modules
+    # before device detection reuses it (avoids double DLL load attempts)
+    try:
+        from faster_whisper import WhisperModel
+    except (OSError, ImportError) as e:
+        sys_error(f"faster-whisper load failed: {e}")
+        sys_error("Run setup.bat to repair the installation")
+        return
 
     device_cfg = cfg.get("recording", "device", fallback="auto").strip().lower()
     if device_cfg == "auto":
@@ -224,6 +227,11 @@ def run():
     else:
         device = device_cfg
     compute_type = "float16" if device == "cuda" else "int8"
+
+    model_size = cfg.get("recording", "model_size", fallback="small").strip()
+    if model_size == "large-v3" and device == "cpu":
+        model_size = "medium"
+        sys_info("large-v3 is not recommended on CPU, switching to medium")
 
     # ── session language（モデルロードより先に決定する）────────────────────
     cfg_lang = cfg.get("recording", "language", fallback="auto").strip().lower()
@@ -257,13 +265,6 @@ def run():
         return model_size
 
     # モデルロード（session_lang 確定後）
-    try:
-        from faster_whisper import WhisperModel
-    except (OSError, ImportError) as e:
-        sys_error(f"faster-whisper / ctranslate2 ロード失敗: {e}")
-        sys_error("setup.bat を再実行してください")
-        return
-
     model_path          = _resolve_model(session_lang)
     sys_info(f"pipeline: model={model_path} device={device}")
     whisper             = WhisperModel(model_path, device=device, compute_type=compute_type)
