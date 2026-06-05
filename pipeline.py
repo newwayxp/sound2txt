@@ -315,18 +315,22 @@ def run():
 
     # Add nvidia pip-package DLL dirs to search path so ctranslate2 can
     # find cublas/cudart when using GPU (pip install nvidia-cublas-cu12 etc.)
+    # nvidia packages are namespace packages (__file__ is None), so locate
+    # via site-packages directory instead.
     if device == "cuda" and sys.platform == "win32":
         try:
-            import importlib as _il
-            for _pkg in ["nvidia.cuda_runtime", "nvidia.cublas"]:
-                try:
-                    _m = _il.import_module(_pkg)
-                    _b = os.path.join(os.path.dirname(_m.__file__), "bin")
-                    if os.path.isdir(_b):
-                        os.add_dll_directory(_b)
-                        sys_info(f"CUDA DLL path added: {_b}")
-                except ImportError:
-                    pass
+            import site as _site
+            _site_dirs = _site.getsitepackages()
+            try:
+                _site_dirs = _site_dirs + [_site.getusersitepackages()]
+            except Exception:
+                pass
+            for _site_dir in _site_dirs:
+                for _sub in ["nvidia/cublas/bin", "nvidia/cuda_runtime/bin"]:
+                    _dll_dir = os.path.join(_site_dir, _sub.replace("/", os.sep))
+                    if os.path.isdir(_dll_dir):
+                        os.add_dll_directory(_dll_dir)
+                        sys_info(f"CUDA DLL path: {_dll_dir}")
         except Exception:
             pass
 
