@@ -48,10 +48,8 @@ Source: "presenter.py";   DestDir: "{app}"; Flags: ignoreversion
 Source: "appconfig.py";   DestDir: "{app}"; Flags: ignoreversion
 Source: "i18n.py";        DestDir: "{app}"; Flags: ignoreversion
 ; ── Recording / transcription pipeline ────────────────────────────────────────
-Source: "start.py";           DestDir: "{app}"; Flags: ignoreversion
 Source: "pipeline.py";        DestDir: "{app}"; Flags: ignoreversion
 Source: "log_util.py";        DestDir: "{app}"; Flags: ignoreversion
-Source: "recorder.py";        DestDir: "{app}"; Flags: ignoreversion
 Source: "mic_recorder.py";    DestDir: "{app}"; Flags: ignoreversion
 Source: "transcriber.py";     DestDir: "{app}"; Flags: ignoreversion
 Source: "summarizer.py";      DestDir: "{app}"; Flags: ignoreversion
@@ -59,7 +57,6 @@ Source: "subtitle_window.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "device_utils.py";    DestDir: "{app}"; Flags: ignoreversion
 ; ── Tools ──────────────────────────────────────────────────────────────────────
 Source: "debug_modules.py"; DestDir: "{app}"; Flags: ignoreversion
-Source: "record_test.py"; DestDir: "{app}"; Flags: ignoreversion
 ; ── Setup / config ─────────────────────────────────────────────────────────────
 Source: "requirements.txt";   DestDir: "{app}"; Flags: ignoreversion
 Source: "setup.bat";          DestDir: "{app}"; Flags: ignoreversion

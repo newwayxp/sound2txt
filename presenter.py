@@ -86,6 +86,7 @@ class ViewProtocol:
     def set_sum_status(self, text_key: str, color: str): ...
     def show_ptt_button(self): ...
     def hide_ptt_button(self): ...
+    def clear_results(self): ...
 
 
 # ── Presenter ─────────────────────────────────────────────────────────────────
@@ -632,7 +633,8 @@ class Presenter:
 
         # Clean up signal files (including any stale PTT stop signal)
         for path in (STOP_SIGNAL, STATE_FILE, LANG_FILE,
-                     os.path.join(BASE, ".ptt_stop")):
+                     os.path.join(BASE, ".ptt_stop"),
+                     os.path.join(BASE, ".last_corrected")):
             if os.path.exists(path):
                 os.remove(path)
 
@@ -650,6 +652,7 @@ class Presenter:
         self._view.schedule(lambda: self._view.set_tr_status("running",  "#44dd44"))
         self._view.schedule(lambda: self._view.set_sum_status("standby", "gray60"))
         self._view.schedule(lambda: self._view.dashboard_start())
+        self._view.schedule(lambda: self._view.clear_results())
         # Both modes: show VU bar with blue dot; user clicks VU to start mic
         self._view.schedule(lambda: self._view.hide_onair())      # dot = blue
         self._view.schedule(lambda: self._view.show_ptt_button()) # show VU container
@@ -921,9 +924,19 @@ class Presenter:
         transcript_path = self._read_last_transcript()
         if transcript_path:
             self._view and self._view.put_log(f"[UI] Transcript file: {transcript_path}")
-            # Show raw transcript immediately in the Transcript tab
+            # Prefer corrected file if available (poll thread already showed it during session)
+            _display_path = transcript_path
+            _corrected_state = os.path.join(BASE, ".last_corrected")
+            try:
+                if os.path.exists(_corrected_state):
+                    with open(_corrected_state, encoding="utf-8") as _f:
+                        _cp = _f.read().strip()
+                    if _cp and os.path.exists(_cp):
+                        _display_path = _cp
+            except Exception:
+                pass
             if self._view and hasattr(self._view, "show_transcript"):
-                _p = transcript_path
+                _p = _display_path
                 self._view.schedule(lambda p=_p: self._view.show_transcript(p))
         else:
             self._view and self._view.put_log("[UI] Transcript file was not created")

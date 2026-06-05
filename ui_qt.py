@@ -421,6 +421,11 @@ class App(QMainWindow):
         except Exception as e:
             self._minutes_view.setPlainText(f"[Error reading minutes: {e}]")
 
+    def clear_results(self) -> None:
+        """Clear transcript and minutes tabs when a new session starts."""
+        self._transcript_view.clear()
+        self._minutes_view.clear()
+
     # ── Initial UI state from config ──────────────────────────────────────────
 
     def _apply_initial_ui_state(self) -> None:
@@ -594,12 +599,16 @@ class App(QMainWindow):
 
     def _build_settings_tabs(self, parent: QWidget) -> QTabWidget:
         tabs = QTabWidget(parent)
+        tabs.addTab(self._build_tab_transcript(tabs), t("tab_transcript"))
+        tabs.addTab(self._build_tab_minutes(tabs),    t("tab_minutes"))
+        # Visual separator between result tabs and settings tabs
+        _sep = QWidget()
+        tabs.addTab(_sep, "┆")
+        tabs.setTabEnabled(tabs.count() - 1, False)
         tabs.addTab(self._build_tab_paths(tabs),      t("tab_paths"))
         tabs.addTab(self._build_tab_rec(tabs),        t("tab_rec"))
         tabs.addTab(self._build_tab_api(tabs),        t("tab_api"))
         tabs.addTab(self._build_tab_network(tabs),    t("tab_network"))
-        tabs.addTab(self._build_tab_transcript(tabs), t("tab_transcript"))
-        tabs.addTab(self._build_tab_minutes(tabs),    t("tab_minutes"))
         return tabs
 
     # ── Paths tab ─────────────────────────────────────────────────────────────
@@ -953,9 +962,7 @@ class App(QMainWindow):
 
         self._transcript_view = QTextEdit()
         self._transcript_view.setReadOnly(True)
-        self._transcript_view.setPlaceholderText(
-            "Transcribed text will appear here after the session ends."
-        )
+        self._transcript_view.setPlaceholderText(t("transcript_hint"))
         self._transcript_view.setStyleSheet(
             "QTextEdit { font-family: 'Meiryo UI', 'Microsoft YaHei', sans-serif;"
             "  font-size: 13px; line-height: 1.6; }"
@@ -973,9 +980,7 @@ class App(QMainWindow):
 
         self._minutes_view = QTextEdit()
         self._minutes_view.setReadOnly(True)
-        self._minutes_view.setPlaceholderText(
-            "Meeting minutes will appear here after processing."
-        )
+        self._minutes_view.setPlaceholderText(t("minutes_hint"))
         self._minutes_view.setStyleSheet(
             "QTextEdit { font-family: 'Meiryo UI', 'Microsoft YaHei', sans-serif;"
             "  font-size: 13px; line-height: 1.6; }"
