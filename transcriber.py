@@ -730,5 +730,118 @@ def main():
         tr_info(f"保存しました: {out.path}")
 
 
+def main_single(wav_path: str, output_file: str, language: str | None, source: str = "loopback") -> None:
+    """
+    単一ファイルモード: 1ファイルを転写して output_file に追記し done/ に移動して終了。
+    presenter が 1ファイルごとに本プロセスを起動する設計に対応。
+    """
+    _cfg = configparser.ConfigParser()
+    _cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini"), encoding="utf-8")
+
+    audio_dir      = _cfg.get("paths", "audio_dir")
+    mic_dir        = _cfg.get("paths", "mic_dir", fallback="")
+    model_size     = _cfg.get("recording", "model_size", fallback="small").strip()
+    cfg_device     = _cfg.get("recording", "device", fallback="auto").strip().lower()
+
+    if cfg_device == "auto":
+        try:
+            import ctranslate2
+            device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+        except Exception:
+            device = "cpu"
+    else:
+        device = cfg_device
+
+    compute_type = "float16" if device == "cuda" else "int8"
+
+    vocab_file = _resolve_vocab_file(_cfg)
+    vocab      = load_vocabulary(vocab_file)
+
+    tr_info(f"[single] loading {model_size} ({device})")
+    whisper_model = WhisperModel(model_size, device=device, compute_type=compute_type)
+    tr_info(f"[single] model ready, processing: {os.path.basename(wav_path)}")
+
+    # 言語が未確定の場合は自動検出
+    if not language:
+        prompt = build_initial_prompt(None, vocab)
+        try:
+            segs, info = whisper_model.transcribe(
+                wav_path, language=None, initial_prompt=prompt,
+                vad_filter=True, vad_parameters={"min_silence_duration_ms": 500},
+            )
+            list(segs)  # consume to get info
+            raw = LANG_ALIAS.get(info.language, info.language)
+            if raw in SUPPORTED_LANGS and info.language_probability >= MIN_CONFIDENCE:
+                language = raw
+                tr_info(f"[single] 言語検出: {language} ({info.language_probability:.0%})")
+                with open(LANG_FILE, "w", encoding="utf-8") as f:
+                    f.write(language)
+            else:
+                language = _OS_DEFAULT_LANG
+                tr_warn(f"[single] 低信頼 → OS言語: {language}")
+        except Exception as e:
+            language = _OS_DEFAULT_LANG
+            tr_error(f"[single] 言語検出失敗: {e}")
+
+    # 転写
+    prompt     = build_initial_prompt(language, vocab)
+    file_start = _parse_file_start_time(wav_path)
+    self_label = _SELF_LABEL.get(language, "") if source == "mic" else ""
+    try:
+        segs, _ = whisper_model.transcribe(
+            wav_path, language=language, initial_prompt=prompt,
+            vad_filter=True, vad_parameters={"min_silence_duration_ms": 500},
+        )
+        seg_list = list(segs)
+    except Exception as e:
+        tr_error(f"[single] transcribe error: {e}")
+        seg_list = []
+
+    lines = []
+    for seg in seg_list:
+        text = seg.text.strip()
+        if not text or any(p in text for p in HALLUCINATION_PHRASES):
+            continue
+        if file_start:
+            ts = (file_start + timedelta(seconds=seg.start)).strftime("%H:%M:%S")
+        else:
+            ts = datetime.now().strftime("%H:%M:%S")
+        label = f" {self_label}" if self_label else ""
+        lines.append(f"[{ts}]{label} {text}")
+
+    # 転写結果を追記
+    if lines:
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        with open(output_file, "a", encoding="utf-8-sig") as f:
+            for line in lines:
+                f.write(line + "\n")
+        tr_info(f"[single] {len(lines)}行追記: {os.path.basename(output_file)}")
+    else:
+        tr_debug(f"[single] 無音またはフィルタで除外: {os.path.basename(wav_path)}")
+
+    # done/ に移動
+    done_dir = os.path.join(mic_dir if source == "mic" else audio_dir, "done")
+    os.makedirs(done_dir, exist_ok=True)
+    try:
+        os.rename(wav_path, os.path.join(done_dir, os.path.basename(wav_path)))
+        tr_debug(f"[single] done→done/ ({source}): {os.path.basename(wav_path)}")
+    except Exception as e:
+        tr_error(f"[single] done移動失敗: {e}")
+
+
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--file",   help="単一ファイルモード: 転写する WAV ファイルパス")
+    parser.add_argument("--output", help="転写結果の出力ファイルパス（追記モード）")
+    parser.add_argument("--lang",   help="言語コード (zh/ja/en)。省略時は自動検出")
+    parser.add_argument("--source", default="loopback", help="loopback or mic")
+    args = parser.parse_args()
+
+    if args.file:
+        if not args.output:
+            print("ERROR: --file には --output も必要です", flush=True)
+            sys.exit(1)
+        main_single(args.file, args.output, args.lang or None, args.source)
+    else:
+        main()

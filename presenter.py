@@ -107,10 +107,16 @@ class Presenter:
         self._view: ViewProtocol | None = None
 
         # ── subprocess handles ────────────────────────────────────────────────
-        self._rec_proc  = None
-        self._tr_proc   = None
-        self._mic_proc  = None
+        self._rec_proc    = None
+        self._tr_proc     = None   # kept for _pipe / dashboard compat
+        self._mic_proc    = None
         self._ollama_proc = None
+
+        # ── on-demand transcriber (file watcher) ──────────────────────────────
+        self._fw_stop      = threading.Event()   # set when stop() is called
+        self._fw_thread: threading.Thread | None = None
+        self._session_lang: str | None = None    # detected/fixed language for session
+        self._transcript_file: str | None = None # current session transcript path
 
         # ── state flags ───────────────────────────────────────────────────────
         self._running         = False
@@ -547,20 +553,25 @@ class Presenter:
         self._mic_proc = None
         self._view.put_log("[UI] VU メーターをクリックするとマイク録音を開始/停止します")
 
-        # Transcriber (pre-loaded or fresh start)
-        if self._tr_proc and self._tr_proc.poll() is None:
-            self._view.put_log(f"[UI] transcriber.py already running (pre-loaded): pid={self._tr_proc.pid}")
-        else:
-            self._view.put_log("[UI] Launching transcriber.py")
-            self._tr_proc = subprocess.Popen(
-                [sys.executable, "-X", "utf8", os.path.join(BASE, "transcriber.py")],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", env=self._env,
-            )
-            self._view.put_log(f"[UI] transcriber.py started: pid={self._tr_proc.pid}")
-            threading.Thread(target=self._pipe, args=(self._tr_proc, "[Tr]"), daemon=True).start()
+        # Transcriber: on-demand per-file mode
+        # セッション用 transcript ファイルを確定
+        transcript_dir = self._config.get("paths", "transcript_dir",
+                                          fallback=r"C:\Users\Public\Sound2Text\transcript")
+        os.makedirs(transcript_dir, exist_ok=True)
+        self._transcript_file = os.path.join(
+            transcript_dir,
+            f"transcript_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        )
+        # 設定言語を読み込む（auto の場合は最初のファイルで検出）
+        cfg_lang = self._config.get("recording", "language", fallback="auto").strip().lower()
+        self._session_lang = cfg_lang if cfg_lang in {"zh", "ja", "en"} else None
 
-        threading.Thread(target=self._after_trans, daemon=True).start()
+        self._fw_stop.clear()
+        self._fw_thread = threading.Thread(
+            target=self._file_watch_loop, daemon=True
+        )
+        self._fw_thread.start()
+        self._view.put_log(f"[UI] ファイル監視開始 → {self._transcript_file}")
         self._view.put_log(t("starting"))
 
     def stop(self) -> None:
@@ -575,10 +586,9 @@ class Presenter:
             self._view.schedule(lambda: self._view.set_stop_enabled(False))
             from i18n import t
             self._view.put_log(t("stopping"))
-            self._view.put_log("[UI] Creating stop signal for transcriber.py")
 
-        with open(STOP_SIGNAL, "w", encoding="utf-8") as fh:
-            fh.write("stop")
+        # ファイル監視スレッドに停止を通知（残ファイルを処理してから終了）
+        self._fw_stop.set()
 
         if self._rec_proc and self._rec_proc.poll() is None:
             self._view and self._view.put_log("[UI] Stopping recorder.py")
@@ -596,29 +606,156 @@ class Presenter:
             self._view.schedule(lambda: self._view.hide_ptt_button())
             self._view.schedule(lambda: self._view.dashboard_stop())
         self._stop_meter()
-        self._view and self._view.put_log(
-            "[UI] Waiting for transcriber.py to drain remaining audio files"
-        )
+        self._view and self._view.put_log("[UI] 残り音声ファイルを処理してから終了します")
 
-    # ── after-transcription pipeline ─────────────────────────────────────────
+    # ── on-demand file watcher ────────────────────────────────────────────────
 
-    def _after_trans(self) -> None:
+    def _file_watch_loop(self) -> None:
+        """音声ファイルを監視し、新ファイルごとに transcriber を1回起動して処理する。"""
         try:
-            self._after_trans_impl()
+            self._file_watch_loop_impl()
         except Exception as e:
-            self._view and self._view.put_log(f"[UI] ⚠ Error in pipeline: {e}")
+            _log("SYS", "ERROR", f"file_watch_loop error: {e}")
+            self._view and self._view.put_log(f"[UI] [ERROR] ファイル監視エラー: {e}")
         finally:
-            # Always clean up mic/meter regardless of errors
             self._stop_meter()
             if self._view:
                 self._view.schedule(lambda: self._view.hide_onair())
                 self._view.schedule(self._set_controls_idle)
 
-    def _after_trans_impl(self) -> None:
-        self._wait_process(self._tr_proc, "transcriber.py", timeout_sec=None)
+    def _file_watch_loop_impl(self) -> None:
+        """ファイル監視メインループ：新ファイルごとに transcriber --file を起動。"""
+        audio_dir  = self._config.get("paths", "audio_dir")
+        mic_dir    = self._config.get("paths", "mic_dir", fallback="")
+        rec_mode   = self._config.get("recording", "mode", fallback="meeting").strip().lower()
+        rec_sec    = self._config.getint("recording", "record_sec", fallback=30)
+        use_loopback = (rec_mode != "local_mic")
+
+        seen: set[str] = set()
+        start_cutoff = 0.0
+        try:
+            with open(START_FILE) as f:
+                start_cutoff = float(f.read().strip())
+        except Exception:
+            pass
+
+        POLL_SEC   = 1.0
+        DRAIN_WAIT = 3
+
+        def _new_files(directory: str, pattern: str) -> list[str]:
+            return sorted(
+                f for f in glob.glob(os.path.join(directory, pattern))
+                if f not in seen and os.path.getmtime(f) >= start_cutoff
+            )
+
+        def _process_file(wav: str, source: str) -> None:
+            seen.add(wav)
+            _log("TR", "INFO", f"on-demand start ({source}): {os.path.basename(wav)}")
+            self._view and self._view.put_log(f"[TR] 認識開始: {os.path.basename(wav)} ({source})")
+
+            cmd = [
+                sys.executable, "-X", "utf8",
+                os.path.join(BASE, "transcriber.py"),
+                "--file",   wav,
+                "--output", self._transcript_file,
+                "--source", source,
+            ]
+            if self._session_lang:
+                cmd += ["--lang", self._session_lang]
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", env=self._env,
+            )
+            # pipe stdout to UI/log (reuse existing _pipe)
+            self._tr_proc = proc   # _pipe の dashboard 更新に使用
+            threading.Thread(target=self._pipe, args=(proc, "[Tr]"), daemon=True).start()
+            proc.wait()
+
+            # 検出言語を更新
+            if os.path.exists(LANG_FILE):
+                try:
+                    with open(LANG_FILE, encoding="utf-8") as f:
+                        detected = f.read().strip()
+                    if detected and detected != self._session_lang:
+                        self._session_lang = detected
+                        _log("TR", "INFO", f"言語確定: {detected}")
+                except Exception:
+                    pass
+
+            # dashboard 更新
+            if self._view and self._running:
+                done_base = mic_dir if source == "mic" else audio_dir
+                secs = self._wav_secs(os.path.join(done_base, "done", os.path.basename(wav)))
+                if secs <= 0:
+                    secs = float(rec_sec)
+                primary = "loopback" if rec_mode == "meeting" else "mic"
+                if source == primary:
+                    self._view.schedule(lambda s=secs: self._view.dashboard_add_trans(s))
+
+        # ── メインループ ──────────────────────────────────────────────────────
+        _log("SYS", "INFO", "file_watch_loop started")
+        while True:
+            # ループバック音声
+            if use_loopback:
+                for wav in _new_files(audio_dir, "audio_*.wav"):
+                    _process_file(wav, "loopback")
+
+            # マイク音声
+            if mic_dir and os.path.isdir(mic_dir):
+                for wav in _new_files(mic_dir, "mic_*.wav"):
+                    _process_file(wav, "mic")
+
+            # 停止シグナル + 残ファイルなし → 終了
+            if self._fw_stop.is_set():
+                time.sleep(DRAIN_WAIT)  # レコーダーの書き込み完了を待つ
+                # 最終チェック
+                remaining  = ((_new_files(audio_dir, "audio_*.wav") if use_loopback else [])
+                              + (_new_files(mic_dir, "mic_*.wav") if mic_dir and os.path.isdir(mic_dir) else []))
+                if not remaining:
+                    _log("SYS", "INFO", "全ファイル処理完了 → file_watch_loop 終了")
+                    break
+                for wav in remaining:
+                    src = "mic" if os.path.basename(wav).startswith("mic_") else "loopback"
+                    _process_file(wav, src)
+                break
+
+            time.sleep(POLL_SEC)
+
+        # transcript が作成されたら STATE_FILE に書く
+        if self._transcript_file and os.path.exists(self._transcript_file):
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                f.write(self._transcript_file)
+            if self._session_lang:
+                with open(LANG_FILE, "w", encoding="utf-8") as f:
+                    f.write(self._session_lang)
+
         if self._view:
             self._view.schedule(lambda: self._view.set_tr_status("stopped", "gray60"))
 
+        # ── 以降は纪要生成パイプラインへ（旧 _after_trans_impl の後半）──────
+        # この関数を呼び出した _file_watch_loop の finally で後処理、
+        # 纪要は _run_summary_pipeline を別途呼ぶ
+        threading.Thread(target=self._run_summary_pipeline, daemon=True).start()
+
+    def _after_trans_impl(self) -> None:
+        pass  # 旧互換（file_watch_loop に移行済み）
+
+    def _run_summary_pipeline(self) -> None:
+        """纪要生成パイプライン（file_watch_loop 終了後に呼ばれる）。"""
+        try:
+            self._run_summary_pipeline_impl()
+        except Exception as e:
+            _log("SYS", "ERROR", f"summary pipeline error: {e}")
+            self._view and self._view.put_log(f"[UI] [ERROR] 纪要生成エラー: {e}")
+        finally:
+            self._running  = False
+            self._stopping = False
+            if self._view:
+                self._view.schedule(self._set_controls_idle)
+
+    def _run_summary_pipeline_impl(self) -> None:
         transcript_path = self._read_last_transcript()
         if transcript_path:
             self._view and self._view.put_log(f"[UI] Transcript file: {transcript_path}")
