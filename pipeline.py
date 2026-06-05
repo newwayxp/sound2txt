@@ -257,21 +257,6 @@ def run():
         return model_size
 
     # モデルロード（session_lang 確定後）
-    # ctranslate2 が bundled の cublas64_12.dll を読む前に CUDA ランタイム DLL パスを追加
-    if sys.platform == "win32":
-        try:
-            import importlib as _il
-            for _pkg in ["nvidia.cuda_runtime", "nvidia.cublas"]:
-                try:
-                    _m = _il.import_module(_pkg)
-                    _bin = os.path.join(os.path.dirname(_m.__file__), "bin")
-                    if os.path.isdir(_bin):
-                        os.add_dll_directory(_bin)
-                except ImportError:
-                    pass
-        except Exception:
-            pass
-
     try:
         from faster_whisper import WhisperModel
     except (OSError, ImportError) as e:
