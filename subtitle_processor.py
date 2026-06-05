@@ -173,7 +173,6 @@ def main(test_wav: str | None = None):
     vad_threshold = cfg.getint("subtitle", "vad_threshold", fallback=400)
     silence_sec   = cfg.getfloat("subtitle", "silence_sec", fallback=0.8)
     max_sec       = cfg.getfloat("subtitle", "max_sec",      fallback=12.0)
-    clear_sec     = cfg.getfloat("subtitle", "clear_sec",    fallback=3.0)
 
     # transcript output file (read from state or create new)
     from appconfig import STATE_FILE
@@ -224,30 +223,18 @@ def main(test_wav: str | None = None):
             pass
 
     vad         = AmplitudeVAD(vad_threshold, silence_sec, max_sec)
-    last_speech = time.monotonic()
-    subtitle_written = False
-    stop_flag   = threading.Event()
+    stop_flag = threading.Event()
 
     def _write_subtitle(text: str) -> None:
-        nonlocal subtitle_written
+        """新しい字幕で上書きする。クリアは行わない。"""
         try:
             with open(SUBTITLE_FILE, "w", encoding="utf-8") as f:
                 f.write(text)
-            subtitle_written = True
-        except Exception:
-            pass
-
-    def _clear_subtitle() -> None:
-        nonlocal subtitle_written
-        try:
-            with open(SUBTITLE_FILE, "w", encoding="utf-8") as f:
-                f.write("")
-            subtitle_written = False
         except Exception:
             pass
 
     def _process_segment(audio_bytes: bytes) -> None:
-        nonlocal session_lang, last_speech
+        nonlocal session_lang
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             tmp = f.name
@@ -299,9 +286,8 @@ def main(test_wav: str | None = None):
             subtitle_text = translated
             tr_info(f"[subtitle] translated({dst_lang}): {translated}")
 
-        # update subtitle window & reset clear timer AFTER writing
+        # 新しい字幕で上書き（クリアは次の字幕が来るまで行わない）
         _write_subtitle(subtitle_text)
-        last_speech = time.monotonic()   # reset AFTER write to prevent premature clear
 
         # write original text to transcript
         from datetime import datetime
@@ -314,15 +300,6 @@ def main(test_wav: str | None = None):
         except Exception as e:
             tr_error(f"transcript write error: {e}")
 
-    # ── auto-clear subtitle timer ─────────────────────────────────────────────
-    def _auto_clear_loop():
-        while not stop_flag.is_set():
-            time.sleep(0.5)
-            if subtitle_written and (time.monotonic() - last_speech) >= clear_sec:
-                _clear_subtitle()
-
-    threading.Thread(target=_auto_clear_loop, daemon=True).start()
-
     # ── audio source: test WAV file or live capture ───────────────────────────
     if test_wav:
         _run_test_mode(test_wav, vad, _process_segment, stop_flag)
@@ -334,7 +311,6 @@ def main(test_wav: str | None = None):
     if remaining:
         _process_segment(remaining)
 
-    _clear_subtitle()
     tr_info("subtitle_processor 終了")
 
 
