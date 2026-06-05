@@ -267,6 +267,24 @@ def run():
     # モデルロード（session_lang 確定後）
     model_path = _resolve_model(session_lang)
     sys_info(f"pipeline: model={model_path} device={device}")
+
+    # Add nvidia pip-package DLL dirs to search path so ctranslate2 can
+    # find cublas/cudart when using GPU (pip install nvidia-cublas-cu12 etc.)
+    if device == "cuda" and sys.platform == "win32":
+        try:
+            import importlib as _il
+            for _pkg in ["nvidia.cuda_runtime", "nvidia.cublas"]:
+                try:
+                    _m = _il.import_module(_pkg)
+                    _b = os.path.join(os.path.dirname(_m.__file__), "bin")
+                    if os.path.isdir(_b):
+                        os.add_dll_directory(_b)
+                        sys_info(f"CUDA DLL path added: {_b}")
+                except ImportError:
+                    pass
+        except Exception:
+            pass
+
     try:
         whisper = WhisperModel(model_path, device=device, compute_type=compute_type)
     except Exception as e:

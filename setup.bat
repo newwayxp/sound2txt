@@ -82,27 +82,38 @@ rem (ctranslate2 tries to load all bundled DLLs without error handling)
 python -c "import importlib.util,os; p=os.path.join(os.path.dirname(importlib.util.find_spec('ctranslate2').origin),'__init__.py'); t=open(p).read(); t2=t.replace('        ctypes.CDLL(library)','        try:\n            ctypes.CDLL(library)\n        except OSError:\n            pass') if 'except OSError' not in t else t; open(p,'w').write(t2); print('  ctranslate2 patch: ' + ('applied' if 'except OSError' not in t else 'already OK'))"
 
 python -c "from faster_whisper import WhisperModel" >nul 2>&1
-if %errorlevel% equ 0 (
-    nvidia-smi >nul 2>&1
-    if %errorlevel% equ 0 (
-        echo  OK: faster-whisper OK (NVIDIA GPU detected)
-    ) else (
-        echo  OK: faster-whisper OK (CPU mode)
+if %errorlevel% neq 0 (
+    rem faster-whisper import failed - remove bundled CUDA DLLs as last resort
+    echo  Removing bundled CUDA DLLs (CPU fallback)...
+    python -c "import os,importlib.util,glob; s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else ''; removed=[f for p in ['cu*.dll','nv*.dll'] for f in glob.glob(os.path.join(d,p))]; [os.remove(f) for f in removed]; print(len(removed), 'CUDA DLL(s) removed')"
+    python -c "from faster_whisper import WhisperModel" >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo  [ERROR] faster-whisper repair failed.
+        set ERROR=1
+        goto :end
     )
+    echo  OK: faster-whisper OK (CPU mode)
     goto :ct2_ok
 )
 
-rem Patch did not fix it - remove bundled CUDA DLLs as fallback
-echo  Removing bundled CUDA DLLs (CPU fallback)...
-python -c "import os,importlib.util,glob; s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else ''; removed=[f for p in ['cu*.dll','nv*.dll'] for f in glob.glob(os.path.join(d,p))]; [os.remove(f) for f in removed]; print(len(removed), 'CUDA DLL(s) removed')"
-
-python -c "from faster_whisper import WhisperModel" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  [ERROR] faster-whisper repair failed.
-    set ERROR=1
-    goto :end
+rem faster-whisper import OK - check for GPU and install CUDA compute packages
+nvidia-smi >nul 2>&1
+if %errorlevel% equ 0 (
+    echo  NVIDIA GPU detected. Installing CUDA 12 compute packages for GPU acceleration...
+    pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 %PROXY_ARG%
+    if %errorlevel% equ 0 (
+        echo  OK: CUDA packages installed (GPU acceleration enabled)
+    ) else (
+        echo  [WARNING] CUDA packages install failed. GPU may run in CPU mode.
+        echo.
+        echo  *** For full GPU acceleration, install CUDA 12 Toolkit manually: ***
+        echo      https://developer.nvidia.com/cuda-downloads
+        echo      Select: Windows - x86_64 - exe (local)
+        echo  *************************************************************
+    )
+) else (
+    echo  OK: faster-whisper OK (CPU mode - no NVIDIA GPU detected)
 )
-echo  OK: faster-whisper OK (CPU mode)
 :ct2_ok
 
 rem --------------------------------------------------
