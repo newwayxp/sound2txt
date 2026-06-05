@@ -354,9 +354,23 @@ def run(transcript_path: str, cfg: configparser.ConfigParser, language: str = ""
         print("[Summarizer] transcript too short, skipping")
         return False
 
-    # 言語が未指定なら英語をデフォルト
+    # 言語が未指定なら OS 言語 / 録音設定から推定
     if not language:
-        language = "en"
+        import configparser as _cp2
+        _c2 = _cp2.ConfigParser()
+        _c2.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini"),
+                 encoding="utf-8")
+        language = _c2.get("recording", "language", fallback="auto").strip().lower()
+        if language not in {"zh", "ja", "en"}:
+            # auto → OS 言語で判定
+            try:
+                import winreg
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\International")
+                loc = winreg.QueryValueEx(key, "LocaleName")[0].lower()
+                language = "zh" if loc.startswith("zh") else "ja" if loc.startswith("ja") else "en"
+            except Exception:
+                language = "ja"  # 日本語環境が多いためデフォルト
+        print(f"[Summarizer] 言語推定: {language}")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 

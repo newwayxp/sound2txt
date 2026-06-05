@@ -329,6 +329,11 @@ def run():
         raw_file_path   = None
         transcript_file = None
         session_ts      = None
+        # 検出言語を .last_language に書く（summarizer が参照する）
+        if session_lang:
+            with open(LANG_FILE, "w", encoding="utf-8") as f:
+                f.write(session_lang)
+            sys_info(f"言語保存: {session_lang}")
         # 完了通知を書き込む（presenter が待機中の場合に通知）
         with open(SIGNAL_SESS_DONE, "w") as f:
             f.write("done")
