@@ -399,6 +399,26 @@ class App(QMainWindow):
     def set_sum_status(self, text_key: str, color: str) -> None:
         pass
 
+    def show_transcript(self, path: str) -> None:
+        """Display transcript file content in the Transcript tab."""
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                text = f.read()
+            self._transcript_view.setPlainText(text)
+            self._transcript_view.moveCursor(self._transcript_view.textCursor().MoveOperation.End)
+        except Exception as e:
+            self._transcript_view.setPlainText(f"[Error reading transcript: {e}]")
+
+    def show_minutes(self, path: str) -> None:
+        """Display meeting minutes file content in the Minutes tab."""
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                text = f.read()
+            self._minutes_view.setPlainText(text)
+            self._minutes_view.moveCursor(self._minutes_view.textCursor().MoveOperation.End)
+        except Exception as e:
+            self._minutes_view.setPlainText(f"[Error reading minutes: {e}]")
+
     # ── Initial UI state from config ──────────────────────────────────────────
 
     def _apply_initial_ui_state(self) -> None:
@@ -418,14 +438,6 @@ class App(QMainWindow):
         rb_model = getattr(self, f"_rb_model_{model.replace('-', '_')}", None)
         if rb_model:
             rb_model.setChecked(True)
-
-        # Chunk duration slider
-        try:
-            rec_sec = int(cfg.get("recording", "record_sec", fallback="30"))
-            if hasattr(self, "_slider_rec_sec"):
-                self._slider_rec_sec.setValue(rec_sec)
-        except ValueError:
-            pass
 
         # Quick lang combo
         if hasattr(self, "_quick_lang_combo"):
@@ -580,10 +592,12 @@ class App(QMainWindow):
 
     def _build_settings_tabs(self, parent: QWidget) -> QTabWidget:
         tabs = QTabWidget(parent)
-        tabs.addTab(self._build_tab_paths(tabs),   t("tab_paths"))
-        tabs.addTab(self._build_tab_rec(tabs),     t("tab_rec"))
-        tabs.addTab(self._build_tab_api(tabs),     t("tab_api"))
-        tabs.addTab(self._build_tab_network(tabs), t("tab_network"))
+        tabs.addTab(self._build_tab_paths(tabs),      t("tab_paths"))
+        tabs.addTab(self._build_tab_rec(tabs),        t("tab_rec"))
+        tabs.addTab(self._build_tab_api(tabs),        t("tab_api"))
+        tabs.addTab(self._build_tab_network(tabs),    t("tab_network"))
+        tabs.addTab(self._build_tab_transcript(tabs), t("tab_transcript"))
+        tabs.addTab(self._build_tab_minutes(tabs),    t("tab_minutes"))
         return tabs
 
     # ── Paths tab ─────────────────────────────────────────────────────────────
@@ -728,31 +742,6 @@ class App(QMainWindow):
         rb_cur_model.setChecked(True)
         row += 1
 
-        # Chunk duration slider
-        grid.addWidget(QLabel(t("rec_sec")), row, 0, Qt.AlignmentFlag.AlignRight)
-        slider_widget = QWidget()
-        slider_hbox   = QHBoxLayout(slider_widget)
-        slider_hbox.setContentsMargins(0, 0, 0, 0)
-
-        self._slider_rec_sec = QSlider(Qt.Orientation.Horizontal)
-        self._slider_rec_sec.setRange(10, 120)
-        try:
-            self._slider_rec_sec.setValue(
-                int(cfg.get("recording", "record_sec", fallback="30"))
-            )
-        except ValueError:
-            self._slider_rec_sec.setValue(30)
-
-        self._slider_lbl = QLabel(f"{self._slider_rec_sec.value()} s")
-        self._slider_lbl.setFixedWidth(46)
-        self._slider_rec_sec.valueChanged.connect(
-            lambda v: self._slider_lbl.setText(f"{v} s")
-        )
-        slider_hbox.addWidget(self._slider_rec_sec)
-        slider_hbox.addWidget(self._slider_lbl)
-        grid.addWidget(slider_widget, row, 1)
-        row += 1
-
         # Save button
         save_btn = QPushButton(t("save"))
         save_btn.setObjectName("btnSave")
@@ -779,9 +768,8 @@ class App(QMainWindow):
                 self._rb_device_cpu.setChecked(True)
                 self._rb_model_tiny.setChecked(True)
             updates = {
-                ("recording", "record_sec"):  str(self._slider_rec_sec.value()),
-                ("recording", "device"):      device,
-                ("recording", "model_size"):  model,
+                ("recording", "device"):     device,
+                ("recording", "model_size"): model,
             }
             self._presenter.save_config(updates)
             self._presenter.apply_startup_defaults(log=True)
@@ -951,6 +939,46 @@ class App(QMainWindow):
         save_btn.clicked.connect(_save)
         grid.addWidget(save_btn, 4, 0, 1, 2, Qt.AlignmentFlag.AlignHCenter)
 
+        return w
+
+    # ── Transcript tab ────────────────────────────────────────────────────────
+
+    def _build_tab_transcript(self, parent: QWidget) -> QWidget:
+        w = QWidget()
+        vbox = QVBoxLayout(w)
+        vbox.setContentsMargins(8, 8, 8, 8)
+        vbox.setSpacing(4)
+
+        self._transcript_view = QTextEdit()
+        self._transcript_view.setReadOnly(True)
+        self._transcript_view.setPlaceholderText(
+            "Transcribed text will appear here after the session ends."
+        )
+        self._transcript_view.setStyleSheet(
+            "QTextEdit { font-family: 'Meiryo UI', 'Microsoft YaHei', sans-serif;"
+            "  font-size: 13px; line-height: 1.6; }"
+        )
+        vbox.addWidget(self._transcript_view)
+        return w
+
+    # ── Minutes tab ───────────────────────────────────────────────────────────
+
+    def _build_tab_minutes(self, parent: QWidget) -> QWidget:
+        w = QWidget()
+        vbox = QVBoxLayout(w)
+        vbox.setContentsMargins(8, 8, 8, 8)
+        vbox.setSpacing(4)
+
+        self._minutes_view = QTextEdit()
+        self._minutes_view.setReadOnly(True)
+        self._minutes_view.setPlaceholderText(
+            "Meeting minutes will appear here after processing."
+        )
+        self._minutes_view.setStyleSheet(
+            "QTextEdit { font-family: 'Meiryo UI', 'Microsoft YaHei', sans-serif;"
+            "  font-size: 13px; line-height: 1.6; }"
+        )
+        vbox.addWidget(self._minutes_view)
         return w
 
     # ── Log area ──────────────────────────────────────────────────────────────

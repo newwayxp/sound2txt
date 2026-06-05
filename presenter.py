@@ -922,6 +922,9 @@ class Presenter:
                 self._config.get("summary", "corrected_dir", fallback=""), "corrected_*.txt")
             if corrected:
                 self._view and self._view.put_log(f"[UI] Corrected text: {corrected}")
+                if self._view and hasattr(self._view, "show_transcript"):
+                    _p = corrected
+                    self._view.schedule(lambda p=_p: self._view.show_transcript(p))
 
             # ── Step 2: Meeting minutes ─────────────────────────────────────────
             self._view and self._view.put_log("[UI] Generating meeting minutes (Step 2/2)...")
@@ -938,6 +941,9 @@ class Presenter:
                 self._config.get("summary", "summary_dir", fallback=""), "summary_*.md")
             if summary:
                 self._view and self._view.put_log(f"[UI] Summary file: {summary}")
+                if self._view and hasattr(self._view, "show_minutes"):
+                    _p = summary
+                    self._view.schedule(lambda p=_p: self._view.show_minutes(p))
 
             if self._view:
                 self._view.schedule(lambda: self._view.set_sum_status("done", "#44dd44"))

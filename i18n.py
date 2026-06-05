@@ -62,6 +62,8 @@ _T: dict[str, dict[str, str]] = {
     "lang_zh":       {"zh": "中文 (简体)",               "ja": "中国語（簡体字）",                   "en": "Chinese (Simplified)"},
     "lang_ja":       {"zh": "日语",                      "ja": "日本語",                             "en": "Japanese"},
     "lang_en":       {"zh": "英语",                      "ja": "英語",                               "en": "English"},
+    "tab_transcript":{"zh": "📝  转写",                 "ja": "📝  転写",                       "en": "📝  Transcript"},
+    "tab_minutes":   {"zh": "📋  会议纪要",            "ja": "📋  会議纪要",                   "en": "📋  Minutes"},
     "tab_network":   {"zh": "🌐  代理",                  "ja": "🌐  ネットワーク",                   "en": "🌐  Network"},
     "https_proxy":   {"zh": "HTTPS 代理",                "ja": "HTTPS プロキシ",                     "en": "HTTPS Proxy"},
     "http_proxy":    {"zh": "HTTP 代理",                 "ja": "HTTP プロキシ",                      "en": "HTTP Proxy"},
