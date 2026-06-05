@@ -47,8 +47,9 @@ from log_util import tr_info, tr_debug, tr_warn, tr_error, sys_info, sys_error
 SIGNAL_SESSION   = os.path.join(_BASE, ".pipeline_session")
 SIGNAL_STOP      = os.path.join(_BASE, ".pipeline_stop")
 SIGNAL_SESS_DONE = os.path.join(_BASE, ".pipeline_session_done")
-LANG_FILE        = os.path.join(_BASE, ".last_language")
-STATE_FILE       = os.path.join(_BASE, ".last_transcript")
+LANG_FILE          = os.path.join(_BASE, ".last_language")
+STATE_FILE         = os.path.join(_BASE, ".last_transcript")
+CORRECTED_STATE    = os.path.join(_BASE, ".last_corrected")
 
 SAMPLE_RATE = 16000
 CHUNK_SIZE  = 1024
@@ -161,6 +162,56 @@ class AccumulatingVAD:
             return self._flush("stop")
         self._reset()
         return None
+
+
+# ── per-segment LLM correction ───────────────────────────────────────────────
+def _correct_segment(text: str, lang: str | None,
+                     cfg: configparser.ConfigParser) -> str:
+    """Call LLM to correct one transcribed segment. Falls back to original."""
+    mode = cfg.get("summary", "mode", fallback="openai").strip().lower()
+
+    if mode == "ollama":
+        base_url = cfg.get("summary", "ollama_url", fallback="http://localhost:11434")
+        model    = cfg.get("summary", "ollama_model", fallback="qwen2.5:7b").strip()
+        url      = base_url.rstrip("/") + "/v1/chat/completions"
+        api_key  = "ollama"
+    else:
+        base_url = cfg.get("summary", "api_base", fallback="").strip()
+        api_key  = cfg.get("summary", "api_key",  fallback="").strip()
+        model    = cfg.get("summary", "model",    fallback="").strip()
+        url      = base_url.rstrip("/") + "/chat/completions" if base_url else ""
+
+    if not url or not api_key or not model:
+        return text
+
+    lang_hint = {"ja": "日本語", "zh": "中国語（简体字）", "en": "English"}.get(lang or "", "")
+    prompt = (
+        f"以下は会議音声の自動転写テキストです。"
+        f"{'言語: ' + lang_hint + '。' if lang_hint else ''}"
+        f"誤認識や句読点のミスを修正し、修正後のテキストのみを出力してください。\n\n{text}"
+    )
+
+    verify  = cfg.getboolean("network", "ssl_verify", fallback=True)
+    px      = cfg.get("network", "https_proxy", fallback="")
+    proxies = {"https": px, "http": px} if px else None
+
+    import requests
+    try:
+        r = requests.post(
+            url,
+            json={"model": model,
+                  "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": max(200, len(text) * 3),
+                  "temperature": 0.2},
+            headers={"Authorization": f"Bearer {api_key}"},
+            proxies=proxies, verify=verify, timeout=20,
+        )
+        r.raise_for_status()
+        result = r.json()["choices"][0]["message"]["content"].strip()
+        return result if result else text
+    except Exception as e:
+        tr_debug(f"correction API error: {e}")
+        return text
 
 
 # ── model-specific transcription parameters ───────────────────────────────────
@@ -326,23 +377,28 @@ def run():
     vad = AccumulatingVAD(silence_sec=silence_s, min_accum_sec=min_s, max_sec=max_s)
 
     # ── Session state ─────────────────────────────────────────────────────────
-    transcript_file: str | None = None
-    raw_file_path:   str | None = None
+    transcript_file:  str | None = None
+    corrected_file:   str | None = None
+    raw_file_path:    str | None = None
     raw_fh = None
     session_ts: str | None = None
 
     transcript_dir = cfg.get("paths", "transcript_dir",
                              fallback=r"C:\Users\Public\Sound2Text\transcript")
+    corrected_dir  = cfg.get("summary", "corrected_dir",
+                             fallback=r"C:\Users\Public\Sound2Text\corrected")
     audio_dir = cfg.get("paths", "audio_dir",
                         fallback=r"C:\Users\Public\Sound2Text\audio")
 
     def _open_session():
-        nonlocal transcript_file, raw_file_path, raw_fh, session_ts
+        nonlocal transcript_file, corrected_file, raw_file_path, raw_fh, session_ts
         from datetime import datetime
         session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(transcript_dir, exist_ok=True)
+        os.makedirs(corrected_dir, exist_ok=True)
         os.makedirs(audio_dir, exist_ok=True)
         transcript_file = os.path.join(transcript_dir, f"transcript_{session_ts}.txt")
+        corrected_file  = os.path.join(corrected_dir,  f"corrected_{session_ts}.txt")
         raw_file_path   = os.path.join(audio_dir, f".tmp_audio_{session_ts}.raw")
         raw_fh = open(raw_file_path, "wb")
         with open(transcript_file, "w", encoding="utf-8-sig") as f:
@@ -350,9 +406,16 @@ def run():
             f.write(f"=== Session started {ts_str} ===\n\n")
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             f.write(transcript_file)
+        # Initialize corrected file and signal
+        ts_str2 = ts_str  # already defined above via datetime
+        with open(corrected_file, "w", encoding="utf-8-sig") as f:
+            f.write(f"=== Corrected transcript started {ts_str2} ===\n\n")
+        with open(CORRECTED_STATE, "w", encoding="utf-8") as f:
+            f.write(corrected_file)
         sys_info(f"Session started: {session_ts}")
         sys_info(f"Audio streaming to disk: {raw_file_path}")
         sys_info(f"Transcript: {transcript_file}")
+        sys_info(f"Corrected:  {corrected_file}")
 
     def _close_session(channels: int, sample_size: int, sample_rate: int):
         nonlocal raw_fh, raw_file_path, transcript_file, session_ts
@@ -408,10 +471,14 @@ def run():
             except Exception as e:
                 tr_error(f"Audio conversion failed: {e}")
 
+        from datetime import datetime
+        _end_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if transcript_file and os.path.exists(transcript_file):
-            from datetime import datetime
             with open(transcript_file, "a", encoding="utf-8-sig") as f:
-                f.write(f"\n=== Session ended {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+                f.write(f"\n=== Session ended {_end_ts} ===\n")
+        if corrected_file and os.path.exists(corrected_file):
+            with open(corrected_file, "a", encoding="utf-8-sig") as f:
+                f.write(f"\n=== Corrected transcript ended {_end_ts} ===\n")
 
         if session_lang:
             with open(LANG_FILE, "w", encoding="utf-8") as f:
@@ -419,6 +486,7 @@ def run():
 
         raw_file_path   = None
         transcript_file = None
+        corrected_file  = None
         session_ts      = None
 
         with open(SIGNAL_SESS_DONE, "w") as f:
@@ -430,7 +498,7 @@ def run():
 
     def _transcribe_loop():
         """Background thread: transcribes audio segments in order."""
-        nonlocal session_lang, whisper, _current_model_lang, device, compute_type, _transcribe_kwargs
+        nonlocal session_lang, whisper, _current_model_lang, device, compute_type, _transcribe_kwargs, corrected_file
 
         while True:
             audio_bytes = _seg_queue.get()
@@ -531,9 +599,22 @@ def run():
             original = " ".join(lines).strip()
             if not original:
                 tr_debug("WHISPER_EMPTY (all segments filtered)")
+                _seg_queue.task_done()
+                continue
+
+            tr_info(f"[pipeline] original: {original}")
+            _append_transcript(original)
+
+            # Per-segment correction: call LLM immediately after transcription
+            corrected_text = _correct_segment(original, session_lang, cfg)
+            if corrected_text != original:
+                tr_info(f"[pipeline] corrected: {corrected_text}")
             else:
-                tr_info(f"[pipeline] original: {original}")
-                _append_transcript(original)
+                corrected_text = original  # no correction or API unavailable
+
+            # Append to corrected file and update signal for UI polling
+            if corrected_file:
+                _append_corrected(corrected_text, corrected_file)
 
             _seg_queue.task_done()
 
@@ -666,6 +747,20 @@ def _append_transcript(text: str):
                 f.write(f"[{ts}] {text}\n")
     except Exception as e:
         tr_error(f"transcript append error: {e}")
+
+
+def _append_corrected(text: str, path: str):
+    """Append corrected text to the corrected file and update CORRECTED_STATE."""
+    try:
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        with open(path, "a", encoding="utf-8-sig") as f:
+            f.write(f"[{ts}] {text}\n")
+        # Touch CORRECTED_STATE so the presenter's polling thread detects the update
+        with open(CORRECTED_STATE, "w", encoding="utf-8") as f:
+            f.write(path)
+    except Exception as e:
+        tr_error(f"corrected append error: {e}")
 
 
 if __name__ == "__main__":

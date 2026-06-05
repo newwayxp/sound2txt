@@ -718,6 +718,7 @@ class Presenter:
         # session 完了を待ってから纪要生成
         self._fw_stop.set()
         threading.Thread(target=self._wait_pipeline_and_summarize, daemon=True).start()
+        threading.Thread(target=self._poll_corrected_file, daemon=True).start()
 
         if self._mic_proc and self._mic_proc.poll() is None:
             self._mic_proc.terminate()
@@ -731,6 +732,28 @@ class Presenter:
         self._view and self._view.put_log("[UI] セッション終了中... pipeline の処理完了を待っています")
 
     # ── on-demand file watcher ────────────────────────────────────────────────
+
+    def _poll_corrected_file(self) -> None:
+        """Poll .last_corrected during session and update the Transcript tab in real time."""
+        _state = os.path.join(BASE, ".last_corrected")
+        last_path  = None
+        last_mtime = 0.0
+        while self._running:
+            try:
+                if os.path.exists(_state):
+                    with open(_state, encoding="utf-8") as f:
+                        path = f.read().strip()
+                    if path and os.path.exists(path):
+                        mtime = os.path.getmtime(path)
+                        if path != last_path or mtime > last_mtime + 0.5:
+                            last_path  = path
+                            last_mtime = mtime
+                            _p = path
+                            if self._view and hasattr(self._view, "show_transcript"):
+                                self._view.schedule(lambda p=_p: self._view.show_transcript(p))
+            except Exception:
+                pass
+            time.sleep(3)
 
     def _wait_pipeline_and_summarize(self) -> None:
         """pipeline がセッション終了処理を完了するまで待ち、纪要を生成する。"""
@@ -927,11 +950,23 @@ class Presenter:
             if corrected:
                 self._view and self._view.put_log(f"[UI] Corrected text: {corrected}")
 
-            # ── Step 2: Meeting minutes ─────────────────────────────────────────
+            # ── Step 2: Meeting minutes (use corrected file if available) ──────
+            _corrected_state = os.path.join(BASE, ".last_corrected")
+            minutes_input = transcript_path
+            try:
+                if os.path.exists(_corrected_state):
+                    with open(_corrected_state, encoding="utf-8") as f:
+                        cp = f.read().strip()
+                    if cp and os.path.exists(cp):
+                        minutes_input = cp
+                        self._view and self._view.put_log(f"[UI] Using corrected text for minutes: {cp}")
+            except Exception:
+                pass
+
             self._view and self._view.put_log("[UI] Generating meeting minutes (Step 2/2)...")
             sum_proc2 = subprocess.Popen(
                 [sys.executable, "-X", "utf8", os.path.join(BASE, "summarizer.py"),
-                 "--step", "summary", transcript_path],
+                 "--step", "summary", minutes_input],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", env=self._env,
             )
