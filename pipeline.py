@@ -54,9 +54,13 @@ SAMPLE_RATE = 16000
 CHUNK_SIZE  = 1024
 
 HALLUCINATION = [
+    # YouTube / streaming hallucinations
     "ご視聴ありがとうございました", "チャンネル登録",
     "thank you for watching", "please subscribe",
     "请不吝点赞", "订阅", "感谢观看", "字幕由",
+    # Initial prompt leakage
+    "日本語の会議録音", "普通话录音的简体中文",
+    "Meeting transcript",
 ]
 
 
@@ -308,13 +312,12 @@ def run():
             vocab = [l.strip() for l in f if l.strip() and not l.startswith("#")]
 
     def _initial_prompt(lang: str | None) -> str | None:
-        base = {"zh": "以下是普通话录音的简体中文转写：",
-                "ja": "以下は日本語の会議録音です：",
-                "en": "Meeting transcript:"}.get(lang or "", "")
+        # No base sentence — avoids Whisper hallucinating the prompt text.
+        # language= parameter already tells Whisper which language to use.
         if vocab:
             sep = "、" if lang == "ja" else ", "
-            return base + sep.join(vocab)
-        return base or None
+            return sep.join(vocab)
+        return None
 
     # ── VAD ───────────────────────────────────────────────────────────────────
     silence_s = cfg.getfloat("subtitle", "silence_sec",   fallback=2.0)
