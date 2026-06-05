@@ -405,7 +405,8 @@ class App(QMainWindow):
             with open(path, encoding="utf-8-sig") as f:
                 text = f.read()
             self._transcript_view.setPlainText(text)
-            self._transcript_view.moveCursor(self._transcript_view.textCursor().MoveOperation.End)
+            from PyQt6.QtGui import QTextCursor
+            self._transcript_view.moveCursor(QTextCursor.MoveOperation.End)
         except Exception as e:
             self._transcript_view.setPlainText(f"[Error reading transcript: {e}]")
 
@@ -415,7 +416,8 @@ class App(QMainWindow):
             with open(path, encoding="utf-8-sig") as f:
                 text = f.read()
             self._minutes_view.setPlainText(text)
-            self._minutes_view.moveCursor(self._minutes_view.textCursor().MoveOperation.End)
+            from PyQt6.QtGui import QTextCursor
+            self._minutes_view.moveCursor(QTextCursor.MoveOperation.End)
         except Exception as e:
             self._minutes_view.setPlainText(f"[Error reading minutes: {e}]")
 

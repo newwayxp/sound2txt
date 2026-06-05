@@ -897,6 +897,10 @@ class Presenter:
         transcript_path = self._read_last_transcript()
         if transcript_path:
             self._view and self._view.put_log(f"[UI] Transcript file: {transcript_path}")
+            # Show raw transcript immediately in the Transcript tab
+            if self._view and hasattr(self._view, "show_transcript"):
+                _p = transcript_path
+                self._view.schedule(lambda p=_p: self._view.show_transcript(p))
         else:
             self._view and self._view.put_log("[UI] Transcript file was not created")
 
@@ -922,9 +926,6 @@ class Presenter:
                 self._config.get("summary", "corrected_dir", fallback=""), "corrected_*.txt")
             if corrected:
                 self._view and self._view.put_log(f"[UI] Corrected text: {corrected}")
-                if self._view and hasattr(self._view, "show_transcript"):
-                    _p = corrected
-                    self._view.schedule(lambda p=_p: self._view.show_transcript(p))
 
             # ── Step 2: Meeting minutes ─────────────────────────────────────────
             self._view and self._view.put_log("[UI] Generating meeting minutes (Step 2/2)...")
