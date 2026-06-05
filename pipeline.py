@@ -165,12 +165,12 @@ def _make_transcribe_kwargs(model_path: str) -> dict:
 
     kwargs: dict = dict(
         beam_size                  = 5,
-        temperature                = 0.0,
+        temperature                = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
         vad_filter                 = True,
         vad_parameters             = {"min_silence_duration_ms": 400, "threshold": 0.4},
         condition_on_previous_text = False,
         word_timestamps            = False,
-        no_speech_threshold        = 0.6,
+        no_speech_threshold        = 0.7,
         log_prob_threshold         = -1.0,
     )
 
@@ -495,7 +495,9 @@ def run():
             for i, s in enumerate(seg_list):
                 text = s.text.strip()
                 nsp  = getattr(s, "no_speech_prob", 0.0)
+                lp   = getattr(s, "avg_logprob", 0.0)
                 if not text:
+                    tr_debug(f"  seg[{i}] EMPTY (nsp={nsp:.2f} lp={lp:.2f})")
                     continue
                 if any(h in text for h in HALLUCINATION):
                     tr_debug(f"  seg[{i}] HALLUCINATION: {text[:40]}")
@@ -503,7 +505,7 @@ def run():
                 if nsp > 0.7:
                     tr_debug(f"  seg[{i}] LOW_CONF no_speech={nsp:.2f}: {text[:40]}")
                     continue
-                tr_debug(f"  seg[{i}] OK no_speech={nsp:.2f}: {text[:60]}")
+                tr_debug(f"  seg[{i}] OK nsp={nsp:.2f} lp={lp:.2f}: {text[:60]}")
                 lines.append(text)
 
             original = " ".join(lines).strip()
