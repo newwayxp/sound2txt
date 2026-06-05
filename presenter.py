@@ -1053,6 +1053,13 @@ class Presenter:
         primary_audio_prefix = "[Rec]" if rec_mode == "meeting" else "[Mic]"
         primary_trans_source = "loopback" if rec_mode == "meeting" else "mic"
 
+        # Pipeline dashboard patterns
+        _pl_vad_turn  = re.compile(r"VAD turn-end.*in ([\d.]+)s window")
+        _pl_vad_force = re.compile(r"VAD force-flush: ([\d.]+)s accumulated")
+        _pl_whisper_in  = re.compile(r"Transcribing ([\d.]+)s audio")
+        _pl_whisper_out = re.compile(r"Transcribed in [\d.]+s:")
+        _pl_pending = [0.0]  # pending audio secs for trans counter
+
         for line in proc.stdout:
             text = line.rstrip()
             if not text:
@@ -1075,6 +1082,27 @@ class Presenter:
                         done_base = mic_dir if source == "mic" else audio_dir
                         secs = self._wav_secs(os.path.join(done_base, "done", fname))
                         if secs <= 0: secs = float(_rec_sec)
+                        self._view.schedule(lambda s=secs: self._view.dashboard_add_trans(s))
+
+            elif prefix == "[PL]":
+                # Pipeline VAD flush → update audio counter (middle)
+                m = _pl_vad_turn.search(search_text)
+                if not m:
+                    m = _pl_vad_force.search(search_text)
+                if m and self._view and self._running:
+                    secs = float(m.group(1))
+                    self._view.schedule(lambda s=secs: self._view.dashboard_add_audio(s))
+
+                # Pipeline transcription start → track segment duration
+                m2 = _pl_whisper_in.search(search_text)
+                if m2:
+                    _pl_pending[0] = float(m2.group(1))
+
+                # Pipeline transcription complete → update trans counter (right)
+                if _pl_whisper_out.search(search_text) and _pl_pending[0] > 0:
+                    secs = _pl_pending[0]
+                    _pl_pending[0] = 0.0
+                    if self._view and self._running:
                         self._view.schedule(lambda s=secs: self._view.dashboard_add_trans(s))
 
             elif prefix in ("[Rec]", "[Mic]"):
