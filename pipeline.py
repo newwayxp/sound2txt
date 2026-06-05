@@ -186,9 +186,9 @@ def _correct_segment(text: str, lang: str | None,
 
     lang_hint = {"ja": "日本語", "zh": "中国語（简体字）", "en": "English"}.get(lang or "", "")
     prompt = (
-        f"以下は会議音声の自動転写テキストです。"
-        f"{'言語: ' + lang_hint + '。' if lang_hint else ''}"
-        f"誤認識や句読点のミスを修正し、修正後のテキストのみを出力してください。\n\n{text}"
+        f"会議音声の自動転写テキストの誤認識・句読点を修正してください。"
+        f"{'言語は' + lang_hint + '。' if lang_hint else ''}"
+        f"説明・前置き・引用符は不要。修正後のテキストだけを出力。\n\n{text}"
     )
 
     verify  = cfg.getboolean("network", "ssl_verify", fallback=True)
@@ -208,6 +208,13 @@ def _correct_segment(text: str, lang: str | None,
         )
         r.raise_for_status()
         result = r.json()["choices"][0]["message"]["content"].strip()
+        # Strip common LLM preamble patterns (e.g. "以下が修正後のテキストです：\n")
+        import re as _re
+        result = _re.sub(
+            r"^(以下[がはの].{0,20}[：:]\s*|修正後[のは].{0,15}[：:]\s*|"
+            r"Here is.{0,30}:\s*|Corrected.{0,20}:\s*)", "",
+            result, flags=_re.IGNORECASE
+        ).strip()
         return result if result else text
     except Exception as e:
         tr_debug(f"correction API error: {e}")
@@ -418,7 +425,7 @@ def run():
         sys_info(f"Corrected:  {corrected_file}")
 
     def _close_session(channels: int, sample_size: int, sample_rate: int):
-        nonlocal raw_fh, raw_file_path, transcript_file, session_ts
+        nonlocal raw_fh, raw_file_path, transcript_file, corrected_file, session_ts
         if raw_fh:
             raw_fh.close()
             raw_fh = None

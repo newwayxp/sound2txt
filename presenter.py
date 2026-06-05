@@ -688,6 +688,8 @@ class Presenter:
         with open(self._PIPELINE_SESSION, "w") as f:
             f.write("1")
         self._ensure_pipeline_running()
+        # Start real-time corrected file polling for transcript tab
+        threading.Thread(target=self._poll_corrected_file, daemon=True).start()
         self._view.put_log("[UI] pipeline セッション開始")
         self._view.put_log("[UI] VU メーターをクリックするとマイク録音を開始/停止します")
         self._view.put_log(t("starting"))
@@ -718,7 +720,6 @@ class Presenter:
         # session 完了を待ってから纪要生成
         self._fw_stop.set()
         threading.Thread(target=self._wait_pipeline_and_summarize, daemon=True).start()
-        threading.Thread(target=self._poll_corrected_file, daemon=True).start()
 
         if self._mic_proc and self._mic_proc.poll() is None:
             self._mic_proc.terminate()
