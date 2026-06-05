@@ -724,7 +724,7 @@ class Presenter:
         _tr_file_re  = re.compile(r"\d+/\d+:\s+(\S+\.wav)")
         _rec_save_re = re.compile(r"保存|Saved")
         _fname_re    = re.compile(r"((?:audio|mic)_\S+\.wav)")
-        _tr_done_re  = re.compile(r"done \((loopback|mic)\):\s+(\S+\.wav)")
+        _tr_done_re  = re.compile(r"done[^\(]*\((loopback|mic)\):\s+(\S+\.wav)")
         _rec_sec  = self._config.getint("recording", "record_sec", fallback=30)
         audio_dir = self._config.get("paths", "audio_dir", fallback="")
         mic_dir   = self._config.get("paths", "mic_dir",   fallback=r"C:\Users\Public\Sound2Text\mic")
@@ -741,12 +741,16 @@ class Presenter:
             if not text:
                 continue
 
+            # 構造化ログを先に解析し、正規表現は msg 部分に適用する
+            parsed = parse_log_line(text)
+            search_text = parsed[3] if parsed else text  # msg or raw text
+
             if prefix == "[Tr]":
-                m = _tr_file_re.search(text)
+                m = _tr_file_re.search(search_text)
                 if m:
                     self._tr_current_file  = m.group(1)
                     self._tr_last_activity = time.monotonic()
-                dm = _tr_done_re.search(text)
+                dm = _tr_done_re.search(search_text)
                 # Count only the primary source so loopback + mic don't double-count
                 if dm and self._view and self._running:
                     source, fname = dm.group(1), dm.group(2)
@@ -758,8 +762,8 @@ class Presenter:
 
             elif prefix in ("[Rec]", "[Mic]"):
                 # Count only the primary recorder so loopback + mic don't double-count
-                if prefix == primary_audio_prefix and _rec_save_re.search(text) and self._running:
-                    fm = _fname_re.search(text)
+                if prefix == primary_audio_prefix and _rec_save_re.search(search_text) and self._running:
+                    fm = _fname_re.search(search_text)
                     if fm and self._view:
                         fname = fm.group(1)
                         base  = mic_dir if fname.startswith("mic_") else audio_dir
