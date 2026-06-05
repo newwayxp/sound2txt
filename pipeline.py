@@ -344,7 +344,30 @@ def run():
                     wf.writeframes(pcm)
                 os.remove(raw_file_path)
                 dur = len(pcm) / (sample_rate * channels * sample_size)
-                tr_info(f"音声保存: {os.path.basename(wav_path)} ({dur:.1f}秒)")
+                tr_info(f"WAV保存: {os.path.basename(wav_path)} ({dur:.1f}秒)")
+
+                # WAV → MP3 変換
+                audio_fmt  = cfg.get("recording", "audio_format",  fallback="mp3").strip().lower()
+                mp3_quality = cfg.get("recording", "mp3_quality",  fallback="2").strip()
+                if audio_fmt == "mp3":
+                    mp3_path = wav_path.replace(".wav", ".mp3")
+                    import subprocess
+                    result = subprocess.run(
+                        ["ffmpeg", "-i", wav_path,
+                         "-codec:a", "libmp3lame",
+                         "-qscale:a", mp3_quality,
+                         mp3_path, "-y"],
+                        capture_output=True, text=True
+                    )
+                    if result.returncode == 0:
+                        mp3_size = os.path.getsize(mp3_path) // 1024
+                        wav_size = os.path.getsize(wav_path) // 1024
+                        os.remove(wav_path)   # WAV を削除
+                        tr_info(f"MP3保存: {os.path.basename(mp3_path)} "
+                                f"({mp3_size}KB ← WAV {wav_size}KB, "
+                                f"{int(100 - mp3_size/wav_size*100)}%削減)")
+                    else:
+                        tr_warn(f"MP3変換失敗 → WAVを保持: {result.stderr[-100:]}")
             except Exception as e:
                 tr_error(f"音声変換失敗: {e}")
         if transcript_file and os.path.exists(transcript_file):
