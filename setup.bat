@@ -14,9 +14,9 @@ set ERROR=0
 set PROXY_ARG=
 set PROXY_HOST=
 
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 :: Step 0: プロキシ設定（任意）
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 echo [0/6] 社内プロキシを使用しますか？
 echo  使用する場合は アドレス:ポート を入力してください。
 echo  例: proxy.company.com:8080
@@ -30,9 +30,9 @@ if not "%PROXY_INPUT%"=="" (
 )
 echo.
 
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 :: Step 1: Python チェック (3.10 以上)
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 echo [1/6] Python を確認しています...
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
@@ -56,9 +56,9 @@ if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 10 (
     echo  [WARNING] Python 3.10 以上を推奨します。現在: %PY_VER%
 )
 
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 :: Step 2: pip パッケージインストール
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 echo.
 echo [2/6] Python パッケージをインストールしています...
 echo  (faster-whisper / PyQt6 のダウンロードに数分かかる場合があります)
@@ -72,9 +72,9 @@ if %errorlevel% neq 0 (
 )
 echo  OK: パッケージのインストール完了
 
-:: ─────────────────────────────────────────────
-:: Step 3: ctranslate2 動作確認（GPU なし環境の CUDA DLL 除去）
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
+rem Step 3: ctranslate2 / CUDA 確認
+rem --------------------------------------------------
 echo.
 echo [3/6] ctranslate2 の動作確認...
 python -c "import ctranslate2" >nul 2>&1
@@ -83,21 +83,25 @@ if %errorlevel% equ 0 (
     goto :ct2_ok
 )
 
-echo  CUDA DLL 依存エラーを検出。GPU なし環境として設定します...
-(
-    echo import os, importlib.util, glob
-    echo spec = importlib.util.find_spec^('ctranslate2'^)
-    echo if spec:
-    echo     d = os.path.dirname^(spec.origin^)
-    echo     n = 0
-    echo     for p in ['cu*.dll', 'nv*.dll']:
-    echo         for f in glob.glob^(os.path.join^(d, p^)^):
-    echo             try: os.remove^(f^); n += 1
-    echo             except: pass
-    echo     print^(n, 'CUDA DLL(s) removed from ctranslate2'^)
-) > "%TEMP%\ct2fix.py"
-python "%TEMP%\ct2fix.py"
-del "%TEMP%\ct2fix.py" >nul 2>&1
+rem --- NVIDIA GPU があるか確認 ---
+nvidia-smi >nul 2>&1
+if %errorlevel% equ 0 (
+    echo  NVIDIA GPU 検出。CUDA 12 ランタイムをインストールします...
+    pip install --upgrade ctranslate2 %PROXY_ARG%
+    pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 %PROXY_ARG%
+    python -c "import ctranslate2" >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo  OK: GPU+CUDA モードで動作確認
+        goto :ct2_ok
+    )
+    echo  CUDA 修復失敗。CPU モードにフォールバックします...
+) else (
+    echo  GPU なし環境を検出しました。
+)
+
+rem --- CPU モード: ctranslate2 パッケージ内の CUDA DLL を除去 ---
+echo  CUDA DLL を除去して CPU モードに設定します...
+python -c "import os,importlib.util,glob; s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else None; [os.remove(f) for p in ['cu*.dll','nv*.dll'] for f in (glob.glob(os.path.join(d,p)) if d else [])]"
 
 python -c "import ctranslate2" >nul 2>&1
 if %errorlevel% neq 0 (
@@ -108,9 +112,9 @@ if %errorlevel% neq 0 (
 echo  OK: CPU モードで動作確認
 :ct2_ok
 
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 :: Step 3: ffmpeg インストール
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 echo.
 echo [4/6] ffmpeg を確認・インストールしています...
 ffmpeg -version >nul 2>&1
@@ -126,9 +130,9 @@ if %errorlevel% equ 0 (
     )
 )
 
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 :: Step 4: 設定ファイルと起動ファイルを準備
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 echo.
 echo [5/6] 設定ファイルと起動ファイルを準備しています...
 
@@ -175,9 +179,9 @@ if exist "%SHORTCUT%" (
     echo  OK: デスクトップにショートカットを作成しました
 )
 
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 :: Step 5: 日本語専用モデル (kotoba-whisper) 準備
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 echo.
 echo [6/6] 日本語認識モデル (kotoba-whisper-v2.0) を準備しています...
 echo  ※ 約1.5GB のダウンロードが発生します（初回のみ）
@@ -235,9 +239,9 @@ if %errorlevel% neq 0 (
 
 :model_done
 
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 :: 完了
-:: ─────────────────────────────────────────────
+rem --------------------------------------------------
 :end
 echo.
 if %ERROR% equ 0 (

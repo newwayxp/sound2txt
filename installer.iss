@@ -74,10 +74,10 @@ Name: "{autodesktop}\{#AppName}";                                       Filename
 ; Upgrade pip then install packages
 Filename: "python"; Parameters: "-m pip install --upgrade pip --quiet"; WorkingDir: "{app}"; StatusMsg: "Upgrading pip..."; Flags: postinstall waituntilterminated runascurrentuser
 Filename: "pip"; Parameters: "install -r ""{app}\requirements.txt"""; WorkingDir: "{app}"; StatusMsg: "Installing Python packages (faster-whisper, PyQt6 ...)"; Description: "Install Python packages (faster-whisper, PyQt6, etc.)"; Flags: postinstall waituntilterminated runascurrentuser
-; Fix ctranslate2 CUDA DLL error on CPU-only machines:
-;   ctranslate2 bundles cublas64_12.dll which needs CUDA runtime DLLs.
-;   If import fails, remove the bundled CUDA DLLs so ctranslate2 uses CPU mode.
-Filename: "python"; Parameters: "-c ""import os,importlib.util,glob,subprocess,sys; r=subprocess.run([sys.executable,'-c','import ctranslate2'],capture_output=True); spec=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(spec.origin) if spec and spec.origin else None; [os.remove(f) for p in ['cu*.dll','nv*.dll'] for f in glob.glob(os.path.join(d,p))] if r.returncode and d else None"""; WorkingDir: "{app}"; StatusMsg: "Checking ctranslate2 compatibility..."; Flags: postinstall waituntilterminated runascurrentuser
+; Fix ctranslate2 CUDA DLL issue (GPU and CPU machines):
+;   1. If import fails: upgrade ctranslate2 + install nvidia CUDA runtime from pip (GPU fix)
+;   2. If still fails: remove bundled CUDA DLLs so ctranslate2 uses CPU mode (CPU fallback)
+Filename: "python"; Parameters: "-c ""import os,importlib.util,glob,subprocess,sys; r=subprocess.run([sys.executable,'-c','import ctranslate2'],capture_output=True); subprocess.run([sys.executable,'-m','pip','install','--upgrade','ctranslate2','nvidia-cuda-runtime-cu12','nvidia-cublas-cu12'],capture_output=True) if r.returncode else None; r2=subprocess.run([sys.executable,'-c','import ctranslate2'],capture_output=True) if r.returncode else type('',(),{'returncode':0})(); s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else None; [os.remove(f) for p in ['cu*.dll','nv*.dll'] for f in (glob.glob(os.path.join(d,p)) if d else [])] if r2.returncode else None"""; WorkingDir: "{app}"; StatusMsg: "Checking ctranslate2 compatibility..."; Flags: postinstall waituntilterminated runascurrentuser
 ; ffmpeg: install if not present, skip if already installed
 Filename: "powershell"; Parameters: "-NoProfile -Command ""if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {{ winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements }} else {{ Write-Host 'ffmpeg already installed' }}"""; StatusMsg: "Checking ffmpeg..."; Description: "Install ffmpeg (required for audio processing)"; Flags: postinstall waituntilterminated runascurrentuser
 ; Launch app after install (optional)
