@@ -257,7 +257,7 @@ def run():
     def _resolve_model(lang: str | None) -> str:
         candidate = _LANG_MODELS.get(lang or "", model_size)
         local_path = os.path.join(_models_dir, candidate)
-        if os.path.isdir(local_path):
+        if os.path.isdir(local_path) and os.path.exists(os.path.join(local_path, "model.bin")):
             sys_info(f"言語特化モデル使用: {candidate} (lang={lang})")
             return local_path
         if candidate != model_size:
