@@ -45,7 +45,6 @@ if _pre.has_section("network"):
         os.environ.setdefault("REQUESTS_CA_BUNDLE", "")
 os.environ.setdefault("HUGGINGFACE_HUB_VERBOSITY", "error")
 
-from faster_whisper import WhisperModel
 from log_util import tr_info, tr_debug, tr_warn, tr_error, sys_info, sys_error
 
 # ── signal files ──────────────────────────────────────────────────────────────
@@ -84,6 +83,7 @@ class AccumulatingVAD:
                  silence_sec: float = 2.0,
                  min_accum_sec: float = 1.0,
                  max_sec: float = 20.0):
+        self._threshold    = threshold     # Silero VAD 判定閾値
         self._turn_silence = silence_sec   # ターン終了と判定する沈黙時間
         self._min_sec      = min_accum_sec # 最低発話時間（これ未満は無視）
         self._max_sec      = max_sec       # 強制送信上限
@@ -257,6 +257,13 @@ def run():
         return model_size
 
     # モデルロード（session_lang 確定後）
+    try:
+        from faster_whisper import WhisperModel
+    except (OSError, ImportError) as e:
+        sys_error(f"faster-whisper / ctranslate2 ロード失敗: {e}")
+        sys_error("setup.bat を再実行するか: pip install --upgrade ctranslate2")
+        return
+
     model_path          = _resolve_model(session_lang)
     sys_info(f"pipeline: model={model_path} device={device}")
     whisper             = WhisperModel(model_path, device=device, compute_type=compute_type)

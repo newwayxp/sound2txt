@@ -33,7 +33,7 @@ echo.
 :: ─────────────────────────────────────────────
 :: Step 1: Python チェック (3.10 以上)
 :: ─────────────────────────────────────────────
-echo [1/5] Python を確認しています...
+echo [1/6] Python を確認しています...
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
@@ -60,7 +60,7 @@ if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 10 (
 :: Step 2: pip パッケージインストール
 :: ─────────────────────────────────────────────
 echo.
-echo [2/5] Python パッケージをインストールしています...
+echo [2/6] Python パッケージをインストールしています...
 echo  (faster-whisper / PyQt6 のダウンロードに数分かかる場合があります)
 echo.
 pip install -r "%SCRIPT_DIR%requirements.txt" %PROXY_ARG%
@@ -73,10 +73,37 @@ if %errorlevel% neq 0 (
 echo  OK: パッケージのインストール完了
 
 :: ─────────────────────────────────────────────
+:: Step 3: ctranslate2 動作確認（CUDA DLL エラー対策）
+:: ─────────────────────────────────────────────
+echo.
+echo [3/6] ctranslate2 の動作確認...
+python -c "import ctranslate2" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo  CUDA DLL エラーを検出しました。ctranslate2 をアップグレードします...
+    pip install --upgrade ctranslate2 %PROXY_ARG%
+    python -c "import ctranslate2" >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo  アップグレード後も失敗。CUDA ランタイムをインストールします...
+        pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 %PROXY_ARG%
+        python -c "import ctranslate2" >nul 2>&1
+        if %errorlevel% neq 0 (
+            echo  [WARNING] ctranslate2 の修復に失敗しました。
+            echo  手動で確認: python -c "import ctranslate2"
+        ) else (
+            echo  OK: CUDA ランタイム追加で修復完了
+        )
+    ) else (
+        echo  OK: ctranslate2 アップグレードで修復完了
+    )
+) else (
+    echo  OK: ctranslate2 正常
+)
+
+:: ─────────────────────────────────────────────
 :: Step 3: ffmpeg インストール
 :: ─────────────────────────────────────────────
 echo.
-echo [3/5] ffmpeg を確認・インストールしています...
+echo [4/6] ffmpeg を確認・インストールしています...
 ffmpeg -version >nul 2>&1
 if %errorlevel% equ 0 (
     echo  OK: ffmpeg はインストール済みです
@@ -94,7 +121,7 @@ if %errorlevel% equ 0 (
 :: Step 4: 設定ファイルと起動ファイルを準備
 :: ─────────────────────────────────────────────
 echo.
-echo [4/5] 設定ファイルと起動ファイルを準備しています...
+echo [5/6] 設定ファイルと起動ファイルを準備しています...
 
 if not exist "%SCRIPT_DIR%config.ini" (
     copy "%SCRIPT_DIR%config_default.ini" "%SCRIPT_DIR%config.ini" >nul
@@ -143,7 +170,7 @@ if exist "%SHORTCUT%" (
 :: Step 5: 日本語専用モデル (kotoba-whisper) 準備
 :: ─────────────────────────────────────────────
 echo.
-echo [5/5] 日本語認識モデル (kotoba-whisper-v2.0) を準備しています...
+echo [6/6] 日本語認識モデル (kotoba-whisper-v2.0) を準備しています...
 echo  ※ 約1.5GB のダウンロードが発生します（初回のみ）
 echo.
 
@@ -212,7 +239,7 @@ if %ERROR% equ 0 (
     echo  ^|    run.bat をダブルクリック            ^|
     echo  ^|    または: python ui_qt.py             ^|
     echo  ^|                                        ^|
-    echo  ^|  日本語認識: kotoba-whisper-v2.0       ^|
+    echo  ^|  日本語認識: kotoba-whisper-v2.0        ^|
     echo  ^|  纪要/API タブで API Key を設定して    ^|
     echo  ^|  から録音を開始してください。          ^|
     echo  +=========================================+
