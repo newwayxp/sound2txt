@@ -119,8 +119,8 @@ class AccumulatingVAD:
                 self._silence_dur += chunk_dur
                 if self._silence_dur >= self._turn_silence:
                     if self._speech_dur >= self._min_sec:
-                        tr_debug(f"VAD turn-end accum={self._accum_dur:.1f}s "
-                                 f"speech={self._speech_dur:.1f}s")
+                        tr_info(f"VAD turn-end: speech={self._speech_dur:.1f}s "
+                                f"in {self._accum_dur:.1f}s window → sending to transcribe")
                         return self._flush("turn")
                     else:
                         # Short noise - reset speech tracking but keep accumulated buffer
@@ -132,7 +132,8 @@ class AccumulatingVAD:
                         self._silence_dur = 0.0
 
         if self._accum_dur >= self._max_sec:
-            tr_debug(f"VAD force    accum={self._accum_dur:.1f}s")
+            tr_info(f"VAD force-flush: {self._accum_dur:.1f}s accumulated "
+                    f"(speech={self._speech_dur:.1f}s) → sending to transcribe")
             return self._flush("force")
 
         return None
@@ -347,6 +348,8 @@ def run():
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             f.write(transcript_file)
         sys_info(f"Session started: {session_ts}")
+        sys_info(f"Audio streaming to disk: {raw_file_path}")
+        sys_info(f"Transcript: {transcript_file}")
 
     def _close_session(channels: int, sample_size: int, sample_rate: int):
         nonlocal raw_fh, raw_file_path, transcript_file, session_ts
@@ -356,7 +359,9 @@ def run():
         if raw_file_path and os.path.exists(raw_file_path):
             wav_path = os.path.join(os.path.dirname(raw_file_path),
                                     f"audio_{session_ts}.wav")
+            _snap_ts = session_ts  # capture for closure
             try:
+                # RAW → WAV: fast, done synchronously to free disk space
                 with open(raw_file_path, "rb") as f:
                     pcm = f.read()
                 with wave.open(wav_path, "wb") as wf:
@@ -366,26 +371,37 @@ def run():
                     wf.writeframes(pcm)
                 os.remove(raw_file_path)
                 dur = len(pcm) / (sample_rate * channels * sample_size)
-                tr_info(f"WAV saved: {os.path.basename(wav_path)} ({dur:.1f}s)")
+                tr_info(f"WAV saved: {os.path.basename(wav_path)} ({dur:.1f}s) — "
+                        f"raw={len(pcm)//1024}KB on disk")
 
+                # WAV → MP3: slow for long files, run in background thread
                 audio_fmt   = cfg.get("recording", "audio_format",  fallback="mp3").strip().lower()
                 mp3_quality = cfg.get("recording", "mp3_quality",   fallback="2").strip()
-                if audio_fmt == "mp3":
-                    mp3_path = wav_path.replace(".wav", ".mp3")
+
+                def _convert_mp3(wav_p: str, quality: str):
                     import subprocess
+                    mp3_p = wav_p.replace(".wav", ".mp3")
+                    tr_info(f"MP3 conversion started: {os.path.basename(wav_p)}")
                     result = subprocess.run(
-                        ["ffmpeg", "-i", wav_path, "-codec:a", "libmp3lame",
-                         "-qscale:a", mp3_quality, mp3_path, "-y"],
+                        ["ffmpeg", "-i", wav_p, "-codec:a", "libmp3lame",
+                         "-qscale:a", quality, mp3_p, "-y"],
                         capture_output=True, text=True
                     )
                     if result.returncode == 0:
-                        mp3_size = os.path.getsize(mp3_path) // 1024
-                        wav_size = os.path.getsize(wav_path) // 1024
-                        os.remove(wav_path)
-                        tr_info(f"MP3 saved: {os.path.basename(mp3_path)} "
+                        mp3_size = os.path.getsize(mp3_p) // 1024
+                        wav_size = os.path.getsize(wav_p) // 1024
+                        os.remove(wav_p)
+                        tr_info(f"MP3 saved: {os.path.basename(mp3_p)} "
                                 f"({mp3_size}KB, {int(100-mp3_size/wav_size*100)}% smaller)")
                     else:
-                        tr_warn(f"MP3 conversion failed, keeping WAV: {result.stderr[-100:]}")
+                        tr_warn(f"MP3 conversion failed, WAV kept: {result.stderr[-100:]}")
+
+                if audio_fmt == "mp3":
+                    t = threading.Thread(target=_convert_mp3,
+                                         args=(wav_path, mp3_quality), daemon=True)
+                    t.start()
+                    tr_info("MP3 conversion running in background")
+
             except Exception as e:
                 tr_error(f"Audio conversion failed: {e}")
 
@@ -420,11 +436,12 @@ def run():
                 break
 
             seg_dur = len(audio_bytes) / (SAMPLE_RATE * 2)
-            tr_debug(f"WHISPER_IN dur={seg_dur:.1f}s lang={session_lang}")
+            tr_info(f"Transcribing {seg_dur:.1f}s audio (queue depth={_seg_queue.qsize()})")
 
             # Write temp WAV
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_f:
                 tmp = tmp_f.name
+            t0 = time.monotonic()
             try:
                 with wave.open(tmp, "wb") as wf:
                     wf.setnchannels(1)
@@ -465,9 +482,9 @@ def run():
                 except Exception:
                     pass
 
-            elapsed = time.monotonic()
-            tr_debug(f"WHISPER_OUT lang={info.language}({info.language_probability:.2f}) "
-                     f"segments={len(seg_list)}")
+            elapsed = time.monotonic() - t0
+            tr_info(f"Transcribed in {elapsed:.1f}s: lang={info.language} "
+                    f"({info.language_probability:.0%}) segments={len(seg_list)}")
 
             # Language detection on first segment
             if not session_lang:
