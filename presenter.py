@@ -826,25 +826,30 @@ class Presenter:
                     next_log = elapsed + interval_sec
 
             if timeout_sec is not None and elapsed >= timeout_sec:
-                self._view and self._view.put_log(
-                    f"[UI] {name} did not finish within {timeout_sec}s. Terminating.")
+                msg = f"{name} did not finish within {timeout_sec}s — force terminated"
+                _log("SYS", "ERROR", msg)
+                self._view and self._view.put_log(f"[UI] [ERROR] {msg}")
                 proc.terminate()
-                # タイムアウト時はレコーダーも停止する
                 if self._rec_proc and self._rec_proc.poll() is None:
-                    self._view and self._view.put_log("[UI] Stopping recorder due to transcriber timeout.")
+                    _log("SYS", "WARN", "Stopping recorder due to process timeout")
+                    self._view and self._view.put_log("[UI] [WARN] レコーダーを停止します")
                     self._rec_proc.terminate()
                 try:
                     proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    self._view and self._view.put_log(
-                        f"[UI] {name} still running. Killing process.")
+                    _log("SYS", "ERROR", f"{name} still running after terminate — killing")
+                    self._view and self._view.put_log(f"[UI] [ERROR] {name} kill 送信")
                     proc.kill()
                     proc.wait()
                 return False
             time.sleep(0.5)
 
-        self._view and self._view.put_log(
-            f"[UI] {name} exited with code {proc.returncode}")
+        rc = proc.returncode
+        if rc == 0 or rc == -2:   # 0=正常, -2=SIGINT(Ctrl+C)
+            _log("SYS", "INFO",  f"{name} exited normally (code={rc})")
+        else:
+            _log("SYS", "ERROR", f"{name} exited with error code={rc}")
+            self._view and self._view.put_log(f"[UI] [ERROR] {name} 異常終了 code={rc}")
         return True
 
     def _wav_secs(self, path: str) -> float:
