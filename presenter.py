@@ -7,7 +7,6 @@ Communicates with the View via ViewProtocol + schedule().
 from __future__ import annotations
 
 import glob
-import logging
 import os
 import subprocess
 import sys
@@ -148,11 +147,12 @@ class Presenter:
 
     def set_view(self, view: ViewProtocol) -> None:
         self._view = view
-        _logger.info("View set: %s", type(view).__name__)
+        _log("SYS", "INFO", f"View set: {type(view).__name__}")
 
     def _log(self, msg: str, level: str = "info") -> None:
         """Write to both the UI log panel and the log file."""
-        getattr(_logger, level, _logger.info)(msg)
+        lvl_map = {"debug": "DEBUG", "info": "INFO", "warning": "WARN", "error": "ERROR"}
+        _log("UI", lvl_map.get(level, "INFO"), msg)
         if self._view:
             self._view.put_log(msg)
 
