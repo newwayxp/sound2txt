@@ -601,17 +601,6 @@ class App(QMainWindow):
         self._btn_subtitle.toggled.connect(self._on_subtitle_toggle)
         hbox.addWidget(self._btn_subtitle)
 
-        # Subtitle model selector (tiny/small, CPU only — shown always near subtitle btn)
-        self._sub_model_combo = QComboBox(bar)
-        self._sub_model_combo.addItems(["tiny", "small"])
-        self._sub_model_combo.setFixedWidth(70)
-        cur_sub_model = self._presenter._config.get("subtitle", "model_size", fallback="small")
-        self._sub_model_combo.setCurrentText(cur_sub_model if cur_sub_model in ("tiny", "small") else "small")
-        self._sub_model_combo.currentTextChanged.connect(
-            lambda v: self._presenter.save_config({("subtitle", "model_size"): v})
-        )
-        hbox.addWidget(self._sub_model_combo)
-
         # Subtitle destination language combo (shown only when subtitle is ON)
         self._sub_dst_combo = QComboBox(bar)
         self._sub_dst_combo.addItems([
