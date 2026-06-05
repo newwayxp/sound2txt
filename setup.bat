@@ -82,33 +82,19 @@ if %errorlevel% equ 0 (
     goto :ct2_ok
 )
 
-rem Check for NVIDIA GPU
-nvidia-smi >nul 2>&1
-if %errorlevel% equ 0 (
-    echo  NVIDIA GPU detected. Installing CUDA 12 runtime...
-    pip install --upgrade ctranslate2 %PROXY_ARG%
-    pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 %PROXY_ARG%
-    python -c "from faster_whisper import WhisperModel" >nul 2>&1
-    if %errorlevel% equ 0 (
-        echo  OK: faster-whisper running in GPU+CUDA mode
-        goto :ct2_ok
-    )
-    echo  CUDA fix failed. Falling back to CPU mode...
-) else (
-    echo  No NVIDIA GPU detected.
-)
-
-rem CPU fallback: remove bundled CUDA DLLs from ctranslate2 package
-echo  Removing CUDA DLLs to enable CPU mode...
-python -c "import os,importlib.util,glob; s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else None; [os.remove(f) for p in ['cu*.dll','nv*.dll'] for f in (glob.glob(os.path.join(d,p)) if d else [])]"
+rem faster-whisper import failed - remove bundled CUDA DLLs from ctranslate2
+echo  CUDA DLL error detected. Removing bundled CUDA DLLs...
+python -c "import os,importlib.util,glob; s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else ''; removed=[f for p in ['cu*.dll','nv*.dll'] for f in glob.glob(os.path.join(d,p))]; [os.remove(f) for f in removed]; print(len(removed), 'CUDA DLL(s) removed from', d)"
 
 python -c "from faster_whisper import WhisperModel" >nul 2>&1
 if %errorlevel% neq 0 (
-    echo  [ERROR] faster-whisper repair failed.
+    echo  [ERROR] faster-whisper still fails after CUDA DLL removal.
+    echo  Please reinstall ctranslate2: pip install --upgrade ctranslate2
     set ERROR=1
     goto :end
 )
-echo  OK: faster-whisper running in CPU mode
+echo  OK: faster-whisper OK (CPU mode)
+echo  Note: GPU acceleration requires CUDA 12 toolkit from nvidia.com
 :ct2_ok
 
 rem --------------------------------------------------
