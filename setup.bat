@@ -73,31 +73,36 @@ if %errorlevel% neq 0 (
 echo  OK: パッケージのインストール完了
 
 :: ─────────────────────────────────────────────
-:: Step 3: ctranslate2 動作確認（CUDA DLL エラー対策）
+:: Step 3: ctranslate2 動作確認（CUDA DLL パス解決）
 :: ─────────────────────────────────────────────
 echo.
 echo [3/6] ctranslate2 の動作確認...
-python -c "import ctranslate2" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  CUDA DLL エラーを検出しました。ctranslate2 をアップグレードします...
-    pip install --upgrade ctranslate2 %PROXY_ARG%
-    python -c "import ctranslate2" >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo  アップグレード後も失敗。CUDA ランタイムをインストールします...
-        pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 %PROXY_ARG%
-        python -c "import ctranslate2" >nul 2>&1
-        if %errorlevel% neq 0 (
-            echo  [WARNING] ctranslate2 の修復に失敗しました。
-            echo  手動で確認: python -c "import ctranslate2"
-        ) else (
-            echo  OK: CUDA ランタイム追加で修復完了
-        )
-    ) else (
-        echo  OK: ctranslate2 アップグレードで修復完了
-    )
-) else (
-    echo  OK: ctranslate2 正常
+
+:: nvidia パッケージの DLL パスを設定してから import テスト
+(
+    echo import sys, os, importlib
+    echo if sys.platform == "win32":
+    echo     for p in ["nvidia.cuda_runtime", "nvidia.cublas"]:
+    echo         try:
+    echo             m = importlib.import_module^(p^)
+    echo             b = os.path.join^(os.path.dirname^(m.__file__^), "bin"^)
+    echo             if os.path.isdir^(b^): os.add_dll_directory^(b^)
+    echo         except: pass
+    echo import ctranslate2
+) > "%TEMP%\ct2test.py"
+
+python "%TEMP%\ct2test.py" >nul 2>&1
+set CT2_OK=%errorlevel%
+del "%TEMP%\ct2test.py" >nul 2>&1
+
+if %CT2_OK% neq 0 (
+    echo  [ERROR] ctranslate2 の読み込みに失敗しました。
+    echo  以下を手動で実行してください:
+    echo    pip install --upgrade ctranslate2 nvidia-cuda-runtime-cu12
+    set ERROR=1
+    goto :end
 )
+echo  OK: ctranslate2 正常
 
 :: ─────────────────────────────────────────────
 :: Step 3: ffmpeg インストール

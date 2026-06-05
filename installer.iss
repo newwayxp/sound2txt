@@ -1,5 +1,5 @@
 ; ============================================================
-;  Sound2Text Installer Script  v1.3.11
+;  Sound2Text Installer Script  v1.3.12
 ;  Inno Setup 6.x  --  build with build_installer.bat
 ;
 ;  Dependency check flow:
@@ -11,7 +11,7 @@
 ; ============================================================
 
 #define AppName    "Sound2Text"
-#define AppVersion "1.3.11"
+#define AppVersion "1.3.12"
 #define AppPublisher "Sound2Text"
 
 [Setup]
@@ -48,12 +48,15 @@ Source: "presenter.py";   DestDir: "{app}"; Flags: ignoreversion
 Source: "appconfig.py";   DestDir: "{app}"; Flags: ignoreversion
 Source: "i18n.py";        DestDir: "{app}"; Flags: ignoreversion
 ; ── Recording / transcription pipeline ────────────────────────────────────────
-Source: "start.py";       DestDir: "{app}"; Flags: ignoreversion
-Source: "recorder.py";    DestDir: "{app}"; Flags: ignoreversion
-Source: "mic_recorder.py"; DestDir: "{app}"; Flags: ignoreversion
-Source: "transcriber.py"; DestDir: "{app}"; Flags: ignoreversion
-Source: "summarizer.py";  DestDir: "{app}"; Flags: ignoreversion
-Source: "device_utils.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "start.py";           DestDir: "{app}"; Flags: ignoreversion
+Source: "pipeline.py";        DestDir: "{app}"; Flags: ignoreversion
+Source: "log_util.py";        DestDir: "{app}"; Flags: ignoreversion
+Source: "recorder.py";        DestDir: "{app}"; Flags: ignoreversion
+Source: "mic_recorder.py";    DestDir: "{app}"; Flags: ignoreversion
+Source: "transcriber.py";     DestDir: "{app}"; Flags: ignoreversion
+Source: "summarizer.py";      DestDir: "{app}"; Flags: ignoreversion
+Source: "subtitle_window.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "device_utils.py";    DestDir: "{app}"; Flags: ignoreversion
 ; ── Tools ──────────────────────────────────────────────────────────────────────
 Source: "debug_modules.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "record_test.py"; DestDir: "{app}"; Flags: ignoreversion
