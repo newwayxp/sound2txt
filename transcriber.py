@@ -93,9 +93,9 @@ def _copy_dll_alias(src: str, dst_dir: str, alias: str):
         return
     try:
         shutil.copy2(src, dst)
-        print(f"[Transcriber] Created CUDA compat alias: {alias} -> {os.path.basename(src)}")
+        sys_info(f"CUDA compat alias: {alias} -> {os.path.basename(src)}")
     except Exception as e:
-        print(f"[Transcriber] Could not create {alias}: {e}")
+        sys_error(f"Could not create CUDA alias {alias}: {e}")
 
 _setup_cuda_dlls()
 
@@ -120,6 +120,7 @@ import time
 import warnings
 from faster_whisper import WhisperModel
 from datetime import datetime, timedelta
+from log_util import tr_debug, tr_info, tr_warn, tr_error, sys_info, sys_error
 
 warnings.filterwarnings("ignore")
 
@@ -208,7 +209,7 @@ def _resolve_vocab_file(cfg: configparser.ConfigParser) -> str:
     if not os.path.exists(path) and os.path.exists(_VOCAB_DEFAULT):
         import shutil
         shutil.copy2(_VOCAB_DEFAULT, path)
-        print(f"[Transcriber] vocabulary.txt を {path} にコピーしました")
+        sys_info(f"vocabulary.txt をコピー: {path}")
     return path
 
 # 言語ごとのトランスクリプトヘッダー / フッター
@@ -287,9 +288,9 @@ def _write_recording_config(cfg, cfg_file, device, model_size):
         if changed:
             with open(cfg_file, "w", encoding="utf-8") as f:
                 cfg.write(f)
-            print(f"[Transcriber] config.ini updated: device={device}, model_size={model_size}")
+            sys_info(f"config.ini updated: device={device}, model_size={model_size}")
     except Exception as e:
-        print(f"[Transcriber] config.ini update skipped: {e}")
+        sys_warn(f"config.ini update skipped: {e}")
 
 
 def main():
@@ -313,7 +314,7 @@ def main():
     else:
         mic_dir = ""  # disabled
 
-    print(f"[Transcriber] mode={rec_mode}  loopback={'on' if use_loopback else 'off'}  mic={'on' if mic_dir else 'off'}")
+    sys_info(f"mode={rec_mode}  loopback={'on' if use_loopback else 'off'}  mic={'on' if mic_dir else 'off'}")
 
     cfg_file   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
 
@@ -370,14 +371,14 @@ def main():
 
     compute_type = "float16" if device == "cuda" else "int8"
 
-    print(f"[Transcriber] loading faster-whisper {model_size} (device={device}, compute={compute_type})")
+    tr_info(f"loading faster-whisper {model_size} (device={device}, compute={compute_type})")
     whisper = WhisperModel(model_size, device=device, compute_type=compute_type)
-    print(f"[Transcriber] model loaded on {device}")
-    print(f"[Transcriber] ready (output file will be created on first audio)")
+    tr_info(f"model loaded on {device}")
+    tr_info("ready (output file will be created on first audio)")
     if language:
-        print(f"[Transcriber] 言語固定: {language}（config.ini）")
+        tr_info(f"言語固定: {language}（config.ini）")
     else:
-        print(f"[Transcriber] 言語自動検出（{EVAL_CHUNKS}チャンク待機）")
+        tr_info(f"言語自動検出（{EVAL_CHUNKS}チャンク待機）")
     print("[Transcriber] 新規音声ファイルを待機中... (Ctrl+C で停止)\n")
 
     pending     = []
@@ -388,7 +389,7 @@ def main():
     vocab_file = _resolve_vocab_file(_cfg)
     vocab = load_vocabulary(vocab_file)
     if vocab:
-        print(f"[Transcriber] 用語リスト: {len(vocab)} 件 ({vocab_file})")
+        tr_info(f"用語リスト: {len(vocab)} 件 ({vocab_file})")
 
     def _transcribe(wav_path, lang):
         """For language detection: returns (full_text, info)."""
@@ -402,7 +403,7 @@ def main():
             )
             text = " ".join(s.text.strip() for s in segments)
         except RuntimeError as e:
-            print(f"[Transcriber] transcribe error: {e}")
+            tr_error(f"transcribe error: {e}")
             from types import SimpleNamespace
             return "", SimpleNamespace(language="en", language_probability=0.0)
         if any(p in text for p in HALLUCINATION_PHRASES):
@@ -430,7 +431,7 @@ def main():
             err_msg = str(e)
             if "cublas" in err_msg.lower() or "cuda" in err_msg.lower():
                 # GPU 推論失敗 → CPU に永続フォールバック（以降は再試行しない）
-                print(f"[Transcriber] GPU inference error: {e}")
+                tr_error(f"GPU inference error: {e}")
                 print("[Transcriber] Reloading model on CPU (permanent fallback)...")
                 device       = "cpu"
                 compute_type = "int8"
@@ -442,7 +443,7 @@ def main():
                 )
                 seg_list = list(segments)
             else:
-                print(f"[Transcriber] transcribe error: {e}")
+                tr_error(f"transcribe error: {e}")
                 return []
         # Return (absolute_datetime, formatted_line) pairs so caller can sort
         segs_out = []
@@ -497,7 +498,7 @@ def main():
 
         dest_dir = os.path.join(mic_dir, "done") if source == "mic" else done_dir
         os.rename(wav_path, os.path.join(dest_dir, os.path.basename(wav_path)))
-        print(f"[Transcriber] done ({source}): {os.path.basename(wav_path)}")
+        tr_debug(f"done→done/ ({source}): {os.path.basename(wav_path)}")
 
     def _process_with_autodetect(wav_path):
         text, info = _transcribe(wav_path, lang=None)
@@ -506,7 +507,7 @@ def main():
 
         # 無音チャンク: テキストが空 → 待機継続（EVAL_CHUNKS にカウントしない）
         if not text.strip():
-            print(f"[Transcriber] 無音チャンク → 会議開始を待機中...")
+            tr_debug("無音チャンク → 会議開始を待機中...")
             os.rename(wav_path, os.path.join(done_dir, os.path.basename(wav_path)))
             return
 
@@ -524,17 +525,17 @@ def main():
         if lang_scores:
             lang   = max(lang_scores, key=lambda k: lang_scores[k])
             detail = " | ".join(f"{l}:{s:.2f}" for l, s in sorted(lang_scores.items(), key=lambda x: -x[1]))
-            print(f"[Transcriber] 言語確定: {lang}  (スコア: {detail})\n")
+            tr_info(f"言語確定: {lang}  (スコア: {detail})")
         else:
             # 発話はあるが信頼度不足 → OS デフォルト言語を使用
             lang = _OS_DEFAULT_LANG
-            print(f"[Transcriber] 信頼度不足 → OS デフォルト言語: {lang}\n")
+            tr_warn(f"信頼度不足 → OS デフォルト言語: {lang}")
         return lang
 
     def _flush_all(out):
         nonlocal language, self_label
 
-        print(f"[Transcriber] 録音ファイルの書き込み完了を {DRAIN_WAIT_SEC}秒待機...")
+        tr_info(f"停止: 録音ファイル書き込み完了を {DRAIN_WAIT_SEC}秒待機...")
         time.sleep(DRAIN_WAIT_SEC)
 
         # Collect late loopback + mic files
@@ -549,11 +550,11 @@ def main():
             print("[Transcriber] No remaining files.")
             return
 
-        print(f"[Transcriber] Processing {total} remaining files...")
+        tr_info(f"停止後処理: 残り {total} 件を変換してから終了...")
 
         for i, (wav_path, source) in enumerate(late_files, 1):
             seen.add(wav_path)
-            print(f"[Transcriber] {i}/{total}: {os.path.basename(wav_path)} ({source})")
+            tr_info(f"flush {i}/{total}: {os.path.basename(wav_path)} ({source})")
             if language is not None:
                 lbl   = self_label if source == "mic" else ""
                 lines = _transcribe_lines(wav_path, language, lbl)
@@ -567,17 +568,17 @@ def main():
                 language   = _decide_language()
                 self_label = _SELF_LABEL.get(language, "[Me]")
             offset = len(late_files)
-            print(f"[Transcriber] Flushing {len(pending)} buffered chunks ({language})...")
+            tr_info(f"pending {len(pending)} チャンクを {language} で変換中...")
             for j, item in enumerate(pending, 1):
                 wav_path = item[0]
                 source   = item[2] if len(item) > 2 else "loopback"
-                print(f"[Transcriber] {offset+j}/{total}: {os.path.basename(wav_path)} ({source})")
+                tr_info(f"flush {offset+j}/{total}: {os.path.basename(wav_path)} ({source})")
                 lbl   = self_label if source == "mic" else ""
                 lines = _transcribe_lines(wav_path, language, lbl)
                 _write_and_move(wav_path, lines, out, source)
             pending.clear()
 
-        print(f"[Transcriber] All {total} files processed.")
+        tr_info(f"全 {total} 件の変換完了")
         # Flush all buffered segments in absolute-time order
         _buf_flush_all(out)
 
@@ -593,7 +594,7 @@ def main():
                 ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
                 self.path  = os.path.join(transcript_dir, f"transcript_{ts}.txt")
                 self._f    = open(self.path, "w", encoding="utf-8-sig")
-                print(f"[Transcriber] ready -> {self.path}")
+                tr_info(f"transcript file created: {self.path}")
             return self._f
 
         def write(self, s):   return self._open().write(s)
@@ -654,7 +655,7 @@ def main():
                     start_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 fname = os.path.basename(wav_path)
-                print(f"[Transcriber] 認識開始: {fname} ({source})", flush=True)
+                tr_info(f"認識開始: {fname} ({source})")
 
                 if language is None:
                     if source == "loopback":
@@ -662,12 +663,12 @@ def main():
                         if len(pending) >= EVAL_CHUNKS:
                             language   = _decide_language()
                             self_label = _SELF_LABEL.get(language, "[Me]")
-                            print(f"[Transcriber] 言語確定: {language}  (以降この言語で認識)", flush=True)
+                            tr_info(f"言語確定: {language}  (以降この言語で認識)")
                             _ensure_header()
                             for item in pending:
                                 wp  = item[0]; tx = item[1]
                                 src = item[2] if len(item) > 2 else "loopback"
-                                print(f"[Transcriber] 認識開始: {os.path.basename(wp)} ({src}/pending)", flush=True)
+                                tr_debug(f"pending再変換: {os.path.basename(wp)} ({src})")
                                 lbl   = self_label if src == "mic" else ""
                                 lines = _transcribe_lines(wp, language, lbl) if language in _LANG_PROMPT_BASE else ([(None, tx)] if tx else [])
                                 _write_and_move(wp, lines, out, src)
@@ -721,12 +722,12 @@ def main():
             _cfg.set("recording", "language", language)
             with open(cfg_file, "w", encoding="utf-8") as f:
                 _cfg.write(f)
-            print(f"[Transcriber] config.ini を更新しました: language = {language}")
+            sys_info(f"config.ini 更新: language = {language}")
         except Exception as e:
-            print(f"[Transcriber] config.ini 更新失敗（無視）: {e}")
+            sys_warn(f"config.ini 更新失敗（無視）: {e}")
 
     if out.path:
-        print(f"[Transcriber] 保存しました: {out.path}")
+        tr_info(f"保存しました: {out.path}")
 
 
 if __name__ == "__main__":

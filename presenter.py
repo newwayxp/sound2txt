@@ -18,22 +18,25 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 # ── File logger (always active, independent of UI) ────────────────────────────
-_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sound2txt.log")
+import configparser as _cp
+from log_util import LogConfig, FileLogger, parse_log_line
 
-def _setup_file_logger() -> logging.Logger:
-    logger = logging.getLogger("sound2txt")
-    if logger.handlers:
-        return logger  # already configured
-    logger.setLevel(logging.DEBUG)
-    fh = logging.FileHandler(_LOG_FILE, encoding="utf-8", mode="a")
-    fh.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    ))
-    logger.addHandler(fh)
-    return logger
+def _load_log_config() -> LogConfig:
+    cfg = _cp.ConfigParser()
+    cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini"),
+             encoding="utf-8")
+    return LogConfig(cfg)
 
-_logger = _setup_file_logger()
+_log_cfg    = _load_log_config()
+_file_log   = FileLogger(_log_cfg.log_file)
+
+def _log(category: str, level: str, message: str) -> None:
+    if _log_cfg.should_write_file(level):
+        from log_util import _ts
+        _file_log.write_raw(category, level, _ts(), message)
+
+_log("SYS", "INFO", "="*60)
+_log("SYS", "INFO", "Sound2Text presenter started")
 
 from appconfig import (
     AppConfig,
@@ -764,8 +767,21 @@ class Presenter:
                         if secs <= 0: secs = float(_rec_sec)
                         self._view.schedule(lambda s=secs: self._view.dashboard_add_audio(s))
 
-            if self._view:
-                self._view.put_log(f"{prefix} {text}")
+            # ── ログファイル書き込み + UI 表示フィルタリング ──────────
+            parsed = parse_log_line(text)
+            if parsed:
+                cat, lvl, ts, msg = parsed
+                # ファイルには全て書き込む
+                if _log_cfg.should_write_file(lvl):
+                    _file_log.write_raw(cat, lvl, ts, msg)
+                # UI には設定に応じてフィルタリング
+                if self._view and _log_cfg.should_show_ui(cat, lvl):
+                    self._view.put_log(f"[{cat}] {msg}")
+            else:
+                # 非構造化行（旧形式）は全てファイルとUIに出力
+                _file_log.write(f"{prefix} {text}")
+                if self._view:
+                    self._view.put_log(f"{prefix} {text}")
 
     def _wait_process(self, proc, name: str,
                       timeout_sec: int | None = None,

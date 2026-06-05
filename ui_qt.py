@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 from appconfig import AppConfig
 from i18n import _LANG, t
 from widgets_qt import DashboardWidget, VUMeterWidget
+from log_util import LogConfig, FileLogger
 
 if TYPE_CHECKING:
     from presenter import Presenter
@@ -269,6 +270,14 @@ class App(QMainWindow):
         self.resize(1000, 680)
         self.setMinimumSize(860, 560)
 
+        # Initialize file logger for UI-side logs
+        try:
+            log_cfg = LogConfig(presenter._config)
+            self._file_log = FileLogger(log_cfg.log_file)
+            self._file_log.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [UI ] [INFO ] UI window created")
+        except Exception:
+            self._file_log = None
+
         # Wire view before building (so presenter can call us during initialize)
         presenter.set_view(self)
 
@@ -286,7 +295,10 @@ class App(QMainWindow):
 
     def put_log(self, msg: str) -> None:
         """Thread-safe: emit signal which is connected to log box on main thread."""
-        ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # UI ステート系は常にファイルに書き込む
+        if hasattr(self, "_file_log") and self._file_log:
+            self._file_log.write(f"[{ts}] [UI ] [INFO ] {msg}")
         self._log_signal.emit(f"[{ts}] {msg}")
 
     def schedule(self, fn) -> None:
