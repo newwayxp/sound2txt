@@ -4,50 +4,42 @@ Last updated: 2026-06-05
 
 ---
 
-## 🔴 Active: 文字起こし出力なし（転写ゼロ）
+## 🔴 Active: pipeline.py 転写ゼロ（アプリ起動時）
 
 **症状:**
-- エラーなし、MP3 保存も成功
-- ログに `[PL]` の転写結果が全く出力されない
-- セッション開始・停止は正常
+- debug_modules.py audio → ✅ 正常に日本語転写される（GPU large-v3 動作確認済み）
+- アプリからの録音 → 転写コンテンツが全くない
 
-**状態ファイルの状況:**
-- `.pipeline_session` が正常に作成・削除される
-- `.last_transcript` が空 or 作成されない
-- 纪要生成がスキップされる（"Transcript file was not created"）
+**確認済み動作:**
+- GPU (3060 Ti) + CUDA 12: `from faster_whisper import WhisperModel` → OK
+- `ctranslate2.get_cuda_device_count()` → 1
+- `debug_modules.py audio 20` → 3セグメント転写成功
+- WAV/MP3 保存 → 正常（音声キャプチャ自体は OK）
 
 **推定原因（未確認）:**
-1. `TurnVAD` の `turn_silence=2.0s` が発動しない
-   - 実際の音声に 2 秒以上の無音がない可能性
-   - ログの `TurnVAD flushed` が出ているか要確認
-2. `_process()` が呼ばれているが出力が空
-   - Whisper が全セグメントを `no_speech_prob > 0.7` で除外している可能性
-   - `WHISPER_EMPTY` ログが出ているか要確認
+1. VAD が 30 秒の force-flush に達していない
+   - noise-skip で accum_dur がリセットされていた → 修正済み
+   - 修正後の動作未確認
+2. pipeline.py バックグラウンドスレッドがセグメントを受け取っていない
+   - `[TR] VAD force accum=30.xs` がログに出るか要確認
+3. pipeline.py がセッションモードで起動しているか
+   - `.pipeline_session` ファイルが存在するか確認
 
-**デバッグ手順:**
+**次回デバッグ手順:**
 ```powershell
-# テスト後にログで確認
-Get-Content "C:\vscode\data\sound2txt.log" -Encoding UTF8 |
-  Select-String "TurnVAD|WHISPER_IN|WHISPER_OUT|WHISPER_EMPTY|pipeline.*original" |
-  Select-Object -Last 50
+# アプリで録音後、ログで確認
+Get-Content "C:\code\data\sound2txt.log" -Encoding UTF8 -Tail 80 |
+  Select-String "VAD|WHISPER|pipeline.*original|session"
 ```
 
 **ログで確認すべきパターン:**
 | ログキー | 意味 |
 |---|---|
-| `TurnVAD flushed [turn]` | VAD が正常にセグメントを送信 |
-| `TurnVAD flushed [force]` | 20秒強制送信 |
-| `WHISPER_IN` | Whisper に送信された |
-| `WHISPER_EMPTY` | Whisper が全除外 → 閾値が厳しすぎる |
+| `VAD force accum=30.xs` | force-flush 発動 → キューに入った |
+| `VAD turn-end` | 発話終了検出 |
+| `WHISPER_IN` | バックグラウンドスレッドが受け取った |
+| `WHISPER_EMPTY` | Whisper が全フィルタリング |
 | `[pipeline] original:` | 転写成功 |
-
-**設定確認ポイント:**
-```ini
-[subtitle]
-silence_sec = 2.0    ; 発話後2秒の無音でターン終了
-min_accum_sec = 1.0  ; 最低1秒の発話が必要
-max_sec = 20.0       ; 20秒で強制送信
-```
 
 ---
 
@@ -55,12 +47,37 @@ max_sec = 20.0       ; 20秒で強制送信
 
 | 日付 | 問題 | 解決 |
 |---|---|---|
-| 2026-06-05 | UnboundLocalError: session_lang | session_lang の定義をモデルロードより前に移動 |
-| 2026-06-05 | 纪要が英語で出力 | pipeline._close_session で LANG_FILE を書き込むよう修正 |
-| 2026-06-05 | RAW ファイルが WAV に変換されない | _finalize_recorder_raw + session_done シグナル |
-| 2026-06-05 | 認識精度が低い (tiny モデル) | kotoba-whisper-v2.0-ct2 (日本語特化) を導入 |
-| 2026-06-05 | VAD が force flush のみ (5秒毎) | AccumulatingVAD → TurnVAD に変更 (2秒無音でターン終了) |
-| 2026-06-05 | VAD 時間計測が3倍ズレ | len(chunk)/SAMPLE_RATE で実時間計算に変更 |
+| 2026-06-05 | CUDA DLL (cublas64_12.dll) import 失敗 | ctranslate2 `__init__.py` に try/except パッチ |
+| 2026-06-05 | GPU 推論時 cublas not found | nvidia pip パッケージを ctranslate2 import 前にプリロード |
+| 2026-06-05 | kotoba-whisper shape mismatch (80 vs 128 mel) | preprocessor_config.json を作成 (feature_size=128) |
+| 2026-06-05 | VAD noise-skip で accumulator リセット | noise-skip 時は tracking のみリセット、accum_dur は保持 |
+| 2026-06-05 | pipeline.py 転写ゼロ（旧 VAD バグ） | ↑ と同上 |
+| 2026-06-05 | 転写パラメータがモデル非依存でハードコード | `_make_transcribe_kwargs(model_path)` で封装 |
+| 2026-06-05 | 転写が同期でメインループをブロック | バックグラウンドスレッド + queue に変更 |
+| 2026-06-05 | リアルタイム翻訳で品質低下 | 翻訳機能を削除、転写に集中 |
+| 2026-06-05 | setup.bat 各種バグ | Unicode コメント、ネスト if、PyTorch 未インストール等 |
+
+---
+
+## アーキテクチャ（pipeline.py 現在）
+
+```
+メインスレッド:
+  音声キャプチャ → AccumulatingVAD
+    silence_sec=2.0s で発話終了検出
+    max_sec=30.0s で強制フラッシュ
+    noise-skip 時は accum_dur 保持（要確認）
+  → queue.put(audio_bytes) ← ノンブロッキング
+
+バックグラウンドスレッド (_transcribe_loop):
+  queue.get() → 一時 WAV 書込 → WhisperModel.transcribe()
+  → フィルタリング → transcript ファイル追記
+  セッション終了時: queue.join() で完了待ち
+
+モデル設定 (config.ini):
+  model_size = large-v3 (GPU では large-v3 使用)
+  [models] ja = large-v3
+```
 
 ---
 
@@ -69,10 +86,11 @@ max_sec = 20.0       ; 20秒で強制送信
 | 項目 | 値 |
 |---|---|
 | OS | Windows 11 |
-| Python | 3.14 |
-| faster-whisper | 1.2.1 |
-| 認識モデル | kotoba-whisper-v2.0-ct2 (int8, 726MB) |
-| デバイス | CPU (GPU なし) |
+| Python | 3.11 |
+| GPU | NVIDIA RTX 3060 Ti |
+| faster-whisper | 1.x |
+| ctranslate2 | 4.7.2 (patched __init__.py) |
+| 認識モデル | large-v3 on CUDA |
 | プロキシ | tkyproxy-std.intra.tis.co.jp:8080 |
 
 ---
@@ -81,7 +99,7 @@ max_sec = 20.0       ; 20秒で強制送信
 
 ```
 1. git clone https://github.com/newwayxp/sound2txt.git
-2. setup.bat を実行（プロキシ: tkyproxy-std.intra.tis.co.jp:8080）
+2. setup.bat を実行（プロキシ設定、torch/kotoba-whisper ダウンロード含む）
 3. config.ini の api_key を設定
-4. kotoba-whisper は setup.bat の Step 5 で自動ダウンロード
+4. GPU あり: setup が nvidia-cuda-runtime-cu12, nvidia-cublas-cu12 を自動インストール
 ```
