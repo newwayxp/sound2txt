@@ -187,10 +187,7 @@ echo.
 set MODEL_DIR=%SCRIPT_DIR%models\kotoba-whisper-v2.0-ct2
 set MODEL_BIN=%MODEL_DIR%\model.bin
 
-if exist "%MODEL_BIN%" (
-    echo  OK: kotoba-whisper already downloaded (skipping)
-    goto :model_done
-)
+if exist "%MODEL_BIN%" goto :model_done
 
 echo  Downloading from HuggingFace (10-30 min on first run)...
 
@@ -201,33 +198,41 @@ if not "%PROXY_HOST%"=="" (
 )
 set HUGGINGFACE_HUB_DISABLE_SYMLINKS_WARNING=1
 
+rem PyTorch is required by ct2-transformers-converter to load and convert the model
+python -c "import torch" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo  Installing PyTorch CPU for model conversion (approx 200MB)...
+    pip install torch --index-url https://download.pytorch.org/whl/cpu --trusted-host download.pytorch.org %PROXY_ARG%
+    if %errorlevel% neq 0 (
+        echo  [ERROR] PyTorch install failed. Check network/proxy and retry setup.bat.
+        set ERROR=1
+        goto :end
+    )
+)
+
 rem Find ct2-transformers-converter
 set CT2_CONV=
 for /f "delims=" %%i in ('python -c "import sys,os; print(os.path.join(os.path.dirname(sys.executable), 'Scripts', 'ct2-transformers-converter.exe'))" 2^>nul') do set CT2_CONV=%%i
+if not exist "%CT2_CONV%" for /f "delims=" %%i in ('python -c "import site,os; s=[p for p in site.getsitepackages() if 'site-packages' in p]; print(os.path.join(os.path.dirname(s[0]),'Scripts','ct2-transformers-converter.exe')) if s else print('')" 2^>nul') do set CT2_CONV=%%i
 
-if not exist "%CT2_CONV%" (
-    for /f "delims=" %%i in ('python -c "import site,os; s=[p for p in site.getsitepackages() if 'site-packages' in p]; print(os.path.join(os.path.dirname(s[0]),'Scripts','ct2-transformers-converter.exe')) if s else print('')" 2^>nul') do set CT2_CONV=%%i
-)
+if "%CT2_CONV%"=="" goto :conv_not_found
+if not exist "%CT2_CONV%" goto :conv_not_found
 
-if not exist "%CT2_CONV%" (
-    echo  [ERROR] ct2-transformers-converter not found.
-    echo  Make sure Step 2 completed successfully (transformers package required).
-    set ERROR=1
-    goto :end
-)
+echo  Converting model - please wait (this may take 10-30 minutes)...
+"%CT2_CONV%" --model kotoba-tech/kotoba-whisper-v2.0 --output_dir "%MODEL_DIR%" --quantization int8 --force
 
-"%CT2_CONV%" --model kotoba-tech/kotoba-whisper-v2.0 ^
-    --output_dir "%MODEL_DIR%" ^
-    --quantization int8 ^
-    --force
+if exist "%MODEL_BIN%" goto :model_ok
+echo  [ERROR] Download or conversion failed - model.bin not created.
+echo  Check network/proxy settings and retry setup.bat.
+set ERROR=1
+goto :end
 
-if not exist "%MODEL_BIN%" (
-    echo.
-    echo  [ERROR] Download failed - model.bin not created.
-    echo  Check network/proxy settings and retry setup.bat.
-    set ERROR=1
-    goto :end
-)
+:conv_not_found
+echo  [ERROR] ct2-transformers-converter not found after package install.
+set ERROR=1
+goto :end
+
+:model_ok
 echo  OK: kotoba-whisper ready
 
 :model_done
