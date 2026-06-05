@@ -232,6 +232,11 @@ set ERROR=1
 goto :end
 
 :model_ok
+rem Create preprocessor_config.json if missing (kotoba-whisper uses 128 mel bins, not default 80)
+if not exist "%MODEL_DIR%\preprocessor_config.json" (
+    python -c "import json; json.dump({'chunk_length':30,'feature_extractor_type':'WhisperFeatureExtractor','feature_size':128,'hop_length':160,'n_samples':480000,'nb_max_frames':3000,'padding_side':'right','padding_value':0.0,'processor_class':'WhisperProcessor','return_attention_mask':False,'sampling_rate':16000},open(r'%MODEL_DIR%\preprocessor_config.json','w'),indent=2)"
+    echo  OK: preprocessor_config.json created (feature_size=128 for kotoba-whisper)
+)
 echo  OK: kotoba-whisper ready
 
 :model_done
