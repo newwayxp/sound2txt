@@ -88,8 +88,6 @@ class AccumulatingVAD:
         self._silence_sec  = silence_sec   # 無音がこの秒数続いたら文末候補
         self._min_accum    = min_accum_sec # 最低蓄積時間（これ未満では送らない）
         self._max_sec      = max_sec       # 最大蓄積時間（強制送信）
-        self._chunk_dur    = CHUNK_SIZE / SAMPLE_RATE
-
         # 蓄積バッファ（送信単位）
         self._accum: list[np.ndarray] = []
         self._accum_dur  = 0.0
@@ -126,7 +124,9 @@ class AccumulatingVAD:
         is_speech = self._is_speech(chunk)
         prev_speaking = self._speaking
         self._accum.append(chunk)
-        self._accum_dur += self._chunk_dur
+        # 実際のチャンク長から時間を計算（リサンプリング後のサンプル数を使用）
+        actual_dur = len(chunk) / SAMPLE_RATE
+        self._accum_dur += actual_dur
 
         if is_speech:
             if not prev_speaking:
@@ -135,9 +135,9 @@ class AccumulatingVAD:
             self._silence_dur = 0.0
         else:
             if self._speaking:
-                self._silence_dur += self._chunk_dur
+                self._silence_dur += actual_dur
                 # 無音が始まったタイミングだけログ
-                if abs(self._silence_dur - self._chunk_dur) < 0.01:
+                if self._silence_dur <= actual_dur * 1.5:
                     tr_debug(f"VAD silence start accum={self._accum_dur:.1f}s")
 
         # 強制送信: 最大蓄積時間超過
