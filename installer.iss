@@ -71,15 +71,30 @@ Name: "{autoprograms}\{#AppName}\{cm:UninstallProgram,{#AppName}}";    Filename:
 Name: "{autodesktop}\{#AppName}";                                       Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-; Upgrade pip then install packages
+; Step 1: Upgrade pip
 Filename: "python"; Parameters: "-m pip install --upgrade pip --quiet"; WorkingDir: "{app}"; StatusMsg: "Upgrading pip..."; Flags: postinstall waituntilterminated runascurrentuser
-Filename: "pip"; Parameters: "install -r ""{app}\requirements.txt"""; WorkingDir: "{app}"; StatusMsg: "Installing Python packages (faster-whisper, PyQt6 ...)"; Description: "Install Python packages (faster-whisper, PyQt6, etc.)"; Flags: postinstall waituntilterminated runascurrentuser
-; Fix ctranslate2 CUDA DLL issue (GPU and CPU machines):
-;   1. If import fails: upgrade ctranslate2 + install nvidia CUDA runtime from pip (GPU fix)
-;   2. If still fails: remove bundled CUDA DLLs so ctranslate2 uses CPU mode (CPU fallback)
-Filename: "python"; Parameters: "-c ""import os,importlib.util,glob,subprocess,sys; r=subprocess.run([sys.executable,'-c','import ctranslate2'],capture_output=True); subprocess.run([sys.executable,'-m','pip','install','--upgrade','ctranslate2','nvidia-cuda-runtime-cu12','nvidia-cublas-cu12'],capture_output=True) if r.returncode else None; r2=subprocess.run([sys.executable,'-c','import ctranslate2'],capture_output=True) if r.returncode else type('',(),{'returncode':0})(); s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else None; [os.remove(f) for p in ['cu*.dll','nv*.dll'] for f in (glob.glob(os.path.join(d,p)) if d else [])] if r2.returncode else None"""; WorkingDir: "{app}"; StatusMsg: "Checking ctranslate2 compatibility..."; Flags: postinstall waituntilterminated runascurrentuser
-; ffmpeg: install if not present, skip if already installed
+
+; Step 2: Install Python packages (faster-whisper, PyQt6, transformers, ctranslate2>=4.7, ...)
+Filename: "pip"; Parameters: "install -r ""{app}\requirements.txt"""; WorkingDir: "{app}"; StatusMsg: "Installing Python packages..."; Description: "Install Python packages (faster-whisper, PyQt6, etc.)"; Flags: postinstall waituntilterminated runascurrentuser
+
+; Step 3: Patch ctranslate2 __init__.py and fix CUDA DLL issues
+;   - Adds try/except around ctypes.CDLL so missing CUDA DLLs don't crash import
+;   - Tests faster-whisper import; removes CUDA DLLs if still failing (CPU fallback)
+Filename: "python"; Parameters: "-c ""import importlib.util,os,glob,subprocess,sys; p=os.path.join(os.path.dirname(importlib.util.find_spec('ctranslate2').origin),'__init__.py'); t=open(p).read(); open(p,'w').write(t.replace('        ctypes.CDLL(library)','        try:\n            ctypes.CDLL(library)\n        except OSError:\n            pass') if 'except OSError' not in t else t); r=subprocess.run([sys.executable,'-c','from faster_whisper import WhisperModel'],capture_output=True); s=importlib.util.find_spec('ctranslate2'); d=os.path.dirname(s.origin) if s and s.origin else ''; r.returncode and [os.remove(f) for p2 in ['cu*.dll','nv*.dll'] for f in glob.glob(os.path.join(d,p2))]"""; WorkingDir: "{app}"; StatusMsg: "Configuring ctranslate2..."; Flags: postinstall waituntilterminated runascurrentuser
+
+; Step 4: Install NVIDIA CUDA packages for GPU acceleration (skipped if no GPU)
+Filename: "python"; Parameters: "-c ""import subprocess,sys; r=subprocess.run(['nvidia-smi'],capture_output=True); r.returncode==0 and subprocess.run([sys.executable,'-m','pip','install','nvidia-cuda-runtime-cu12','nvidia-cublas-cu12'],capture_output=True)"""; WorkingDir: "{app}"; StatusMsg: "Configuring GPU acceleration (NVIDIA only)..."; Flags: postinstall waituntilterminated runascurrentuser
+
+; Step 5: Install ffmpeg
 Filename: "powershell"; Parameters: "-NoProfile -Command ""if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {{ winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements }} else {{ Write-Host 'ffmpeg already installed' }}"""; StatusMsg: "Checking ffmpeg..."; Description: "Install ffmpeg (required for audio processing)"; Flags: postinstall waituntilterminated runascurrentuser
+
+; Step 6: Install PyTorch CPU (needed by ct2-transformers-converter to convert the model)
+Filename: "python"; Parameters: "-c ""import subprocess,sys; r=subprocess.run([sys.executable,'-c','import torch'],capture_output=True); r.returncode and subprocess.run([sys.executable,'-m','pip','install','torch','--index-url','https://download.pytorch.org/whl/cpu','--trusted-host','download.pytorch.org'])"""; WorkingDir: "{app}"; StatusMsg: "Installing PyTorch for model conversion (~200MB)..."; Flags: postinstall waituntilterminated runascurrentuser
+
+; Step 7: Download and convert kotoba-whisper Japanese model (~1.5GB, 10-30 min)
+;   Skipped if model.bin already exists. Uses ct2-transformers-converter installed with ctranslate2.
+Filename: "python"; Parameters: "-c ""import subprocess,sys,os; base=os.getcwd(); mdir=os.path.join(base,'models','kotoba-whisper-v2.0-ct2'); mbin=os.path.join(mdir,'model.bin'); conv=os.path.join(os.path.dirname(sys.executable),'Scripts','ct2-transformers-converter.exe'); not os.path.exists(mbin) and os.path.exists(conv) and subprocess.run([conv,'--model','kotoba-tech/kotoba-whisper-v2.0','--output_dir',mdir,'--quantization','int8','--force'])"""; WorkingDir: "{app}"; StatusMsg: "Downloading Japanese model kotoba-whisper (~1.5GB, 10-30 min)..."; Description: "Download Japanese speech model kotoba-whisper-v2.0 (~1.5GB)"; Flags: postinstall waituntilterminated runascurrentuser
+
 ; Launch app after install (optional)
 Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"; Description: "Launch {#AppName} now"; Flags: postinstall nowait skipifsilent unchecked
 
