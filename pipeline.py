@@ -202,6 +202,51 @@ def _translate(text: str, dst_lang: str, cfg: configparser.ConfigParser) -> str:
         return text
 
 
+# ── model-specific transcription parameters ───────────────────────────────────
+def _make_transcribe_kwargs(model_path: str) -> dict:
+    """Build transcribe() kwargs appropriate for the given model.
+
+    Reads preprocessor_config.json from local models to detect architecture
+    (e.g. feature_size=128 for Whisper Large-v3 based models like kotoba-whisper).
+    Returns a dict that can be passed to whisper.transcribe(**kwargs).
+    """
+    import json as _json
+
+    # Defaults that work well for all standard Whisper models
+    kwargs: dict = dict(
+        beam_size                  = 5,
+        temperature                = 0.0,
+        vad_filter                 = True,
+        vad_parameters             = {"min_silence_duration_ms": 400, "threshold": 0.4},
+        condition_on_previous_text = False,
+        word_timestamps            = False,
+        no_speech_threshold        = 0.6,
+        log_prob_threshold         = -1.0,
+    )
+
+    if not os.path.isdir(model_path):
+        return kwargs  # built-in model name (e.g. "small") — use defaults
+
+    preproc = os.path.join(model_path, "preprocessor_config.json")
+    if not os.path.exists(preproc):
+        return kwargs
+
+    try:
+        cfg = _json.load(open(preproc, encoding="utf-8"))
+    except Exception:
+        return kwargs
+
+    feature_size = cfg.get("feature_size", 80)
+
+    if feature_size == 128:
+        # Whisper Large-v3 based (kotoba-whisper, large-v3, etc.)
+        # 128-mel models tend to be larger and more accurate;
+        # slightly looser VAD silence to capture longer pauses.
+        kwargs["vad_parameters"] = {"min_silence_duration_ms": 500, "threshold": 0.35}
+
+    return kwargs
+
+
 # ── main pipeline ─────────────────────────────────────────────────────────────
 def run():
     cfg = configparser.ConfigParser()
@@ -298,6 +343,11 @@ def run():
             return
     sys_info(f"model ready (device={device})")
     _current_model_lang = session_lang
+
+    # Build transcription parameters based on the model's architecture
+    _transcribe_kwargs = _make_transcribe_kwargs(model_path)
+    sys_info(f"transcribe kwargs: beam={_transcribe_kwargs['beam_size']} "
+             f"vad={_transcribe_kwargs['vad_parameters']}")
 
     # ── vocabulary ───────────────────────────────────────────────────────────
     vocab_file = cfg.get("paths", "vocab_file", fallback="").strip()
@@ -429,7 +479,7 @@ def run():
     # ── transcribe one segment ────────────────────────────────────────────────
     def _process(audio_bytes: bytes) -> tuple[str, str]:
         """Returns (original_text, display_text). display=translated if dst set."""
-        nonlocal session_lang, whisper, _current_model_lang, device, compute_type
+        nonlocal session_lang, whisper, _current_model_lang, device, compute_type, _transcribe_kwargs
 
         seg_dur = len(audio_bytes) / (SAMPLE_RATE * 2)
         tr_debug(f"WHISPER_IN  dur={seg_dur:.1f}s lang={session_lang} model={model_size}")
@@ -449,17 +499,9 @@ def run():
             prompt = _initial_prompt(session_lang)
             segs, info = whisper.transcribe(
                 tmp,
-                language            = session_lang,
-                initial_prompt      = prompt,
-                beam_size           = 5,
-                temperature         = 0.0,
-                vad_filter          = True,
-                vad_parameters      = {"min_silence_duration_ms": 400,
-                                       "threshold": 0.4},
-                condition_on_previous_text = False,
-                word_timestamps     = False,
-                no_speech_threshold = 0.6,
-                log_prob_threshold  = -1.0,
+                language       = session_lang,
+                initial_prompt = prompt,
+                **_transcribe_kwargs,
             )
             seg_list = list(segs)
         except Exception as e:
@@ -470,8 +512,7 @@ def run():
                 whisper = WhisperModel(model_path, device="cpu", compute_type="int8")
                 try:
                     segs, info = whisper.transcribe(
-                        tmp, language=session_lang, beam_size=5, temperature=0.0,
-                        vad_filter=True, no_speech_threshold=0.6, log_prob_threshold=-1.0,
+                        tmp, language=session_lang, **_transcribe_kwargs
                     )
                     seg_list = list(segs)
                 except Exception as e2:
@@ -506,6 +547,7 @@ def run():
                     if new_path != model_path:
                         tr_info(f"モデルを {session_lang} 専用に切り替え中...")
                         whisper = WhisperModel(new_path, device=device, compute_type=compute_type)
+                        _transcribe_kwargs = _make_transcribe_kwargs(new_path)
                         _current_model_lang = session_lang
                         tr_info("モデル切り替え完了")
 
