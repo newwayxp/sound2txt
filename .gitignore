@@ -11,6 +11,7 @@ test_audio_*.wav
 config.ini
 
 # ── ランタイム状態ファイル ────────────────────────────
+.subtitle_text
 .last_transcript
 .last_corrected
 .last_language

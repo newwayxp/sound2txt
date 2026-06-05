@@ -118,6 +118,10 @@ class Presenter:
         self._session_lang: str | None = None    # detected/fixed language for session
         self._transcript_file: str | None = None # current session transcript path
 
+        # ── subtitle ──────────────────────────────────────────────────────────
+        self._sub_proc: subprocess.Popen | None = None
+        self._sub_win_proc: subprocess.Popen | None = None
+
         # ── state flags ───────────────────────────────────────────────────────
         self._running         = False
         self._stopping        = False
@@ -412,6 +416,51 @@ class Presenter:
             return
         self._meter_active = True
         threading.Thread(target=self._meter_loop, daemon=True).start()
+
+    # ── subtitle control ──────────────────────────────────────────────────────
+
+    def start_subtitle(self, dst_lang: str = "") -> None:
+        """字幕プロセスと字幕ウィンドウを起動する。"""
+        self.stop_subtitle()   # 既存があれば停止
+
+        # config に dst_lang を書き込む
+        self.save_config({("subtitle", "dst_lang"): dst_lang})
+
+        # subtitle_processor.py を起動
+        self._sub_proc = subprocess.Popen(
+            [sys.executable, "-X", "utf8", os.path.join(BASE, "subtitle_processor.py")],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", env=self._env,
+        )
+        threading.Thread(
+            target=self._pipe, args=(self._sub_proc, "[Sub]"), daemon=True
+        ).start()
+        _log("SYS", "INFO", f"subtitle_processor started pid={self._sub_proc.pid}")
+
+        # subtitle_window.py を起動（別プロセス）
+        self._sub_win_proc = subprocess.Popen(
+            [sys.executable, "-X", "utf8", os.path.join(BASE, "subtitle_window.py")],
+            env=self._env,
+        )
+        _log("SYS", "INFO", f"subtitle_window started pid={self._sub_win_proc.pid}")
+        self._view and self._view.put_log("[UI] 字幕ウィンドウを起動しました")
+
+    def stop_subtitle(self) -> None:
+        """字幕プロセスを停止する。"""
+        for proc, name in [(self._sub_proc, "subtitle_processor"),
+                           (self._sub_win_proc, "subtitle_window")]:
+            if proc and proc.poll() is None:
+                proc.terminate()
+                _log("SYS", "INFO", f"{name} stopped")
+        self._sub_proc     = None
+        self._sub_win_proc = None
+        # 字幕テキストをクリア
+        try:
+            subtitle_file = os.path.join(BASE, ".subtitle_text")
+            with open(subtitle_file, "w", encoding="utf-8") as f:
+                f.write("")
+        except Exception:
+            pass
 
     def _stop_meter(self) -> None:
         self._meter_active = False
