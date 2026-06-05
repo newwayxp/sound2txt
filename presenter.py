@@ -419,6 +419,74 @@ class Presenter:
 
     # ── subtitle control ──────────────────────────────────────────────────────
 
+    def _finalize_recorder_raw(self) -> None:
+        """recorder が terminate() で停止した後、残った .raw ファイルを WAV に変換する。"""
+        import wave as _wave
+        import glob as _glob
+
+        # recorder が完全終了するまで最大 5 秒待つ
+        if self._rec_proc:
+            try:
+                self._rec_proc.wait(timeout=5)
+            except Exception:
+                pass
+
+        audio_dir = self._config.get("paths", "audio_dir", fallback="")
+        if not audio_dir:
+            return
+
+        raw_files = _glob.glob(os.path.join(audio_dir, ".tmp_audio_*.raw"))
+        if not raw_files:
+            return
+
+        import configparser as _cp
+        _cfg = _cp.ConfigParser()
+        _cfg.read(os.path.join(BASE, "config.ini"), encoding="utf-8")
+
+        for raw_path in raw_files:
+            basename = os.path.basename(raw_path)
+            ts       = basename[len(".tmp_audio_"):-len(".raw")]
+            wav_path = os.path.join(audio_dir, f"audio_{ts}.wav")
+            try:
+                with open(raw_path, "rb") as f:
+                    pcm_data = f.read()
+                if not pcm_data:
+                    os.remove(raw_path)
+                    continue
+                # channel/rate は config から推測（デフォルト: stereo 44100）
+                # 実際のデバイス設定は recorder が知っているが、ここでは WAV を書くだけ
+                # ※ recorder.py と同じ select_active_device で取得するのが正確だが
+                #    ここでは raw を保存して後で正確に変換できるようにする
+                from device_utils import select_active_device
+                import pyaudiowpatch as _pa
+                _audio = _pa.PyAudio()
+                try:
+                    _, dev_info = select_active_device(_audio)
+                    channels    = dev_info["maxInputChannels"]
+                    sample_rate = int(dev_info["defaultSampleRate"])
+                    sample_size = _audio.get_sample_size(_pa.paInt16)
+                except Exception:
+                    channels    = 2
+                    sample_rate = 44100
+                    sample_size = 2
+                finally:
+                    _audio.terminate()
+
+                with _wave.open(wav_path, "wb") as wf:
+                    wf.setnchannels(channels)
+                    wf.setsampwidth(sample_size)
+                    wf.setframerate(sample_rate)
+                    wf.writeframes(pcm_data)
+                os.remove(raw_path)
+                duration = len(pcm_data) / (sample_rate * channels * sample_size)
+                _log("REC", "INFO", f"RAW→WAV変換完了: {os.path.basename(wav_path)} ({duration:.1f}秒)")
+                self._view and self._view.put_log(
+                    f"[REC] 音声ファイル保存: {os.path.basename(wav_path)} ({duration:.1f}秒)"
+                )
+            except Exception as e:
+                _log("REC", "ERROR", f"RAW→WAV変換失敗: {e}  raw={raw_path}")
+                self._view and self._view.put_log(f"[REC] [ERROR] 音声変換失敗: {e}")
+
     def start_subtitle(self, dst_lang: str = "") -> None:
         """字幕プロセスと字幕ウィンドウを起動する。"""
         self.stop_subtitle()   # 既存があれば停止
@@ -642,6 +710,9 @@ class Presenter:
         if self._rec_proc and self._rec_proc.poll() is None:
             self._view and self._view.put_log("[UI] Stopping recorder.py")
             self._rec_proc.terminate()
+            # terminate() は Windows では即時強制終了 → finally が動かない
+            # → RAW ファイルが残る場合は presenter 側で WAV 変換する
+            threading.Thread(target=self._finalize_recorder_raw, daemon=True).start()
         else:
             self._view and self._view.put_log("[UI] recorder.py is already stopped")
 

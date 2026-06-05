@@ -290,18 +290,18 @@ def main(test_wav: str | None = None):
                 with open(LANG_FILE, "w", encoding="utf-8") as f:
                     f.write(session_lang)
 
-        last_speech = time.monotonic()
         tr_info(f"[subtitle] original: {text}")
 
-        # translation
+        # translation (may take 1-3 sec via API)
         subtitle_text = text
         if dst_lang and dst_lang != session_lang:
             translated = translate_text(text, dst_lang, cfg)
             subtitle_text = translated
             tr_info(f"[subtitle] translated({dst_lang}): {translated}")
 
-        # update subtitle window
+        # update subtitle window & reset clear timer AFTER writing
         _write_subtitle(subtitle_text)
+        last_speech = time.monotonic()   # reset AFTER write to prevent premature clear
 
         # write original text to transcript
         from datetime import datetime
