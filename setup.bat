@@ -163,19 +163,18 @@ rem --------------------------------------------------
 rem Step 6: Download Japanese recognition model (kotoba-whisper)
 rem --------------------------------------------------
 echo.
-echo [6/6] Preparing Japanese recognition model (kotoba-whisper-v2.0)...
-echo  Note: ~1.5GB download on first run
+echo [6/6] Downloading Japanese model (kotoba-whisper-v2.0, ~1.5GB)...
 echo.
 
 set MODEL_DIR=%SCRIPT_DIR%models\kotoba-whisper-v2.0-ct2
 set MODEL_BIN=%MODEL_DIR%\model.bin
 
 if exist "%MODEL_BIN%" (
-    echo  OK: kotoba-whisper already exists (skipping)
+    echo  OK: kotoba-whisper already downloaded (skipping)
     goto :model_done
 )
 
-echo  Starting download and conversion (may take 10-30 minutes)...
+echo  Downloading from HuggingFace (10-30 min on first run)...
 
 if not "%PROXY_HOST%"=="" (
     set HTTPS_PROXY=http://%PROXY_HOST%
@@ -189,32 +188,29 @@ set CT2_CONV=
 for /f "delims=" %%i in ('python -c "import sys,os; print(os.path.join(os.path.dirname(sys.executable), 'Scripts', 'ct2-transformers-converter.exe'))" 2^>nul') do set CT2_CONV=%%i
 
 if not exist "%CT2_CONV%" (
-    for /f "delims=" %%i in ('python -c "import site,os; scripts=[p for p in site.getsitepackages() if 'site-packages' in p]; print(os.path.join(os.path.dirname(scripts[0]), 'Scripts', 'ct2-transformers-converter.exe')) if scripts else print('')" 2^>nul') do set CT2_CONV=%%i
+    for /f "delims=" %%i in ('python -c "import site,os; s=[p for p in site.getsitepackages() if 'site-packages' in p]; print(os.path.join(os.path.dirname(s[0]),'Scripts','ct2-transformers-converter.exe')) if s else print('')" 2^>nul') do set CT2_CONV=%%i
 )
 
 if not exist "%CT2_CONV%" (
-    echo  [WARNING] ct2-transformers-converter not found.
-    echo  Convert manually:
-    echo    ct2-transformers-converter --model kotoba-tech/kotoba-whisper-v2.0 --output_dir models\kotoba-whisper-v2.0-ct2 --quantization int8
-    goto :model_done
+    echo  [ERROR] ct2-transformers-converter not found.
+    echo  Make sure Step 2 completed successfully (transformers package required).
+    set ERROR=1
+    goto :end
 )
 
-echo  Converter: %CT2_CONV%
 "%CT2_CONV%" --model kotoba-tech/kotoba-whisper-v2.0 ^
     --output_dir "%MODEL_DIR%" ^
     --quantization int8 ^
     --force
 
-if %errorlevel% neq 0 (
+if not exist "%MODEL_BIN%" (
     echo.
-    echo  [WARNING] kotoba-whisper conversion failed.
-    echo  Standard Whisper model will be used instead.
-    echo  To retry manually:
-    echo    cd "%SCRIPT_DIR%"
-    echo    ct2-transformers-converter --model kotoba-tech/kotoba-whisper-v2.0 --output_dir models\kotoba-whisper-v2.0-ct2 --quantization int8
-) else (
-    echo  OK: kotoba-whisper ready
+    echo  [ERROR] Download failed - model.bin not created.
+    echo  Check network/proxy settings and retry setup.bat.
+    set ERROR=1
+    goto :end
 )
+echo  OK: kotoba-whisper ready
 
 :model_done
 
