@@ -31,9 +31,20 @@ echo "Using Python: $($PY --version)"
 echo ""
 echo "[1/4] Installing system dependencies..."
 
-# ffmpeg (formula) and BlackHole (cask — distributed as .pkg installer)
+# ffmpeg
 brew install ffmpeg 2>/dev/null || true
-brew install --cask blackhole-2ch 2>/dev/null || true
+
+# BlackHole: try brew cask first, fall back to direct .pkg download
+echo "  Installing BlackHole 2ch..."
+if ! brew install --cask blackhole-2ch 2>/dev/null; then
+    echo "  brew cask failed — downloading BlackHole .pkg directly from GitHub..."
+    BH_PKG="/tmp/BlackHole2ch.pkg"
+    curl -fSL "https://github.com/ExistentialAudio/BlackHole/releases/download/v0.6.0/BlackHole2ch-0.6.0.pkg" \
+        -o "$BH_PKG"
+    echo "  Installing BlackHole .pkg (may require your password)..."
+    sudo installer -pkg "$BH_PKG" -target /
+    echo "  BlackHole installed."
+fi
 
 # portaudio: try brew first, fall back to source build if formula is broken
 PORTAUDIO_PREFIX="$HOME/portaudio"
