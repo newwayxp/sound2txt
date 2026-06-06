@@ -1,8 +1,8 @@
 # Sound2Text
 
-リアルタイム音声文字起こし + AI 校正 + 会議議事録自動生成 Windows デスクトップツール。
+リアルタイム音声文字起こし + AI 校正 + 会議議事録自動生成 デスクトップツール（Windows / macOS 対応）。
 
-Windows WASAPI でシステム音声・マイクを捕捉し、faster-whisper でローカル音声認識、LLM で構造化された議事録を生成します。
+システム音声・マイクを捕捉し（Windows: WASAPI、macOS: BlackHole）、faster-whisper でローカル音声認識、LLM で構造化された議事録を生成します。
 
 [English](README_en.md) | 日本語 | [简体中文](README_zh.md)
 
@@ -25,6 +25,8 @@ Windows WASAPI でシステム音声・マイクを捕捉し、faster-whisper �
 
 ## 動作環境
 
+### Windows
+
 | 項目 | 要件 |
 |---|---|
 | OS | Windows 10 / 11 (64-bit) |
@@ -32,18 +34,27 @@ Windows WASAPI でシステム音声・マイクを捕捉し、faster-whisper �
 | RAM | 4 GB 以上（large-v3 は 8 GB 推奨）|
 | GPU | 任意、NVIDIA CUDA（あれば自動使用）|
 
+### macOS
+
+| 項目 | 要件 |
+|---|---|
+| OS | macOS 12 Monterey 以上 |
+| チップ | Apple Silicon（M1/M2/M3）または Intel |
+| Python | Homebrew の Python 3.10 以上 |
+| 仮想デバイス | **BlackHole 2ch**（システム音声キャプチャに必須）|
+
 ---
 
 ## インストール
 
-### 方法 1：setup.bat を実行（推奨）
+### Windows — setup.bat を実行（推奨）
 
 1. [Python 3.10+](https://www.python.org/downloads/) をインストール（**Add Python to PATH** にチェック）
 2. `setup.bat` をダブルクリック
 
 Python 依存パッケージ・ffmpeg のインストール、`run.bat` とデスクトップショートカットの作成が自動で完了します。
 
-### 方法 2：手動インストール
+### Windows — 手動インストール
 
 ```powershell
 git clone https://github.com/newwayxp/sound2txt.git
@@ -53,23 +64,53 @@ winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreement
 copy config_default.ini config.ini
 ```
 
+### macOS — setup_mac.sh を実行
+
+```bash
+git clone https://github.com/newwayxp/sound2txt.git
+cd sound2txt
+bash setup_mac.sh
+```
+
+スクリプトが自動で行う処理：
+- Homebrew で ffmpeg・BlackHole・portaudio をインストール
+- Python パッケージをインストール（pyaudio・faster-whisper・scipy 等）
+- `config.ini` を作成
+
+**⚡ スクリプト実行中に Audio MIDI Setup が自動で開きます（手動操作が必要）：**
+
+| # | 操作 |
+|---|---|
+| 1 | 左下の **[+]** ボタンをクリック |
+| 2 | **「複数出力装置を作成」** を選択 |
+| 3 | 右パネルで **BlackHole 2ch** と **お使いのスピーカー** の両方にチェック |
+| 4 | 作成した装置を右クリック → **「このサウンド出力装置を使用」** |
+| 5 | または：システム設定 → サウンド → 出力 → 「複数出力装置」を選択 |
+
+Enter を押すとセットアップが完了します。
+
 ---
 
 ## 起動
 
-### インストーラー（.exe）でインストールした場合
+### Windows — インストーラー（.exe）でインストールした場合
 
 - **スタートメニュー** → `Sound2Text` をクリックして起動
-- インストール時にデスクトップアイコンを作成した場合は、そちらをダブルクリックしても起動できます
 
-### setup.bat でインストールした場合
+### Windows — setup.bat でインストールした場合
 
 - デスクトップに自動作成された **Sound2Text ショートカット** をダブルクリック
 - またはインストールフォルダ内の `run.bat` をダブルクリック
 
-### コマンドラインから起動（開発者向け）
+### macOS
 
-インストールフォルダで以下を実行：
+```bash
+/opt/homebrew/bin/python3 ui_qt.py
+```
+
+> **注意：** macOS でシステム音声をキャプチャするには、事前に Audio MIDI Setup の設定が必要です（setup_mac.sh 実行時に案内されます）。
+
+### Windows — コマンドライン（開発者向け）
 
 ```powershell
 python ui_qt.py
@@ -185,8 +226,12 @@ setup.bat           新規マシン用セットアップスクリプト
 
 ## トラブルシューティング
 
-**ループバックデバイスが見つからない**
+**ループバックデバイスが見つからない（Windows）**
 > コントロールパネル → サウンド → 録音タブ → ステレオミキサー → 有効化
+
+**No audio input device found（macOS）**
+> BlackHole が未インストール、またはシステム出力に設定されていません。
+> `brew install blackhole-2ch` を実行後、Audio MIDI Setup で複数出力装置を作成してください（インストール手順参照）。
 
 **音量バーに反応がない**
 > `python debug_modules.py loopback` でデバイス状況を確認してください。

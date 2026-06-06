@@ -1,8 +1,8 @@
 # Sound2Text
 
-Real-time audio transcription + AI correction + automatic meeting minutes for Windows.
+Real-time audio transcription + AI correction + automatic meeting minutes for Windows and macOS.
 
-Captures system audio and microphone via Windows WASAPI, transcribes locally with faster-whisper, and generates structured meeting minutes using an LLM.
+Captures system audio and microphone (Windows: WASAPI, macOS: BlackHole), transcribes locally with faster-whisper, and generates structured meeting minutes using an LLM.
 
 English | [日本語](README_ja.md) | [简体中文](README_zh.md)
 
@@ -25,6 +25,8 @@ English | [日本語](README_ja.md) | [简体中文](README_zh.md)
 
 ## Requirements
 
+### Windows
+
 | Item | Requirement |
 |---|---|
 | OS | Windows 10 / 11 (64-bit) |
@@ -32,18 +34,27 @@ English | [日本語](README_ja.md) | [简体中文](README_zh.md)
 | RAM | 4 GB+ (8 GB recommended for large-v3) |
 | GPU | Optional — NVIDIA CUDA (used automatically if available) |
 
+### macOS
+
+| Item | Requirement |
+|---|---|
+| OS | macOS 12 Monterey or later |
+| Chip | Apple Silicon (M1/M2/M3) or Intel |
+| Python | Homebrew Python 3.10 or higher |
+| Virtual device | **BlackHole 2ch** (required for system audio capture) |
+
 ---
 
 ## Installation
 
-### Option 1: Run setup.bat (Recommended)
+### Windows — Run setup.bat (Recommended)
 
 1. Install [Python 3.10+](https://www.python.org/downloads/) — check **Add Python to PATH**
 2. Double-click `setup.bat`
 
 The script installs all Python dependencies, ffmpeg, and creates `run.bat` + a desktop shortcut.
 
-### Option 2: Manual
+### Windows — Manual
 
 ```powershell
 git clone https://github.com/newwayxp/sound2txt.git
@@ -53,23 +64,50 @@ winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreement
 copy config_default.ini config.ini
 ```
 
+### macOS — Run setup_mac.sh
+
+```bash
+git clone https://github.com/newwayxp/sound2txt.git
+cd sound2txt
+bash setup_mac.sh
+```
+
+The script automatically installs ffmpeg, BlackHole, portaudio (via Homebrew), Python packages, and creates `config.ini`.
+
+**⚡ The script pauses and opens Audio MIDI Setup — complete these steps when prompted:**
+
+| # | Action |
+|---|---|
+| 1 | Click the **[+]** button at the bottom-left |
+| 2 | Choose **"Create Multi-Output Device"** |
+| 3 | Check both **BlackHole 2ch** and **your speakers** (e.g. "Mac mini Speakers") |
+| 4 | Right-click the new device → **"Use This Device For Sound Output"** |
+| 5 | Or: System Settings → Sound → Output → select "Multi-Output Device" |
+
+Press Enter in the terminal to continue once all steps are done.
+
 ---
 
 ## Launch
 
-### Installed via the installer (.exe)
+### Windows — Installed via the installer (.exe)
 
 - **Start Menu** → click `Sound2Text` to launch
-- If you chose to create a desktop icon during installation, double-click it to launch
 
-### Installed via setup.bat
+### Windows — Installed via setup.bat
 
 - Double-click the **Sound2Text shortcut** automatically created on your desktop
 - Or open the install folder and double-click `run.bat`
 
-### Command line (developers)
+### macOS
 
-From the install folder:
+```bash
+/opt/homebrew/bin/python3 ui_qt.py
+```
+
+> **Note:** System audio capture requires BlackHole to be configured as a Multi-Output Device first (guided by `setup_mac.sh`).
+
+### Windows — Command line (developers)
 
 ```powershell
 python ui_qt.py
@@ -217,12 +255,16 @@ ssl_verify  = true   # set false for self-signed certificates
 
 ## Troubleshooting
 
-**No loopback device found**
+**No loopback device found (Windows)**
 > Control Panel → Sound → Recording tab → Stereo Mix → Enable
+
+**No audio input device found (macOS)**
+> BlackHole is not installed or not configured as the system output.
+> Run `brew install blackhole-2ch` then follow the Audio MIDI Setup steps in the installation guide.
 
 **VU meter shows no activity**
 > Run `python debug_modules.py loopback` to diagnose device selection.
-> The meeting app may be using a different audio output device — check Windows default audio output.
+> The meeting app may be using a different audio output device — check the default audio output.
 
 **Model download is slow**
 > Set `HF_ENDPOINT=https://hf-mirror.com` before running (mirror for mainland China).
