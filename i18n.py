@@ -2,10 +2,56 @@
 i18n.py – UI translation strings and language detection for Sound2Text.
 """
 import locale
+import os
+import sys
+
+
+def _detect_os_lang() -> str:
+    """Return the raw OS locale/language string, platform-aware."""
+    if sys.platform == "win32":
+        try:
+            return (locale.getdefaultlocale()[0] or "en").lower()
+        except Exception:
+            return "en"
+
+    if sys.platform == "darwin":
+        # 1. Environment variables (honoured when set explicitly)
+        for key in ("LANG", "LANGUAGE", "LC_ALL", "LC_MESSAGES"):
+            val = os.environ.get(key, "")
+            if val and val not in ("C", "POSIX", "C.UTF-8"):
+                return val.lower()
+        # 2. macOS system preference (most reliable for GUI apps)
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["defaults", "read", "NSGlobalDomain", "AppleLanguages"],
+                capture_output=True, text=True, timeout=3,
+            )
+            for line in result.stdout.splitlines():
+                lang = line.strip().strip('",').split("-")[0].lower()
+                if len(lang) >= 2 and lang.isalpha():
+                    return lang
+        except Exception:
+            pass
+        # 3. locale.getlocale() as final fallback (not deprecated)
+        try:
+            return (locale.getlocale()[0] or "en").lower()
+        except Exception:
+            return "en"
+
+    # Linux / other
+    for key in ("LANG", "LANGUAGE", "LC_ALL", "LC_MESSAGES"):
+        val = os.environ.get(key, "")
+        if val and val not in ("C", "POSIX", "C.UTF-8"):
+            return val.lower()
+    try:
+        return (locale.getlocale()[0] or "en").lower()
+    except Exception:
+        return "en"
 
 
 def _ui_lang() -> str:
-    lang = (locale.getdefaultlocale()[0] or "en").lower()
+    lang = _detect_os_lang()
     if lang.startswith("zh"):
         return "zh"
     if lang.startswith("ja"):
