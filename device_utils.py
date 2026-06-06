@@ -39,12 +39,12 @@ if sys.platform != "win32":
         except Exception:
             pass
 
-        print("[ERROR] Meeting mode requires a system-audio loopback device.")
+        print("[ERROR] No audio input device found.")
+        print("  Meeting mode requires a system-audio loopback device.")
         print("  Install BlackHole and configure it as your audio output:")
         print("    brew install blackhole-2ch")
         print("  Then in Audio MIDI Setup, create a Multi-Output Device with")
         print("  BlackHole 2ch + your speakers, and set it as system output.")
-        print("  Alternatively, switch to 'Mic Only' mode in the UI.")
         pa.terminate()
         raise SystemExit(1)
 
