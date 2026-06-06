@@ -33,7 +33,7 @@ if sys.platform != "win32":
             if info["maxInputChannels"] > 0:
                 print(f"⚠ No loopback device found — using default input: {info['name']}")
                 print("  System audio capture requires BlackHole:")
-                print("    brew install blackhole-2ch")
+                print("    brew install --cask blackhole-2ch")
                 print("  Then set BlackHole 2ch as your output in System Settings → Sound.")
                 return int(info["index"]), info
         except Exception:
@@ -42,7 +42,7 @@ if sys.platform != "win32":
         print("[ERROR] No audio input device found.")
         print("  Meeting mode requires a system-audio loopback device.")
         print("  Install BlackHole and configure it as your audio output:")
-        print("    brew install blackhole-2ch")
+        print("    brew install --cask blackhole-2ch")
         print("  Then in Audio MIDI Setup, create a Multi-Output Device with")
         print("  BlackHole 2ch + your speakers, and set it as system output.")
         pa.terminate()

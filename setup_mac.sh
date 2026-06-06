@@ -31,8 +31,9 @@ echo "Using Python: $($PY --version)"
 echo ""
 echo "[1/4] Installing system dependencies..."
 
-# ffmpeg and blackhole via brew (usually succeed)
-brew install ffmpeg blackhole-2ch 2>/dev/null || true
+# ffmpeg (formula) and BlackHole (cask — distributed as .pkg installer)
+brew install ffmpeg 2>/dev/null || true
+brew install --cask blackhole-2ch 2>/dev/null || true
 
 # portaudio: try brew first, fall back to source build if formula is broken
 PORTAUDIO_PREFIX="$HOME/portaudio"

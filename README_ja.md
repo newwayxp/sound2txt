@@ -231,7 +231,7 @@ setup.bat           新規マシン用セットアップスクリプト
 
 **No audio input device found（macOS）**
 > BlackHole が未インストール、またはシステム出力に設定されていません。
-> `brew install blackhole-2ch` を実行後、Audio MIDI Setup で複数出力装置を作成してください（インストール手順参照）。
+> `brew install --cask blackhole-2ch` を実行後、Audio MIDI Setup で複数出力装置を作成してください（インストール手順参照）。
 
 **音量バーに反応がない**
 > `python debug_modules.py loopback` でデバイス状況を確認してください。

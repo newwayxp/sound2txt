@@ -281,7 +281,7 @@ ssl_verify  = true   # 自签名证书时设为 false
 
 **No audio input device found（macOS）**
 > BlackHole 未安装或未设置为系统输出。
-> 执行 `brew install blackhole-2ch` 后，在 Audio MIDI Setup 中创建多输出设备（参见安装步骤）。
+> 执行 `brew install --cask blackhole-2ch` 后，在 Audio MIDI Setup 中创建多输出设备（参见安装步骤）。
 
 **音量条没有反应**
 > 运行 `python debug_modules.py loopback` 查看设备选择和音量。

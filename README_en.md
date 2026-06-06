@@ -260,7 +260,7 @@ ssl_verify  = true   # set false for self-signed certificates
 
 **No audio input device found (macOS)**
 > BlackHole is not installed or not configured as the system output.
-> Run `brew install blackhole-2ch` then follow the Audio MIDI Setup steps in the installation guide.
+> Run `brew install --cask blackhole-2ch` then follow the Audio MIDI Setup steps in the installation guide.
 
 **VU meter shows no activity**
 > Run `python debug_modules.py loopback` to diagnose device selection.
