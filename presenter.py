@@ -692,6 +692,18 @@ class Presenter:
         # pipeline.py が音声取得・VAD・Whisper・翻訳・音声保存・transcript書き込みを担当
         self._rec_proc = None
 
+        # macOS: switch system output to Multi-Output Device (speakers + BlackHole)
+        if sys.platform == "darwin":
+            try:
+                import macos_audio as _mac_audio
+                _mac_audio.activate_loopback(
+                    log_fn=self._view.put_log if self._view else None
+                )
+            except Exception as _e:
+                self._view and self._view.put_log(
+                    f"[AudioRoute] 自動ルーティングをスキップ: {_e}"
+                )
+
         # session シグナルを書く → pipeline がこれを検知してセッション開始
         with open(self._PIPELINE_SESSION, "w") as f:
             f.write("1")
@@ -724,6 +736,16 @@ class Presenter:
         if not os.path.exists(self._PIPELINE_SUBTITLE):
             with open(self._PIPELINE_STOP, "w") as f:
                 f.write("1")
+
+        # macOS: restore original system output immediately on stop
+        if sys.platform == "darwin":
+            try:
+                import macos_audio as _mac_audio
+                _mac_audio.restore_loopback(
+                    log_fn=self._view.put_log if self._view else None
+                )
+            except Exception:
+                pass
 
         # session 完了を待ってから纪要生成
         self._fw_stop.set()

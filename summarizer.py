@@ -322,8 +322,8 @@ def make_summary(corrected: str, language: str, summary_dir: str, ts: str, cfg: 
 # ── メイン ───────────────────────────────────────────────────────────────────
 
 def run(transcript_path: str, cfg: configparser.ConfigParser, language: str = "") -> bool:
-    corrected_dir = cfg.get("summary", "corrected_dir", fallback=r"C:\code\data\corrected")
-    summary_dir   = cfg.get("summary", "summary_dir",   fallback=r"C:\code\data\memo")
+    corrected_dir = os.path.expanduser(cfg.get("summary", "corrected_dir", fallback=r"C:\code\data\corrected"))
+    summary_dir   = os.path.expanduser(cfg.get("summary", "summary_dir",   fallback=r"C:\code\data\memo"))
     mode          = cfg.get("summary", "mode",          fallback="ollama").lower()
     api_key       = cfg.get("summary", "api_key",       fallback="")
 
@@ -395,8 +395,8 @@ def run_step(step: str, transcript_path: str, cfg: configparser.ConfigParser,
     step = "summary"  → meeting minutes only, uses latest corrected file (Step 2)
     step = "all"      → both steps (default, backward compatible)
     """
-    corrected_dir = cfg.get("summary", "corrected_dir", fallback=r"C:\code\data\corrected")
-    summary_dir   = cfg.get("summary", "summary_dir",   fallback=r"C:\code\data\memo")
+    corrected_dir = os.path.expanduser(cfg.get("summary", "corrected_dir", fallback=r"C:\code\data\corrected"))
+    summary_dir   = os.path.expanduser(cfg.get("summary", "summary_dir",   fallback=r"C:\code\data\memo"))
     mode          = cfg.get("summary", "mode",          fallback="ollama").lower()
     api_key       = cfg.get("summary", "api_key",       fallback="")
 

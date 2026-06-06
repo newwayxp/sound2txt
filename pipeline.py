@@ -403,7 +403,7 @@ def run():
              f"vad={_transcribe_kwargs['vad_parameters']}")
 
     # ── Vocabulary ────────────────────────────────────────────────────────────
-    vocab_file = cfg.get("paths", "vocab_file", fallback="").strip()
+    vocab_file = os.path.expanduser(cfg.get("paths", "vocab_file", fallback="").strip())
     vocab: list[str] = []
     if vocab_file and os.path.exists(vocab_file):
         with open(vocab_file, encoding="utf-8") as f:
@@ -448,12 +448,12 @@ def run():
     session_ts: str | None = None
 
     _default_base  = os.path.join(os.path.expanduser("~"), "Documents", "Sound2Text")
-    transcript_dir = cfg.get("paths", "transcript_dir",
-                             fallback=os.path.join(_default_base, "transcript"))
-    corrected_dir  = cfg.get("summary", "corrected_dir",
-                             fallback=os.path.join(_default_base, "corrected"))
-    audio_dir = cfg.get("paths", "audio_dir",
-                        fallback=os.path.join(_default_base, "audio"))
+    transcript_dir = os.path.expanduser(cfg.get("paths", "transcript_dir",
+                             fallback=os.path.join(_default_base, "transcript")))
+    corrected_dir  = os.path.expanduser(cfg.get("summary", "corrected_dir",
+                             fallback=os.path.join(_default_base, "corrected")))
+    audio_dir = os.path.expanduser(cfg.get("paths", "audio_dir",
+                        fallback=os.path.join(_default_base, "audio")))
 
     def _open_session():
         nonlocal transcript_file, corrected_file, raw_file_path, raw_fh, session_ts
