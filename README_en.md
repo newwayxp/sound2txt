@@ -10,12 +10,13 @@ English | [日本語](README_ja.md) | [简体中文](README_zh.md)
 
 ## Features
 
-- **Real-time transcription** — Captures system audio output via WASAPI loopback, no manual device setup required
-- **Microphone support** — Click the VU meter to toggle mic recording; transcripts are labeled with a speaker tag
+- **Real-time transcription** — Captures system audio via WASAPI loopback and transcribes immediately after each speech segment ends
+- **Microphone support** — Click the VU meter to toggle mic recording; transcripts are labeled with a speaker tag (`[Me]`)
+- **Acoustic echo cancellation (AEC)** — Automatically suppresses speaker audio picked up by the microphone to prevent double transcription
 - **Two recording modes** — Meeting mode (system audio + optional mic) and Local Mic mode (mic only)
-- **Multi-language** — Auto-detects Chinese / Japanese / English; remembered for next session
+- **Multi-language** — Auto-detects Chinese / Japanese / English; language settings re-read at each session start
 - **GPU acceleration** — Automatically uses CUDA when an NVIDIA GPU is available (~10× speed boost)
-- **AI correction** — LLM fixes homophones, adds punctuation, and cleans up paragraphs
+- **AI correction** — LLM fixes homophones, adds punctuation, and cleans up paragraphs (disable with `enable_correction = false`)
 - **Meeting minutes** — Generates structured minutes in the detected language
 - **Custom vocabulary** — `vocabulary.txt` improves recognition of proper nouns and technical terms
 - **Proxy support** — HTTP/HTTPS proxy and self-signed certificate support for corporate networks
@@ -133,8 +134,7 @@ Click **■ Stop** → the app automatically runs transcription → AI correctio
 | Raw transcript | `C:\Users\Public\Sound2Text\transcript\transcript_*.txt` |
 | Corrected text | `C:\Users\Public\Sound2Text\corrected\corrected_*.txt` |
 | Meeting minutes | `C:\Users\Public\Sound2Text\memo\summary_*.md` |
-| Audio (system) | `C:\Users\Public\Sound2Text\audio\audio_*.wav` |
-| Audio (mic) | `C:\Users\Public\Sound2Text\mic\mic_*.wav` |
+| Audio (mic mixed in) | `C:\Users\Public\Sound2Text\audio\audio_*.mp3` |
 
 Paths can be changed in the **Paths** settings tab.
 
@@ -186,17 +186,16 @@ python debug_modules.py audio 30    # Custom duration (seconds)
 ui_qt.py            Main GUI window (PyQt6, MVP View)
 widgets_qt.py       Custom QPainter widgets (VU meter, 7-segment clock)
 presenter.py        Business logic (MVP Presenter)
+pipeline.py         Audio capture → VAD → transcription → correction pipeline process
 appconfig.py        Config I/O + CUDA detection
-start.py            Headless CLI launcher
-recorder.py         System audio recording process (WASAPI loopback)
-mic_recorder.py     Microphone recording process
-transcriber.py      Transcription process (faster-whisper)
-summarizer.py       AI correction + meeting minutes generation
+i18n.py             Multi-language translations
+log_util.py         Structured logging utility
+summarizer.py       Meeting minutes generation
 device_utils.py     WASAPI loopback device auto-selection
+mic_recorder.py     Standalone mic recording tool (diagnostics)
+transcriber.py      Standalone transcription tool (diagnostics)
 debug_modules.py    Diagnostic test tool
-config.ini          User config (machine-specific, do not commit)
 config_default.ini  Default config template
-vocabulary.txt      Custom terminology list
 requirements.txt    Python dependencies
 setup.bat           One-click setup script for new machines
 ```
@@ -244,6 +243,7 @@ ssl_verify  = true   # set false for self-signed certificates
 | pyaudiowpatch | Windows WASAPI loopback + microphone capture |
 | faster-whisper | Speech recognition (optimized OpenAI Whisper) |
 | PyQt6 | GUI framework |
+| scipy | Echo cancellation (AEC) signal processing |
 | requests | LLM API calls |
 | numpy | Audio data processing |
-| ffmpeg | Audio decoding (used internally by faster-whisper) |
+| ffmpeg | MP3 conversion + mic audio mixing (adelay/amix) |

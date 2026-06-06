@@ -10,12 +10,13 @@ Windows WASAPI でシステム音声・マイクを捕捉し、faster-whisper �
 
 ## 機能
 
-- **リアルタイム録音・文字起こし** — WASAPI ループバックで音声出力を自動取得
-- **マイク対応** — 音量バーをクリックするだけでマイク録音 ON/OFF、発言者ラベル付き
+- **リアルタイム録音・文字起こし** — WASAPI ループバックで音声出力を自動取得、発話終了後すぐに文字起こし
+- **マイク対応** — 音量バーをクリックするだけでマイク録音 ON/OFF、発言者ラベル付き（`【自分】`）
+- **エコー除去（AEC）** — スピーカー音声をマイクが拾って二重転写される問題を自動抑制
 - **2 種類の録音モード** — 会議モード（システム音 + マイク）/ ローカル Mic モード（マイクのみ）
-- **多言語対応** — 中国語 / 日本語 / 英語を自動検出
+- **多言語対応** — 中国語 / 日本語 / 英語を自動検出、セッションごとに言語設定を再読み込み
 - **GPU アクセラレーション** — NVIDIA GPU があれば自動で CUDA を使用
-- **AI 校正** — LLM による誤変換修正・句読点補完・段落整理
+- **AI 校正** — LLM による誤変換修正・句読点補完・段落整理（`enable_correction = false` で無効化可）
 - **議事録生成** — 構造化議事録を自動生成
 - **カスタム用語辞書** — `vocabulary.txt` で固有名詞の認識精度を向上
 - **社内プロキシ対応** — HTTP/HTTPS プロキシ・自己署名証明書をサポート
@@ -133,8 +134,7 @@ python ui_qt.py
 | 文字起こし | `C:\Users\Public\Sound2Text\transcript\transcript_*.txt` |
 | 校正テキスト | `C:\Users\Public\Sound2Text\corrected\corrected_*.txt` |
 | 議事録 | `C:\Users\Public\Sound2Text\memo\summary_*.md` |
-| 音声（システム）| `C:\Users\Public\Sound2Text\audio\audio_*.wav` |
-| 音声（マイク）| `C:\Users\Public\Sound2Text\mic\mic_*.wav` |
+| 音声（マイク混合済み）| `C:\Users\Public\Sound2Text\audio\audio_*.mp3` |
 
 ---
 
@@ -164,19 +164,19 @@ python debug_modules.py audio 30    # 30秒に変更
 ## ファイル構成
 
 ```
-ui_qt.py            GUI メインウィンドウ（PyQt6）
-widgets_qt.py       カスタム QPainter ウィジェット
-presenter.py        ビジネスロジック（Presenter）
+ui_qt.py            GUI メインウィンドウ（PyQt6、MVP View）
+widgets_qt.py       カスタム QPainter ウィジェット（VU メーター・7 セグ時計）
+presenter.py        ビジネスロジック（MVP Presenter）
+pipeline.py         音声取得 → VAD → 転写 → 校正 一体型パイプライン
 appconfig.py        設定 I/O + CUDA 検出
-start.py            CLI 起動スクリプト（GUI なし）
-recorder.py         システム音声録音プロセス
-mic_recorder.py     マイク録音プロセス
-transcriber.py      文字起こしプロセス
-summarizer.py       AI 校正 + 議事録生成
-debug_modules.py    診断ツール
-config.ini          ユーザー設定（git 管理外）
+i18n.py             多言語翻訳
+log_util.py         構造化ログユーティリティ
+summarizer.py       議事録生成
+device_utils.py     WASAPI デバイス自動選択
+mic_recorder.py     マイク単独録音ツール（診断用）
+transcriber.py      転写単独ツール（診断用）
+debug_modules.py    診断テストツール
 config_default.ini  デフォルト設定テンプレート
-vocabulary.txt      カスタム用語辞書
 requirements.txt    Python 依存ライブラリ
 setup.bat           新規マシン用セットアップスクリプト
 ```
@@ -210,6 +210,7 @@ setup.bat           新規マシン用セットアップスクリプト
 | pyaudiowpatch | Windows WASAPI ループバック + マイク録音 |
 | faster-whisper | 高速音声認識（OpenAI Whisper 最適化版）|
 | PyQt6 | GUI フレームワーク |
+| scipy | エコー除去（AEC）信号処理 |
 | requests | LLM API 呼び出し |
 | numpy | 音声データ処理 |
-| ffmpeg | 音声デコード（faster-whisper 内部使用）|
+| ffmpeg | MP3 変換 + マイク音声混合（adelay/amix）|

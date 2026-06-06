@@ -10,12 +10,13 @@
 
 ## 功能特性
 
-- **实时录音转写** — WASAPI 环回捕获系统音频，无需手动配置设备
-- **麦克风支持** — 点击音量条随时开始/停止麦克风录音，转写内容带说话人标记
+- **实时录音转写** — WASAPI 环回捕获系统音频，无需手动配置设备，发言结束后立即转写
+- **麦克风支持** — 点击音量条随时开始/停止麦克风录音，转写内容带说话人标记（`【自己】`/`[Me]`）
+- **回声消除（AEC）** — 自动抑制扬声器声音被麦克风拾取造成的二次转写
 - **两种录音模式** — 会议模式（系统音 + 可选麦克风）和本地 Mic 模式（仅麦克风）
-- **多语言支持** — 自动识别中文 / 日语 / 英语，下次启动直接跳过检测
+- **多语言支持** — 自动识别中文 / 日语 / 英语，每次会话重新读取语言设置
 - **GPU 加速** — 有 NVIDIA GPU 时自动启用 CUDA，速度提升约 10 倍
-- **AI 纠错** — LLM 修正同音字、补全标点、整理段落
+- **AI 纠错** — LLM 修正同音字、补全标点、整理段落（可通过 `enable_correction = false` 关闭）
 - **会议纪要** — 自动生成结构化纪要，语言与录音一致
 - **自定义术语** — `vocabulary.txt` 提升专有名词识别准确率
 - **企业代理支持** — 支持 HTTP/HTTPS 代理及自签名证书
@@ -142,8 +143,7 @@ python ui_qt.py
 | 原始转写 | `C:\Users\Public\Sound2Text\transcript\transcript_*.txt` |
 | 纠错文本 | `C:\Users\Public\Sound2Text\corrected\corrected_*.txt` |
 | 会议纪要 | `C:\Users\Public\Sound2Text\memo\summary_*.md` |
-| 音频（系统）| `C:\Users\Public\Sound2Text\audio\audio_*.wav` |
-| 音频（麦克风）| `C:\Users\Public\Sound2Text\mic\mic_*.wav` |
+| 音频（含麦克风混合）| `C:\Users\Public\Sound2Text\audio\audio_*.mp3` |
 
 路径可在 **路径** 设置标签页中修改。
 
@@ -207,18 +207,16 @@ python debug_modules.py pipeline 20
 ui_qt.py            # PyQt6 主界面（MVP View）
 widgets_qt.py       # 自定义 QPainter 控件（VU 表、七段数码管）
 presenter.py        # 业务逻辑（MVP Presenter）
+pipeline.py         # 音频捕获 → VAD → 转写 → 纠错 一体化管道进程
 appconfig.py        # 配置读写 + CUDA 检测
 i18n.py             # 多语言翻译
-start.py            # 命令行启动器（无 GUI 模式）
-recorder.py         # 系统音频录制进程（WASAPI 环回）
-mic_recorder.py     # 麦克风录制进程
-transcriber.py      # 转写进程（faster-whisper）
-summarizer.py       # AI 纠错 + 会议纪要生成
+log_util.py         # 结构化日志工具
+summarizer.py       # 会议纪要生成
 device_utils.py     # WASAPI 设备自动选择
+mic_recorder.py     # 麦克风独立录制工具（诊断用）
+transcriber.py      # 转写独立工具（诊断用）
 debug_modules.py    # 诊断测试工具
-config.ini          # 用户配置（机器相关，不应提交到 git）
 config_default.ini  # 默认配置模板
-vocabulary.txt      # 自定义术语表
 requirements.txt    # Python 依赖
 setup.bat           # 新机器一键安装脚本
 ```
@@ -269,6 +267,7 @@ ssl_verify  = true   # 自签名证书时设为 false
 | pyaudiowpatch | Windows WASAPI 音频捕获（环回 + 麦克风）|
 | faster-whisper | 语音识别（OpenAI Whisper 优化版）|
 | PyQt6 | GUI 框架 |
+| scipy | 回声消除（AEC）信号处理 |
 | requests | LLM API 调用 |
 | numpy | 音频数据处理 |
-| ffmpeg | 音频解码（faster-whisper 内部使用）|
+| ffmpeg | MP3 转换 + 麦克风混合（adelay/amix）|
