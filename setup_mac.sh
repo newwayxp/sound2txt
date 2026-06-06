@@ -37,9 +37,9 @@ brew install ffmpeg 2>/dev/null || true
 # BlackHole: try brew cask first, fall back to direct .pkg download
 echo "  Installing BlackHole 2ch..."
 if ! brew install --cask blackhole-2ch 2>/dev/null; then
-    echo "  brew cask failed — downloading BlackHole .pkg directly from GitHub..."
+    echo "  brew cask failed — downloading BlackHole .pkg from existential.audio..."
     BH_PKG="/tmp/BlackHole2ch.pkg"
-    curl -fSL "https://github.com/ExistentialAudio/BlackHole/releases/download/v0.6.0/BlackHole2ch-0.6.0.pkg" \
+    curl -fSL "https://existential.audio/downloads/BlackHole2ch.v0.5.0.pkg" \
         -o "$BH_PKG"
     echo "  Installing BlackHole .pkg (may require your password)..."
     sudo installer -pkg "$BH_PKG" -target /
