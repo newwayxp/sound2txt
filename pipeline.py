@@ -607,6 +607,8 @@ def run():
     # ── Async transcription thread ────────────────────────────────────────────
     _seg_queue: queue.Queue = queue.Queue()
 
+    _lang_detect_attempts = [0]   # segments tried while session_lang is still None
+
     def _transcribe_loop():
         """Background thread: transcribes audio segments in order."""
         nonlocal session_lang, whisper, _current_model_lang, device, compute_type, _transcribe_kwargs, corrected_file
@@ -670,14 +672,31 @@ def run():
             tr_info(f"Transcribed in {elapsed:.1f}s: lang={info.language} "
                     f"({info.language_probability:.0%}) segments={len(seg_list)}")
 
-            # Language detection on first segment
+            # Language detection: lock in when confident, fall back after retries
             if not session_lang:
                 try:
                     from transcriber import LANG_ALIAS
                     lang = LANG_ALIAS.get(info.language, info.language)
-                    if lang in {"zh", "ja", "en"} and info.language_probability >= 0.5:
+                    _lang_detect_attempts[0] += 1
+
+                    # CJK languages are acoustically distinct — accept at lower threshold
+                    threshold = 0.3 if lang in {"zh", "ja"} else 0.5
+                    locked = lang in {"zh", "ja", "en"} and info.language_probability >= threshold
+
+                    # After 3 uncertain segments, fall back to UI language
+                    if not locked and _lang_detect_attempts[0] >= 3:
+                        from i18n import _LANG as _ui_lang
+                        if _ui_lang in {"zh", "ja", "en"}:
+                            lang = _ui_lang
+                        elif lang not in {"zh", "ja", "en"}:
+                            lang = "en"
+                        tr_info(f"Language uncertain after {_lang_detect_attempts[0]} attempts "
+                                f"— using {'UI language' if _ui_lang in {'zh','ja','en'} else 'fallback'}: {lang}")
+                        locked = True
+
+                    if locked:
                         session_lang = lang
-                        tr_info(f"Language detected: {session_lang}")
+                        tr_info(f"Language locked: {session_lang} ({info.language_probability:.0%})")
                         with open(LANG_FILE, "w", encoding="utf-8") as f:
                             f.write(session_lang)
                         if _current_model_lang != session_lang:

@@ -253,6 +253,27 @@ class Presenter:
     def apply_startup_defaults(self, log: bool = True) -> None:
         """Called from view's _apply_initial_ui_state after reading config."""
         self._apply_cpu_only_defaults(log=log)
+        self._ensure_dirs()
+
+    def _ensure_dirs(self) -> None:
+        """Create all configured output directories if they don't exist."""
+        _base = os.path.join(os.path.expanduser("~"), "Documents", "Sound2Text")
+        dirs = [
+            self._config.get("paths", "audio_dir",
+                             fallback=os.path.join(_base, "audio")),
+            self._config.get("paths", "transcript_dir",
+                             fallback=os.path.join(_base, "transcript")),
+            self._config.get("summary", "corrected_dir",
+                             fallback=os.path.join(_base, "corrected")),
+            self._config.get("summary", "summary_dir",
+                             fallback=os.path.join(_base, "memo")),
+        ]
+        for d in dirs:
+            if d:
+                try:
+                    os.makedirs(d, exist_ok=True)
+                except Exception:
+                    pass
 
     # ── config helpers ────────────────────────────────────────────────────────
 
