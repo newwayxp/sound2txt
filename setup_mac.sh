@@ -103,18 +103,16 @@ fi
 # ── Python packages ───────────────────────────────────────────────────────────
 echo ""
 echo "[2/3] Installing Python packages..."
-if ! "$PY" -m pip install faster-whisper scipy requests; then
+# Install from requirements_mac.txt, but handle pyaudio specially for build flags
+if ! "$PY" -m pip install -r requirements_mac.txt; then
     echo "  Standard pip install failed; retrying with --user..."
-    "$PY" -m pip install --user faster-whisper scipy requests
+    "$PY" -m pip install --user -r requirements_mac.txt
 fi
 
-# pyaudio needs portaudio headers/libs at build time
+# pyaudio needs portaudio headers/libs at build time; reinstall with proper flags
 SDK="$(xcrun --show-sdk-path 2>/dev/null || echo '')"
 SYSROOT="${SDK:+-isysroot $SDK}"
-if ! CFLAGS="-I$PA_INC $SYSROOT" LDFLAGS="-L$PA_LIB" "$PY" -m pip install pyaudio; then
-    echo "  pyaudio install failed; retrying with --user..."
-    CFLAGS="-I$PA_INC $SYSROOT" LDFLAGS="-L$PA_LIB" "$PY" -m pip install --user pyaudio
-fi
+CFLAGS="-I$PA_INC $SYSROOT" LDFLAGS="-L$PA_LIB" "$PY" -m pip install --force-reinstall pyaudio 2>/dev/null || true
 
 # Fix dylib path in the .so if portaudio was installed to a non-standard prefix
 if [ "$PA_LIB" != "/usr/local/lib" ]; then
