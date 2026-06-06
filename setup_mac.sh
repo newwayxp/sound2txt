@@ -29,21 +29,32 @@ echo "Using Python: $($PY --version)"
 
 # ── System dependencies ───────────────────────────────────────────────────────
 echo ""
-echo "[1/4] Installing system dependencies..."
+echo "[1/3] Installing system dependencies..."
 
 # ffmpeg
 brew install ffmpeg 2>/dev/null || true
 
-# BlackHole: try brew cask first, fall back to direct .pkg download
+# BlackHole 2ch: virtual loopback driver for system audio capture
 echo "  Installing BlackHole 2ch..."
-if ! brew install --cask blackhole-2ch 2>/dev/null; then
+BH_INSTALLED=false
+if brew install --cask blackhole-2ch 2>/dev/null; then
+    BH_INSTALLED=true
+else
     echo "  brew cask failed — downloading BlackHole .pkg from existential.audio..."
     BH_PKG="/tmp/BlackHole2ch.pkg"
     curl -fSL "https://existential.audio/downloads/BlackHole2ch.v0.5.0.pkg" \
         -o "$BH_PKG"
     echo "  Installing BlackHole .pkg (may require your password)..."
-    sudo installer -pkg "$BH_PKG" -target /
+    sudo installer -pkg "$BH_PKG" -target / && BH_INSTALLED=true || true
     echo "  BlackHole installed."
+fi
+
+# Restart CoreAudio so the new BlackHole driver is detected immediately
+if $BH_INSTALLED; then
+    echo "  Restarting CoreAudio to load BlackHole driver..."
+    sudo kill "$(pgrep coreaudiod)" 2>/dev/null || true
+    sleep 2
+    echo "  CoreAudio restarted."
 fi
 
 # portaudio: try brew first, fall back to source build if formula is broken
@@ -74,7 +85,7 @@ fi
 
 # ── Python packages ───────────────────────────────────────────────────────────
 echo ""
-echo "[2/4] Installing Python packages..."
+echo "[2/3] Installing Python packages..."
 "$PIP" install faster-whisper scipy requests
 
 # pyaudio needs portaudio headers/libs at build time
@@ -97,7 +108,7 @@ fi
 
 # ── Config ────────────────────────────────────────────────────────────────────
 echo ""
-echo "[3/4] Setting up config..."
+echo "[3/3] Setting up config..."
 if [ ! -f config.ini ]; then
     cp config_default.ini config.ini
     echo "  Created config.ini from template."
@@ -106,33 +117,13 @@ else
     echo "  config.ini already exists, skipping."
 fi
 
-# ── BlackHole audio routing ───────────────────────────────────────────────────
-echo ""
-echo "[4/4] Configure BlackHole for system audio capture"
-echo ""
-echo "  Sound2Text captures meeting audio via a virtual loopback device."
-echo "  You need a Multi-Output Device so your speakers AND BlackHole"
-echo "  both receive audio at the same time."
-echo ""
-echo "  ┌─ Steps ──────────────────────────────────────────────────────────────┐"
-echo "  │  1. Audio MIDI Setup will open now.                                  │"
-echo "  │  2. Click the [+] button at the bottom-left corner.                  │"
-echo "  │  3. Choose 「Create Multi-Output Device」.                            │"
-echo "  │  4. In the right panel, check BOTH:                                  │"
-echo "  │       ☑  BlackHole 2ch                                               │"
-echo "  │       ☑  Your speakers (e.g. 'Mac mini Speakers', 'Q2790R3')        │"
-echo "  │  5. Right-click the new device → 「Use This Device For Sound Output」│"
-echo "  │     Or: System Settings → Sound → Output → 'Multi-Output Device'    │"
-echo "  └──────────────────────────────────────────────────────────────────────┘"
-echo ""
-echo "  Opening Audio MIDI Setup..."
-open "/Applications/Utilities/Audio MIDI Setup.app"
-echo ""
-read -rp "  ▶ Press Enter once you have completed all 5 steps above... "
-echo ""
-
 # ── Done ──────────────────────────────────────────────────────────────────────
+echo ""
 echo "=== Setup complete ==="
+echo ""
+echo "  Audio routing is fully automatic:"
+echo "  ▶ Start recording → system output switches to BlackHole + your speakers"
+echo "  ■ Stop recording  → system output restored to original"
 echo ""
 echo "To start Sound2Text:"
 echo "  $PY ui_qt.py"

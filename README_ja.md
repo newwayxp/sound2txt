@@ -73,21 +73,14 @@ bash setup_mac.sh
 ```
 
 スクリプトが自動で行う処理：
-- Homebrew で ffmpeg・BlackHole・portaudio をインストール
+- Homebrew で ffmpeg・BlackHole 2ch・portaudio をインストール
+- CoreAudio を再起動して BlackHole ドライバを即時認識
 - Python パッケージをインストール（pyaudio・faster-whisper・scipy 等）
 - `config.ini` を作成
 
-**⚡ スクリプト実行中に Audio MIDI Setup が自動で開きます（手動操作が必要）：**
-
-| # | 操作 |
-|---|---|
-| 1 | 左下の **[+]** ボタンをクリック |
-| 2 | **「複数出力装置を作成」** を選択 |
-| 3 | 右パネルで **BlackHole 2ch** と **お使いのスピーカー** の両方にチェック |
-| 4 | 作成した装置を右クリック → **「このサウンド出力装置を使用」** |
-| 5 | または：システム設定 → サウンド → 出力 → 「複数出力装置」を選択 |
-
-Enter を押すとセットアップが完了します。
+**Audio MIDI Setup の手動設定は不要です。** 音声ルーティングは完全自動：
+- **▶ 開始** をクリック → システム出力が自動で「BlackHole + スピーカー」に切替
+- **■ 停止** をクリック → 元の出力デバイスに自動復元
 
 ---
 

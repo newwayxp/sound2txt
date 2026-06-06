@@ -72,19 +72,11 @@ cd sound2txt
 bash setup_mac.sh
 ```
 
-The script automatically installs ffmpeg, BlackHole, portaudio (via Homebrew), Python packages, and creates `config.ini`.
+The script automatically installs ffmpeg, BlackHole 2ch, portaudio (via Homebrew), restarts CoreAudio, installs Python packages, and creates `config.ini`.
 
-**⚡ The script pauses and opens Audio MIDI Setup — complete these steps when prompted:**
-
-| # | Action |
-|---|---|
-| 1 | Click the **[+]** button at the bottom-left |
-| 2 | Choose **"Create Multi-Output Device"** |
-| 3 | Check both **BlackHole 2ch** and **your speakers** (e.g. "Mac mini Speakers") |
-| 4 | Right-click the new device → **"Use This Device For Sound Output"** |
-| 5 | Or: System Settings → Sound → Output → select "Multi-Output Device" |
-
-Press Enter in the terminal to continue once all steps are done.
+**No Audio MIDI Setup required.** Audio routing is fully automatic:
+- Click **▶ Start** → system output switches to "BlackHole + your speakers"
+- Click **■ Stop** → system output restored to original device
 
 ---
 

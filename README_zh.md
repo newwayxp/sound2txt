@@ -72,19 +72,11 @@ cd sound2txt
 bash setup_mac.sh
 ```
 
-脚本会自动完成：通过 Homebrew 安装 ffmpeg、BlackHole、portaudio，安装 Python 依赖，创建 `config.ini`。
+脚本会自动完成：安装 ffmpeg、BlackHole 2ch、portaudio，安装 Python 依赖，重启 CoreAudio，创建 `config.ini`。
 
-**⚡ 脚本运行中会自动打开 Audio MIDI Setup，需要手动完成以下操作：**
-
-| # | 操作 |
-|---|---|
-| 1 | 点击左下角 **[+]** 按钮 |
-| 2 | 选择 **「创建多输出设备」** |
-| 3 | 在右侧面板中同时勾选 **BlackHole 2ch** 和**您的扬声器**（如 Mac mini Speakers） |
-| 4 | 右键点击新建的设备 → **「将此设备用于声音输出」** |
-| 5 | 或者：系统设置 → 声音 → 输出 → 选择「多输出设备」 |
-
-按 Enter 后安装完成。
+**无需手动配置 Audio MIDI Setup。** 音频路由完全自动化：
+- 点击 **▶ 开始** → 自动切换系统输出为「BlackHole + 扬声器」
+- 点击 **■ 停止** → 自动恢复原来的输出设备
 
 ---
 
