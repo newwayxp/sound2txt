@@ -50,6 +50,41 @@ QFrame#controlBar {
     border-bottom: 1px solid #E0E0E0;
 }
 
+/* ── Recording mode segmented pill (Meeting / Mic Only) ── */
+QPushButton#btnModeLeft {
+    color: #616161;
+    background-color: #F5F5F5;
+    border: 1px solid #BDBDBD;
+    border-right: none;
+    border-top-left-radius: 17px;
+    border-bottom-left-radius: 17px;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    padding: 5px 14px;
+    min-height: 34px;
+    font-size: 12px;
+}
+QPushButton#btnModeRight {
+    color: #616161;
+    background-color: #F5F5F5;
+    border: 1px solid #BDBDBD;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-top-right-radius: 17px;
+    border-bottom-right-radius: 17px;
+    padding: 5px 14px;
+    min-height: 34px;
+    font-size: 12px;
+}
+QPushButton#btnModeLeft:checked, QPushButton#btnModeRight:checked {
+    color: white;
+    background-color: #1976D2;
+    border-color: #1565C0;
+}
+QPushButton#btnModeLeft:hover:!checked, QPushButton#btnModeRight:hover:!checked {
+    background-color: #EEEEEE;
+}
+
 /* ── Start/Stop toggle button — same height as mode buttons ── */
 QPushButton#btnToggle {
     color: white;
@@ -467,6 +502,29 @@ class App(QMainWindow):
         self._btn_toggle.clicked.connect(self._on_toggle)
         self._apply_toggle_style(enabled=True)
         hbox.addWidget(self._btn_toggle)
+
+        hbox.addWidget(_vsep(bar))
+
+        # Recording mode toggle (Meeting / Mic Only)
+        mode_val = self._presenter._config.get("recording", "mode", fallback="meeting").strip().lower()
+        mode_group = QButtonGroup(bar)
+        self._btn_mode_meeting   = QPushButton(t("mode_meeting"), bar)
+        self._btn_mode_local_mic = QPushButton(t("mode_local_mic"), bar)
+        self._btn_mode_meeting.setObjectName("btnModeLeft")
+        self._btn_mode_local_mic.setObjectName("btnModeRight")
+        for btn in (self._btn_mode_meeting, self._btn_mode_local_mic):
+            btn.setCheckable(True)
+            mode_group.addButton(btn)
+        self._btn_mode_meeting.setChecked(mode_val != "local_mic")
+        self._btn_mode_local_mic.setChecked(mode_val == "local_mic")
+
+        def _on_mode_btn():
+            code = "local_mic" if self._btn_mode_local_mic.isChecked() else "meeting"
+            self._presenter.save_config({("recording", "mode"): code})
+
+        mode_group.buttonClicked.connect(lambda _: _on_mode_btn())
+        hbox.addWidget(self._btn_mode_meeting)
+        hbox.addWidget(self._btn_mode_local_mic)
 
         hbox.addWidget(_vsep(bar))
 
