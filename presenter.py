@@ -158,6 +158,8 @@ class Presenter:
         if extra:
             self._env["PATH"] = extra + os.pathsep + self._env.get("PATH", "")
 
+        self._ensure_dirs()
+
     # ── view wiring ───────────────────────────────────────────────────────────
 
     def set_view(self, view: ViewProtocol) -> None:
