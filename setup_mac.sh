@@ -13,21 +13,38 @@ fi
 
 # ── Detect Python (prefer Homebrew arm64, fallback to system) ─────────────────
 PY=""
-for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+for candidate in python3.11 python3.12 python3.13 /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
     if command -v "$candidate" &>/dev/null; then
-        PY="$candidate"
-        break
+        ver=$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+        if [[ "$ver" == "3.11" || "$ver" == "3.12" || "$ver" == "3.13" ]]; then
+            PY="$candidate"
+            break
+        fi
     fi
 done
 if [ -z "$PY" ]; then
-    echo "ERROR: Python 3 not found. Install via: brew install python@3.11"
+    echo "ERROR: Python 3.11/3.12/3.13 not found. Install one via: brew install python@3.12"
     exit 1
 fi
-PIP="${PY%python3}pip3"
-command -v "$PIP" &>/dev/null || PIP="pip3"
+VENV_DIR=".venv"
+if [ -d "$VENV_DIR" ] && [ -x "$VENV_DIR/bin/python" ]; then
+    current_ver=$("$VENV_DIR/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+    if [[ "$current_ver" != "3.11" && "$current_ver" != "3.12" && "$current_ver" != "3.13" ]]; then
+        echo "Existing venv uses unsupported Python $current_ver; recreating $VENV_DIR..."
+        rm -rf "$VENV_DIR"
+    fi
+fi
+if [ ! -d "$VENV_DIR" ]; then
+    echo "Using Python: $($PY --version)"
+    echo "Creating virtual environment at $VENV_DIR..."
+    "$PY" -m venv "$VENV_DIR"
+fi
+PY="$VENV_DIR/bin/python"
+# Use the venv's pip to avoid externally-managed environment issues.
+"$PY" -m pip install --upgrade pip setuptools wheel
+
 echo "Using Python: $($PY --version)"
 
-# ── System dependencies ───────────────────────────────────────────────────────
 echo ""
 echo "[1/3] Installing system dependencies..."
 
@@ -86,12 +103,18 @@ fi
 # ── Python packages ───────────────────────────────────────────────────────────
 echo ""
 echo "[2/3] Installing Python packages..."
-"$PIP" install faster-whisper scipy requests
+if ! "$PY" -m pip install faster-whisper scipy requests; then
+    echo "  Standard pip install failed; retrying with --user..."
+    "$PY" -m pip install --user faster-whisper scipy requests
+fi
 
 # pyaudio needs portaudio headers/libs at build time
 SDK="$(xcrun --show-sdk-path 2>/dev/null || echo '')"
 SYSROOT="${SDK:+-isysroot $SDK}"
-CFLAGS="-I$PA_INC $SYSROOT" LDFLAGS="-L$PA_LIB" "$PIP" install pyaudio
+if ! CFLAGS="-I$PA_INC $SYSROOT" LDFLAGS="-L$PA_LIB" "$PY" -m pip install pyaudio; then
+    echo "  pyaudio install failed; retrying with --user..."
+    CFLAGS="-I$PA_INC $SYSROOT" LDFLAGS="-L$PA_LIB" "$PY" -m pip install --user pyaudio
+fi
 
 # Fix dylib path in the .so if portaudio was installed to a non-standard prefix
 if [ "$PA_LIB" != "/usr/local/lib" ]; then
