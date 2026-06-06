@@ -147,6 +147,14 @@ QComboBox::drop-down {
     border: none;
     width: 20px;
 }
+QComboBox QAbstractItemView {
+    background-color: #FFFFFF;
+    color: #212121;
+    selection-background-color: #E3F2FD;
+    selection-color: #212121;
+    border: 1px solid #BDBDBD;
+    outline: none;
+}
 
 /* ── Slider ── */
 QSlider::groove:horizontal {
