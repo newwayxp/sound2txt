@@ -84,7 +84,6 @@ _T: dict[str, dict[str, str]] = {
     # Recording tab
     "mic_enable":    {"zh": "麦克风录音",                "ja": "マイク録音",                     "en": "Microphone recording"},
     "mic_enable_hint":{"zh": "同时录制本地麦克风（自己的发言）","ja": "自分の発言もマイクで録音する","en": "Also record local mic (your own voice)"},
-    "mic_dir":       {"zh": "麦克风录音目录",            "ja": "マイク録音保存先",               "en": "Mic audio directory"},
     # Recording mode buttons
     "mode_meeting":  {"zh": "会议模式",                  "ja": "会議モード",                     "en": "Meeting Mode"},
     "mode_local_mic":{"zh": "本地麦克风",               "ja": "マイクのみ",                     "en": "Mic Only"},

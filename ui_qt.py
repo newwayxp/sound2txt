@@ -76,51 +76,6 @@ QPushButton#btnSave {
 QPushButton#btnSave:hover { background-color: #1565C0; }
 
 
-/* ── Mode segmented control — left button ── */
-QPushButton#modeBtnLeft {
-    background-color: #FFFFFF;
-    color: #424242;
-    border: 1px solid #BDBDBD;
-    border-right: none;
-    border-top-left-radius: 18px;
-    border-bottom-left-radius: 18px;
-    border-top-right-radius: 0px;
-    border-bottom-right-radius: 0px;
-    padding: 6px 16px;
-    min-height: 34px;
-    font-size: 13px;
-}
-QPushButton#modeBtnLeft:checked {
-    background-color: #1565C0;
-    color: white;
-    border-color: #1565C0;
-}
-QPushButton#modeBtnLeft:hover:!checked {
-    background-color: #F5F5F5;
-}
-
-/* ── Mode segmented control — right button ── */
-QPushButton#modeBtnRight {
-    background-color: #FFFFFF;
-    color: #424242;
-    border: 1px solid #BDBDBD;
-    border-top-left-radius: 0px;
-    border-bottom-left-radius: 0px;
-    border-top-right-radius: 18px;
-    border-bottom-right-radius: 18px;
-    padding: 6px 16px;
-    min-height: 34px;
-    font-size: 13px;
-}
-QPushButton#modeBtnRight:checked {
-    background-color: #1565C0;
-    color: white;
-    border-color: #1565C0;
-}
-QPushButton#modeBtnRight:hover:!checked {
-    background-color: #F5F5F5;
-}
-
 /* ── Browse folder button — small, subtle ── */
 QPushButton#btnBrowse {
     background-color: #F0F0F0;
@@ -453,13 +408,6 @@ class App(QMainWindow):
             self._quick_lang_combo.setCurrentIndex(idx)
 
         # Mode buttons
-        rec_mode = cfg.get("recording", "mode", fallback="meeting")
-        if rec_mode == "local_mic" and hasattr(self, "_btn_mode_local_mic"):
-            self._btn_mode_local_mic.setChecked(True)
-            self._btn_mode_meeting.setChecked(False)
-        elif hasattr(self, "_btn_mode_meeting"):
-            self._btn_mode_meeting.setChecked(True)
-            self._btn_mode_local_mic.setChecked(False)
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -514,28 +462,6 @@ class App(QMainWindow):
 
         hbox.addWidget(_vsep(bar))
 
-        # Mode toggle buttons — segmented control style
-        mode_val = self._presenter._config.get("recording", "mode", fallback="meeting")
-        self._btn_mode_meeting   = QPushButton(t("mode_meeting"), bar)
-        self._btn_mode_local_mic = QPushButton(t("mode_local_mic"), bar)
-
-        self._btn_mode_meeting.setObjectName("modeBtnLeft")
-        self._btn_mode_local_mic.setObjectName("modeBtnRight")
-
-        for btn in (self._btn_mode_meeting, self._btn_mode_local_mic):
-            btn.setCheckable(True)
-        self._btn_mode_meeting.setChecked(mode_val != "local_mic")
-        self._btn_mode_local_mic.setChecked(mode_val == "local_mic")
-
-        mode_group = QButtonGroup(bar)
-        mode_group.setExclusive(True)
-        mode_group.addButton(self._btn_mode_meeting)
-        mode_group.addButton(self._btn_mode_local_mic)
-        mode_group.buttonClicked.connect(self._on_mode_change)
-
-        hbox.addWidget(self._btn_mode_meeting)
-        hbox.addWidget(self._btn_mode_local_mic)
-
         # ON AIR + VU meter — pill-shaped box, hidden until recording starts
         self._vumeter_bar = QFrame(bar)
         self._vumeter_bar.setObjectName("vuContainer")
@@ -585,13 +511,14 @@ class App(QMainWindow):
         self._quick_lang_combo.addItems([
             t("lang_auto"), t("lang_zh"), t("lang_ja"), t("lang_en"),
         ])
-        self._quick_lang_combo.setFixedWidth(110)
+        self._quick_lang_combo.setMinimumWidth(160)
         cur_lang = self._presenter._config.get("recording", "language", fallback="auto")
         self._quick_lang_combo.setCurrentIndex(
             {"auto": 0, "zh": 1, "ja": 2, "en": 3}.get(cur_lang, 0)
         )
         self._quick_lang_combo.currentIndexChanged.connect(self._on_quick_lang_change)
         hbox.addWidget(self._quick_lang_combo)
+        hbox.addSpacing(12)   # right margin so combo doesn't sit at window edge
 
         return bar
 
@@ -625,7 +552,6 @@ class App(QMainWindow):
         # (icon, label_key, section, config_key, default_path)
         rows_def = [
             ("🔊", "audio_dir",  "paths",   "audio_dir",      r"C:\Users\Public\Sound2Text\audio"),
-            ("🎙", "mic_dir",    "paths",   "mic_dir",         r"C:\Users\Public\Sound2Text\mic"),
             ("📝", "tr_dir",     "paths",   "transcript_dir",  r"C:\Users\Public\Sound2Text\transcript"),
             ("✏️", "corr_dir",   "summary", "corrected_dir",   r"C:\Users\Public\Sound2Text\corrected"),
             ("📋", "sum_dir",    "summary", "summary_dir",     r"C:\Users\Public\Sound2Text\memo"),
@@ -1064,7 +990,7 @@ class App(QMainWindow):
         threading.Thread(target=_run, daemon=True).start()
 
     def _on_vumeter_click(self) -> None:
-        """Toggle mic recording on/off (works in both meeting and local_mic modes)."""
+        """Toggle mic mixing on/off via On Air button."""
         threading.Thread(target=self._presenter.toggle_mic, daemon=True).start()
 
     def show_ptt_button(self) -> None:
@@ -1079,10 +1005,6 @@ class App(QMainWindow):
             self._vu_meter.set_level(0.0)
             self._vu_meter.hide()   # sets _active=False
             self._vumeter_bar.setVisible(False)
-
-    def _on_mode_change(self, btn: QPushButton) -> None:
-        code = "local_mic" if btn is self._btn_mode_local_mic else "meeting"
-        self._presenter.save_config({("recording", "mode"): code})
 
     def _on_quick_lang_change(self, index: int) -> None:
         code = ["auto", "zh", "ja", "en"][index]

@@ -50,6 +50,8 @@ from appconfig import (
     _setup_cuda_dlls,
 )
 
+_MIC_ONAIR = os.path.join(BASE, ".mic_onair")
+
 if TYPE_CHECKING:
     pass
 
@@ -110,7 +112,6 @@ class Presenter:
         # ── subprocess handles ────────────────────────────────────────────────
         self._rec_proc    = None
         self._tr_proc     = None   # kept for _pipe / dashboard compat
-        self._mic_proc    = None
         self._ollama_proc = None
 
         # ── on-demand transcriber (file watcher) ──────────────────────────────
@@ -129,6 +130,7 @@ class Presenter:
         self._running         = False
         self._stopping        = False
         self._meter_active    = False
+        self._session_id      = 0   # incremented each start(); guards stale async callbacks
 
         # ── transcriber tracking ─────────────────────────────────────────────
         self._tr_current_file  = ""
@@ -272,53 +274,41 @@ class Presenter:
             self._view.put_log(t("saved"))
 
     def start_mic(self) -> None:
-        """Start mic_recorder.py (Push-to-Talk ON)."""
+        """Activate mic mixing in pipeline (On Air ON)."""
         if not self._running:
             return
-        if self._mic_proc and self._mic_proc.poll() is None:
-            return  # already running
-        mic_dir = self._config.get("paths", "mic_dir", fallback=r"C:\Users\Public\Sound2Text\mic")
-        self._view and self._view.put_log(f"[UI] 発言開始 — mic_dir: {mic_dir}")
-        # Pass --ptt flag so mic_recorder.py ignores the enable_mic setting
-        self._mic_proc = subprocess.Popen(
-            [sys.executable, "-X", "utf8", os.path.join(BASE, "mic_recorder.py"), "--ptt"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", env=self._env,
-        )
-        self._view and self._view.put_log(f"[UI] mic_recorder.py started: pid={self._mic_proc.pid}")
-        threading.Thread(target=self._pipe, args=(self._mic_proc, "[Mic]"), daemon=True).start()
+        if os.path.exists(_MIC_ONAIR):
+            return  # already active
+        try:
+            with open(_MIC_ONAIR, "w") as f:
+                f.write("1")
+        except Exception as e:
+            self._view and self._view.put_log(f"[UI] Mic on-air signal error: {e}")
+            return
+        self._view and self._view.put_log("[UI] マイクミックス ON")
         if self._view:
             self._view.schedule(lambda: self._view.show_onair())
         self._start_meter()
 
     def toggle_mic(self) -> None:
-        """Toggle mic recording. Called when user clicks the VU meter."""
+        """Toggle mic mixing. Called when user clicks the VU meter."""
         if not self._running:
             return
-        if self._mic_proc and self._mic_proc.poll() is None:
+        if os.path.exists(_MIC_ONAIR):
             self.stop_mic()
         else:
             self.start_mic()
 
     def stop_mic(self) -> None:
-        """Stop mic_recorder.py (Push-to-Talk OFF) — save partial frames first."""
+        """Deactivate mic mixing in pipeline (On Air OFF)."""
         self._stop_meter()
         if self._view:
             self._view.schedule(lambda: self._view.hide_onair())
-        if self._mic_proc and self._mic_proc.poll() is None:
-            # Write PTT stop signal so mic_recorder saves the partial chunk before exiting
-            try:
-                with open(os.path.join(BASE, ".ptt_stop"), "w") as f:
-                    f.write("stop")
-            except Exception:
-                self._mic_proc.terminate()  # fallback
-            # Wait up to 5 seconds for graceful exit; force-kill if needed
-            try:
-                self._mic_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._mic_proc.kill()
-            self._view and self._view.put_log("[UI] 発言終了 — マイク録音を停止しました")
-        self._mic_proc = None
+        try:
+            os.remove(_MIC_ONAIR)
+        except FileNotFoundError:
+            pass
+        self._view and self._view.put_log("[UI] マイクミックス OFF")
 
     @property
     def cuda_available(self) -> bool:
@@ -585,20 +575,6 @@ class Presenter:
                 input_device_index=idx,
             )
             while self._meter_active:
-                # Gate: if mic_recorder.py has exited, level must be 0
-                # (hardware stream may still work even if the recorder crashed)
-                mic_running = (
-                    self._mic_proc is not None
-                    and self._mic_proc.poll() is None
-                )
-                if not mic_running:
-                    # Recording stopped or failed — show 0 and quit meter
-                    if self._view:
-                        self._view.schedule(lambda: self._view.set_onair_level(0.0))
-                        self._view.schedule(lambda: self._view.hide_onair())
-                    self._meter_active = False
-                    break
-
                 data  = stream.read(chunk, exception_on_overflow=False)
                 arr   = np.frombuffer(data, dtype=np.int16)
                 rms   = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)))
@@ -631,19 +607,22 @@ class Presenter:
         if self._view is None:
             return
 
-        # Clean up signal files (including any stale PTT stop signal)
+        # Clean up signal files from any previous session
         for path in (STOP_SIGNAL, STATE_FILE, LANG_FILE,
-                     os.path.join(BASE, ".ptt_stop"),
+                     _MIC_ONAIR,
                      os.path.join(BASE, ".last_corrected")):
-            if os.path.exists(path):
+            try:
                 os.remove(path)
+            except FileNotFoundError:
+                pass
 
         # Re-read config and enforce CPU-only if needed
         self._reload_config()
         self._apply_cpu_only_defaults(log=True)
 
-        self._running  = True
-        self._stopping = False
+        self._running   = True
+        self._stopping  = False
+        self._session_id += 1   # invalidate callbacks from previous session
 
         # Disable start, enable stop
         self._view.schedule(lambda: self._view.set_start_enabled(False))
@@ -680,12 +659,9 @@ class Presenter:
         self._view.put_log(f"[UI] Recording started at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         rec_mode   = self._config.get("recording", "mode",       fallback="meeting").strip().lower()
-        enable_mic = self._config.getboolean("recording", "enable_mic", fallback=True)
-
         # ── Pipeline セッション開始 ────────────────────────────────────────────
         # pipeline.py が音声取得・VAD・Whisper・翻訳・音声保存・transcript書き込みを担当
         self._rec_proc = None
-        self._mic_proc = None
 
         # session シグナルを書く → pipeline がこれを検知してセッション開始
         with open(self._PIPELINE_SESSION, "w") as f:
@@ -724,8 +700,11 @@ class Presenter:
         self._fw_stop.set()
         threading.Thread(target=self._wait_pipeline_and_summarize, daemon=True).start()
 
-        if self._mic_proc and self._mic_proc.poll() is None:
-            self._mic_proc.terminate()
+        # Deactivate mic mixing signal
+        try:
+            os.remove(_MIC_ONAIR)
+        except FileNotFoundError:
+            pass
 
         if self._view:
             self._view.schedule(lambda: self._view.set_rec_status("stopped", "gray60"))
@@ -740,9 +719,10 @@ class Presenter:
     def _poll_corrected_file(self) -> None:
         """Poll .last_corrected during session and update the Transcript tab in real time."""
         _state = os.path.join(BASE, ".last_corrected")
+        _sid       = self._session_id   # session this poll thread belongs to
         last_path  = None
         last_mtime = 0.0
-        while self._running:
+        while self._running and self._session_id == _sid:
             try:
                 if os.path.exists(_state):
                     with open(_state, encoding="utf-8") as f:
@@ -754,7 +734,8 @@ class Presenter:
                             last_mtime = mtime
                             _p = path
                             if self._view and hasattr(self._view, "show_transcript"):
-                                self._view.schedule(lambda p=_p: self._view.show_transcript(p))
+                                if self._session_id == _sid:  # re-check before scheduling
+                                    self._view.schedule(lambda p=_p: self._view.show_transcript(p))
             except Exception:
                 pass
             time.sleep(3)
@@ -799,10 +780,7 @@ class Presenter:
     def _file_watch_loop_impl(self) -> None:
         """ファイル監視メインループ：新ファイルごとに transcriber --file を起動。"""
         audio_dir  = self._config.get("paths", "audio_dir")
-        mic_dir    = self._config.get("paths", "mic_dir", fallback="")
-        rec_mode   = self._config.get("recording", "mode", fallback="meeting").strip().lower()
         rec_sec    = self._config.getint("recording", "record_sec", fallback=30)
-        use_loopback = (rec_mode != "local_mic")
 
         seen: set[str] = set()
         start_cutoff = 0.0
@@ -876,15 +854,11 @@ class Presenter:
         # 最終 WAV ファイルを処理（字幕プロセスが既に転写済みの場合はスキップ）
         subtitle_active = (self._sub_proc and self._sub_proc.poll() is None)
         if not subtitle_active:
-            # 字幕なしモード: 最終 WAV を転写する
+            # 字幕なしモード: 最終 WAV を転写する (mic は pipeline でミックス済み)
             final_wavs = _new_files(audio_dir, "audio_*.wav")
-            if use_loopback:
-                for wav in final_wavs:
-                    _process_file(wav, "loopback")
-            mic_wavs = _new_files(mic_dir, "mic_*.wav") if mic_dir and os.path.isdir(mic_dir) else []
-            for wav in mic_wavs:
-                _process_file(wav, "mic")
-            _log("SYS", "INFO", f"最終転写完了: loopback={len(final_wavs)} mic={len(mic_wavs)}")
+            for wav in final_wavs:
+                _process_file(wav, "loopback")
+            _log("SYS", "INFO", f"最終転写完了: loopback={len(final_wavs)}")
         else:
             _log("SYS", "INFO", "字幕プロセスが転写済み → 転写スキップ")
 
@@ -921,6 +895,13 @@ class Presenter:
                 self._view.schedule(self._set_controls_idle)
 
     def _run_summary_pipeline_impl(self) -> None:
+        _sid = self._session_id   # capture; if start() runs again this changes → stale
+
+        def _schedule_if_current(fn):
+            """Only schedule UI update when still in the same session."""
+            if self._session_id == _sid and self._view:
+                self._view.schedule(fn)
+
         transcript_path = self._read_last_transcript()
         if transcript_path:
             self._view and self._view.put_log(f"[UI] Transcript file: {transcript_path}")
@@ -937,15 +918,13 @@ class Presenter:
                 pass
             if self._view and hasattr(self._view, "show_transcript"):
                 _p = _display_path
-                self._view.schedule(lambda p=_p: self._view.show_transcript(p))
+                _schedule_if_current(lambda p=_p: self._view.show_transcript(p))
         else:
             self._view and self._view.put_log("[UI] Transcript file was not created")
 
         if transcript_path and os.path.exists(transcript_path):
             if self._view:
-                self._view.schedule(
-                    lambda: self._view.set_sum_status("generating", "#ddaa00")
-                )
+                _schedule_if_current(lambda: self._view.set_sum_status("generating", "#ddaa00"))
             from i18n import t
 
             # ── Step 1: Correction (runs first, gives user corrected text ASAP) ──
@@ -993,10 +972,9 @@ class Presenter:
                 self._view and self._view.put_log(f"[UI] Summary file: {summary}")
                 if self._view and hasattr(self._view, "show_minutes"):
                     _p = summary
-                    self._view.schedule(lambda p=_p: self._view.show_minutes(p))
+                    _schedule_if_current(lambda p=_p: self._view.show_minutes(p))
 
-            if self._view:
-                self._view.schedule(lambda: self._view.set_sum_status("done", "#44dd44"))
+            _schedule_if_current(lambda: self._view.set_sum_status("done", "#44dd44"))
         else:
             self._view and self._view.put_log(
                 "[UI] Summary skipped because transcript file is missing"
@@ -1058,19 +1036,13 @@ class Presenter:
         _tr_done_re  = re.compile(r"done[^\(]*\((loopback|mic)\):\s+(\S+\.wav)")
         _rec_sec  = self._config.getint("recording", "record_sec", fallback=30)
         audio_dir = self._config.get("paths", "audio_dir", fallback="")
-        mic_dir   = self._config.get("paths", "mic_dir",   fallback=r"C:\Users\Public\Sound2Text\mic")
-        rec_mode  = self._config.get("recording", "mode",  fallback="meeting").strip().lower()
-
-        # Primary source for dashboard timers (avoids double-counting).
-        # In meeting mode the loopback file covers the full session duration;
-        # in local_mic mode only mic files exist.
-        primary_audio_prefix = "[Rec]" if rec_mode == "meeting" else "[Mic]"
-        primary_trans_source = "loopback" if rec_mode == "meeting" else "mic"
+        primary_audio_prefix = "[Rec]"
+        primary_trans_source = "loopback"
 
         # Pipeline dashboard patterns
         _pl_vad_turn  = re.compile(r"VAD turn-end.*in ([\d.]+)s window")
         _pl_vad_force = re.compile(r"VAD force-flush: ([\d.]+)s accumulated")
-        _pl_whisper_in  = re.compile(r"Transcribing ([\d.]+)s audio")
+        _pl_whisper_in  = re.compile(r"Transcribing ([\d.]+)s system audio")
         _pl_whisper_out = re.compile(r"Transcribed in [\d.]+s:")
         _pl_pending = [0.0]  # pending audio secs for trans counter
 
@@ -1089,12 +1061,10 @@ class Presenter:
                     self._tr_current_file  = m.group(1)
                     self._tr_last_activity = time.monotonic()
                 dm = _tr_done_re.search(search_text)
-                # Count only the primary source so loopback + mic don't double-count
                 if dm and self._view and self._running:
                     source, fname = dm.group(1), dm.group(2)
                     if source == primary_trans_source:
-                        done_base = mic_dir if source == "mic" else audio_dir
-                        secs = self._wav_secs(os.path.join(done_base, "done", fname))
+                        secs = self._wav_secs(os.path.join(audio_dir, "done", fname))
                         if secs <= 0: secs = float(_rec_sec)
                         self._view.schedule(lambda s=secs: self._view.dashboard_add_trans(s))
 
@@ -1125,8 +1095,7 @@ class Presenter:
                     fm = _fname_re.search(search_text)
                     if fm and self._view:
                         fname = fm.group(1)
-                        base  = mic_dir if fname.startswith("mic_") else audio_dir
-                        secs  = self._wav_secs(os.path.join(base, fname))
+                        secs  = self._wav_secs(os.path.join(audio_dir, fname))
                         if secs <= 0: secs = float(_rec_sec)
                         self._view.schedule(lambda s=secs: self._view.dashboard_add_audio(s))
 

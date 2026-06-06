@@ -34,16 +34,21 @@ def _dim_color(hex_color: str, factor: int = 9) -> QColor:
 class VUMeterWidget(QWidget):
     """
     Pill-shaped horizontal VU meter.
-    Blue gradient fill grows with audio level; white vertical bars show segments.
-    Height 40 px — identical to Start / Stop buttons.
-    Color shifts: blue (quiet) → cyan (loud).
+    Blocks light up left→right: white → blue → yellow → red zones.
+    Each lit block has a multi-layer glow: outer haze + inner bloom + bright core.
     Emits clicked() — used as PTT-stop trigger.
     """
     clicked = pyqtSignal()
-    FPS = 33   # ~30 fps
+    FPS    = 33
+    N_BARS = 14
 
-    # Number of white tick bars drawn over the fill
-    N_BARS = 10
+    # Zone boundaries (normalized bar position) and base RGB colors
+    _ZONES = [
+        (0.28, (210, 235, 255)),   # white/ice
+        (0.55, ( 30, 120, 255)),   # blue
+        (0.78, (255, 195,  20)),   # yellow
+        (1.01, (255,  45,  30)),   # red
+    ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -75,50 +80,73 @@ class VUMeterWidget(QWidget):
         self._smoothed += (target - self._smoothed) * 0.35
         self.update()
 
+    @staticmethod
+    def _zone_color(frac: float) -> tuple[int, int, int]:
+        for boundary, rgb in VUMeterWidget._ZONES:
+            if frac < boundary:
+                return rgb
+        return VUMeterWidget._ZONES[-1][1]
+
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        w, h  = self.width(), self.height()
-        r     = h / 2.0
+        w, h = self.width(), self.height()
+        radius = h / 2.0
 
-        # ── Pill-shaped clip path ─────────────────────────────────
+        # ── Pill clip ─────────────────────────────────────────────
         clip = QPainterPath()
-        clip.addRoundedRect(0.0, 0.0, float(w), float(h), r, r)
+        clip.addRoundedRect(0.0, 0.0, float(w), float(h), radius, radius)
         p.setClipPath(clip)
 
-        # ── Dark navy background ──────────────────────────────────
-        p.fillRect(0, 0, w, h, QColor("#0d1b2a"))
+        # ── Background ────────────────────────────────────────────
+        p.fillRect(0, 0, w, h, QColor("#0d1117"))
 
-        # ── Blue gradient fill (grows left→right with level) ──────
-        fill_w = self._smoothed * w
-        if fill_w >= 1.0:
-            lv = self._smoothed
-            if lv < 0.75:
-                c_l, c_r = QColor("#1565C0"), QColor("#1E88E5")
-            elif lv < 0.92:
-                c_l, c_r = QColor("#0277BD"), QColor("#26C6DA")
-            else:
-                c_l, c_r = QColor("#006064"), QColor("#00E5FF")  # loud: cyan
-
-            grad = QLinearGradient(0.0, 0.0, fill_w, 0.0)
-            grad.setColorAt(0.0, c_l)
-            grad.setColorAt(1.0, c_r)
-            p.fillRect(0, 0, int(fill_w) + 1, h, grad)
-
-        # ── White vertical bars (segments) ────────────────────────
-        pad   = int(r)                          # avoid drawing into rounded ends
+        # ── Bars ──────────────────────────────────────────────────
+        pad   = int(radius)
         avail = max(1, w - 2 * pad)
         step  = avail / self.N_BARS
-        bar_w = max(2, int(step * 0.40))        # bar ≈ 40% of cell width
-        bar_h = int(h * 0.48)                   # bars ≈ 48% of height
+        bar_w = max(3, int(step * 0.52))
+        bar_h = int(h * 0.55)
         bar_y = (h - bar_h) // 2
+        lv    = self._smoothed
 
         for i in range(self.N_BARS):
-            bar_x = int(pad + i * step + (step - bar_w) / 2)
             frac  = (i + 0.5) / self.N_BARS
-            alpha = 215 if frac < self._smoothed else 45
-            p.fillRect(bar_x, bar_y, bar_w, bar_h, QColor(255, 255, 255, alpha))
+            bar_x = int(pad + i * step + (step - bar_w) / 2)
+            lit   = frac < lv
+
+            if lit:
+                rc, gc, bc = self._zone_color(frac)
+
+                # Layer 1 — wide outer haze (full bar height, very transparent)
+                haze = max(bar_w, 4)
+                p.fillRect(bar_x - haze, 0,
+                           bar_w + haze * 2, h,
+                           QColor(rc, gc, bc, 20))
+
+                # Layer 2 — inner bloom just around the bar
+                p.fillRect(bar_x - 2, bar_y - 2,
+                           bar_w + 4, bar_h + 4,
+                           QColor(rc, gc, bc, 65))
+
+                # Layer 3 — core bar: vertical gradient (dim edge → bright center → dim edge)
+                core = QLinearGradient(0.0, float(bar_y),
+                                       0.0, float(bar_y + bar_h))
+                core.setColorAt(0.0,  QColor(rc, gc, bc, 140))
+                core.setColorAt(0.35, QColor(min(rc + 55, 255),
+                                             min(gc + 55, 255),
+                                             min(bc + 55, 255), 230))
+                core.setColorAt(0.5,  QColor(255, 255, 255, 210))   # bright spine
+                core.setColorAt(0.65, QColor(min(rc + 55, 255),
+                                             min(gc + 55, 255),
+                                             min(bc + 55, 255), 230))
+                core.setColorAt(1.0,  QColor(rc, gc, bc, 140))
+                p.fillRect(bar_x, bar_y, bar_w, bar_h, core)
+
+            else:
+                # Unlit — barely visible dark block
+                p.fillRect(bar_x, bar_y, bar_w, bar_h, QColor(255, 255, 255, 16))
 
         p.end()
 
