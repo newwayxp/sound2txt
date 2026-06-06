@@ -15,12 +15,7 @@ def _detect_os_lang() -> str:
             return "en"
 
     if sys.platform == "darwin":
-        # 1. Environment variables (honoured when set explicitly)
-        for key in ("LANG", "LANGUAGE", "LC_ALL", "LC_MESSAGES"):
-            val = os.environ.get(key, "")
-            if val and val not in ("C", "POSIX", "C.UTF-8"):
-                return val.lower()
-        # 2. macOS system preference (most reliable for GUI apps)
+        # 1. macOS system preference (most reliable for GUI apps) — check first
         try:
             import subprocess
             result = subprocess.run(
@@ -33,6 +28,11 @@ def _detect_os_lang() -> str:
                     return lang
         except Exception:
             pass
+        # 2. Environment variables (only if system preference not available)
+        for key in ("LANG", "LANGUAGE", "LC_ALL", "LC_MESSAGES"):
+            val = os.environ.get(key, "")
+            if val and val not in ("C", "POSIX", "C.UTF-8"):
+                return val.lower()
         # 3. locale.getlocale() as final fallback (not deprecated)
         try:
             return (locale.getlocale()[0] or "en").lower()
