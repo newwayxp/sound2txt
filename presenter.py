@@ -1042,13 +1042,9 @@ class Presenter:
         _tr_done_re  = re.compile(r"done[^\(]*\((loopback|mic)\):\s+(\S+\.wav)")
         _rec_sec  = self._config.getint("recording", "record_sec", fallback=30)
         audio_dir = self._config.get("paths", "audio_dir", fallback="")
-        rec_mode  = self._config.get("recording", "mode",  fallback="meeting").strip().lower()
-
         # Primary source for dashboard timers (avoids double-counting).
-        # In meeting mode the loopback file covers the full session duration;
-        # in local_mic mode only mic files exist.
-        primary_audio_prefix = "[Rec]" if rec_mode == "meeting" else "[Mic]"
-        primary_trans_source = "loopback" if rec_mode == "meeting" else "mic"
+        primary_audio_prefix = "[Rec]"
+        primary_trans_source = "loopback"
 
         # Pipeline dashboard patterns
         _pl_vad_turn  = re.compile(r"VAD turn-end.*in ([\d.]+)s window")

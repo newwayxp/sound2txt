@@ -740,29 +740,19 @@ def run():
     else:
         import pyaudio
 
-    rec_mode    = cfg.get("recording", "mode", fallback="meeting").strip().lower()
-    is_local_mic = (rec_mode == "local_mic")
-
     pa = pyaudio.PyAudio()
 
-    if not is_local_mic:
-        from device_utils import select_active_device
-        device_index, dev_info = select_active_device(pa)
-        channels    = dev_info["maxInputChannels"]
-        sample_rate = int(dev_info["defaultSampleRate"])
-        sample_size = pa.get_sample_size(pyaudio.paInt16)
-        sys_info(f"audio device: {dev_info['name']}  rate={sample_rate}")
-        stream = pa.open(
-            format=pyaudio.paInt16, channels=channels,
-            rate=sample_rate, frames_per_buffer=CHUNK_SIZE,
-            input=True, input_device_index=device_index,
-        )
-    else:
-        channels    = 1
-        sample_rate = SAMPLE_RATE
-        sample_size = pa.get_sample_size(pyaudio.paInt16)
-        stream      = None
-        sys_info("local_mic mode: system audio capture disabled")
+    from device_utils import select_active_device
+    device_index, dev_info = select_active_device(pa)
+    channels    = dev_info["maxInputChannels"]
+    sample_rate = int(dev_info["defaultSampleRate"])
+    sample_size = pa.get_sample_size(pyaudio.paInt16)
+    sys_info(f"audio device: {dev_info['name']}  rate={sample_rate}")
+    stream = pa.open(
+        format=pyaudio.paInt16, channels=channels,
+        rate=sample_rate, frames_per_buffer=CHUNK_SIZE,
+        input=True, input_device_index=device_index,
+    )
 
     need_resample = (sample_rate != SAMPLE_RATE)
     if need_resample:
@@ -841,8 +831,7 @@ def run():
                                 _arr = np.clip(_arr.astype(np.float32) * _mic_gain,
                                                -32768, 32767).astype(np.int16)
 
-                            # local_mic mode: always on-air; meeting mode: follow MIC_ONAIR signal
-                            _onair     = is_local_mic or os.path.exists(MIC_ONAIR)
+                            _onair     = os.path.exists(MIC_ONAIR)
                             _in_sess   = os.path.exists(SIGNAL_SESSION)
 
                             if _onair and not _prev_onair:
@@ -985,34 +974,29 @@ def run():
                 session_was_active = False
                 continue
 
-            if stream is not None:
-                # Read audio chunk from system audio (meeting mode)
-                raw = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-                chunk = _to_mono16k(raw)
+            raw = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            chunk = _to_mono16k(raw)
 
-                # Write raw audio for session recording; count frames for precise mic offset
-                if session_active and raw_fh:
-                    try:
-                        raw_fh.write(raw)
-                        _sys_frames[0] += CHUNK_SIZE  # frames at original sample_rate
-                    except Exception:
-                        pass
+            # Write raw audio for session recording; count frames for precise mic offset
+            if session_active and raw_fh:
+                try:
+                    raw_fh.write(raw)
+                    _sys_frames[0] += CHUNK_SIZE  # frames at original sample_rate
+                except Exception:
+                    pass
 
-                # Update AEC reference buffer
-                if enable_mic:
-                    _now_t = time.monotonic()
-                    with _aec_lock:
-                        _aec_buf.append((_now_t, chunk))
-                        while _aec_buf and _now_t - _aec_buf[0][0] > _AEC_BUF_SEC:
-                            _aec_buf.popleft()
+            # Update AEC reference buffer
+            if enable_mic:
+                _now_t = time.monotonic()
+                with _aec_lock:
+                    _aec_buf.append((_now_t, chunk))
+                    while _aec_buf and _now_t - _aec_buf[0][0] > _AEC_BUF_SEC:
+                        _aec_buf.popleft()
 
-                # Feed to VAD
-                seg = vad.feed(chunk)
-                if seg:
-                    _seg_queue.put((seg, "system"))
-            else:
-                # local_mic mode: no system audio; just yield the thread
-                time.sleep(0.02)
+            # Feed to VAD
+            seg = vad.feed(chunk)
+            if seg:
+                _seg_queue.put((seg, "system"))
 
     except KeyboardInterrupt:
         pass
