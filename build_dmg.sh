@@ -15,7 +15,7 @@ SOURCE_FILES=(
     i18n.py log_util.py summarizer.py device_utils.py
     macos_audio.py mic_recorder.py transcriber.py
     subtitle_window.py widgets_qt.py debug_modules.py
-    config_default.ini vocabulary.txt
+    config_default.ini
     requirements.txt requirements_mac.txt
     setup_mac.sh
 )
