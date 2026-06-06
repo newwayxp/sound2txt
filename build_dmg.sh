@@ -24,6 +24,13 @@ echo "=== Sound2Text – macOS DMG Builder ==="
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
+# ── 0. Generate app icon ──────────────────────────────────────────────────────
+ICON_PATH="$SCRIPT_DIR/app_icon.icns"
+if [ ! -f "$ICON_PATH" ]; then
+    echo "Generating app icon..."
+    python3 "$SCRIPT_DIR/gen_icon.py"
+fi
+
 # ── 1. Sound2Text.app (launcher placed in /Applications after install) ────────
 LAUNCH_APP="$BUILD_DIR/Sound2Text.app"
 mkdir -p "$LAUNCH_APP/Contents/MacOS"
@@ -51,6 +58,8 @@ cd "$INSTALL_DIR"
 exec "$PY" ui_qt.py
 EOF
 chmod +x "$LAUNCH_APP/Contents/MacOS/Sound2Text"
+mkdir -p "$LAUNCH_APP/Contents/Resources"
+[ -f "$ICON_PATH" ] && cp "$ICON_PATH" "$LAUNCH_APP/Contents/Resources/app_icon.icns"
 
 cat > "$LAUNCH_APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -60,6 +69,7 @@ cat > "$LAUNCH_APP/Contents/Info.plist" <<'EOF'
   <key>CFBundleIdentifier</key>     <string>com.sound2text.app</string>
   <key>CFBundleName</key>           <string>Sound2Text</string>
   <key>CFBundleDisplayName</key>    <string>Sound2Text</string>
+  <key>CFBundleIconFile</key>       <string>app_icon</string>
   <key>CFBundleVersion</key>        <string>1.0</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundlePackageType</key>    <string>APPL</string>
