@@ -158,6 +158,8 @@ class Presenter:
         if extra:
             self._env["PATH"] = extra + os.pathsep + self._env.get("PATH", "")
 
+        self._ensure_dirs()
+
     # ── view wiring ───────────────────────────────────────────────────────────
 
     def set_view(self, view: ViewProtocol) -> None:
@@ -253,6 +255,27 @@ class Presenter:
     def apply_startup_defaults(self, log: bool = True) -> None:
         """Called from view's _apply_initial_ui_state after reading config."""
         self._apply_cpu_only_defaults(log=log)
+        self._ensure_dirs()
+
+    def _ensure_dirs(self) -> None:
+        """Create all configured output directories if they don't exist."""
+        _base = os.path.join(os.path.expanduser("~"), "Documents", "Sound2Text")
+        dirs = [
+            self._config.get("paths", "audio_dir",
+                             fallback=os.path.join(_base, "audio")),
+            self._config.get("paths", "transcript_dir",
+                             fallback=os.path.join(_base, "transcript")),
+            self._config.get("summary", "corrected_dir",
+                             fallback=os.path.join(_base, "corrected")),
+            self._config.get("summary", "summary_dir",
+                             fallback=os.path.join(_base, "memo")),
+        ]
+        for d in dirs:
+            if d:
+                try:
+                    os.makedirs(d, exist_ok=True)
+                except Exception:
+                    pass
 
     # ── config helpers ────────────────────────────────────────────────────────
 
@@ -451,7 +474,10 @@ class Presenter:
                 # ※ recorder.py と同じ select_active_device で取得するのが正確だが
                 #    ここでは raw を保存して後で正確に変換できるようにする
                 from device_utils import select_active_device
-                import pyaudiowpatch as _pa
+                if sys.platform == "win32":
+                    import pyaudiowpatch as _pa
+                else:
+                    import pyaudio as _pa
                 _audio = _pa.PyAudio()
                 try:
                     _, dev_info = select_active_device(_audio)
@@ -560,7 +586,10 @@ class Presenter:
         pa     = None
         try:
             import numpy as np
-            import pyaudiowpatch as pyaudio
+            if sys.platform == "win32":
+                import pyaudiowpatch as pyaudio
+            else:
+                import pyaudio
             pa = pyaudio.PyAudio()
             try:
                 info = pa.get_default_input_device_info()
@@ -663,6 +692,18 @@ class Presenter:
         # pipeline.py が音声取得・VAD・Whisper・翻訳・音声保存・transcript書き込みを担当
         self._rec_proc = None
 
+        # macOS: switch system output to Multi-Output Device (speakers + BlackHole)
+        if sys.platform == "darwin":
+            try:
+                import macos_audio as _mac_audio
+                _mac_audio.activate_loopback(
+                    log_fn=self._view.put_log if self._view else None
+                )
+            except Exception as _e:
+                self._view and self._view.put_log(
+                    f"[AudioRoute] 自動ルーティングをスキップ: {_e}"
+                )
+
         # session シグナルを書く → pipeline がこれを検知してセッション開始
         with open(self._PIPELINE_SESSION, "w") as f:
             f.write("1")
@@ -695,6 +736,16 @@ class Presenter:
         if not os.path.exists(self._PIPELINE_SUBTITLE):
             with open(self._PIPELINE_STOP, "w") as f:
                 f.write("1")
+
+        # macOS: restore original system output immediately on stop
+        if sys.platform == "darwin":
+            try:
+                import macos_audio as _mac_audio
+                _mac_audio.restore_loopback(
+                    log_fn=self._view.put_log if self._view else None
+                )
+            except Exception:
+                pass
 
         # session 完了を待ってから纪要生成
         self._fw_stop.set()
@@ -1036,6 +1087,7 @@ class Presenter:
         _tr_done_re  = re.compile(r"done[^\(]*\((loopback|mic)\):\s+(\S+\.wav)")
         _rec_sec  = self._config.getint("recording", "record_sec", fallback=30)
         audio_dir = self._config.get("paths", "audio_dir", fallback="")
+        # Primary source for dashboard timers (avoids double-counting).
         primary_audio_prefix = "[Rec]"
         primary_trans_source = "loopback"
 

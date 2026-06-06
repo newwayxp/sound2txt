@@ -330,7 +330,8 @@ def run():
         from faster_whisper import WhisperModel
     except (OSError, ImportError) as e:
         sys_error(f"faster-whisper load failed: {e}")
-        sys_error("Run setup.bat to repair the installation")
+        setup_hint = "setup.bat" if sys.platform == "win32" else "setup_mac.sh"
+        sys_error(f"Run {setup_hint} to repair the installation")
         return
 
     # ── Device detection ──────────────────────────────────────────────────────
@@ -402,7 +403,7 @@ def run():
              f"vad={_transcribe_kwargs['vad_parameters']}")
 
     # ── Vocabulary ────────────────────────────────────────────────────────────
-    vocab_file = cfg.get("paths", "vocab_file", fallback="").strip()
+    vocab_file = os.path.expanduser(cfg.get("paths", "vocab_file", fallback="").strip())
     vocab: list[str] = []
     if vocab_file and os.path.exists(vocab_file):
         with open(vocab_file, encoding="utf-8") as f:
@@ -446,12 +447,13 @@ def run():
     raw_fh = None
     session_ts: str | None = None
 
-    transcript_dir = cfg.get("paths", "transcript_dir",
-                             fallback=r"C:\Users\Public\Sound2Text\transcript")
-    corrected_dir  = cfg.get("summary", "corrected_dir",
-                             fallback=r"C:\Users\Public\Sound2Text\corrected")
-    audio_dir = cfg.get("paths", "audio_dir",
-                        fallback=r"C:\Users\Public\Sound2Text\audio")
+    _default_base  = os.path.join(os.path.expanduser("~"), "Documents", "Sound2Text")
+    transcript_dir = os.path.expanduser(cfg.get("paths", "transcript_dir",
+                             fallback=os.path.join(_default_base, "transcript")))
+    corrected_dir  = os.path.expanduser(cfg.get("summary", "corrected_dir",
+                             fallback=os.path.join(_default_base, "corrected")))
+    audio_dir = os.path.expanduser(cfg.get("paths", "audio_dir",
+                        fallback=os.path.join(_default_base, "audio")))
 
     def _open_session():
         nonlocal transcript_file, corrected_file, raw_file_path, raw_fh, session_ts
@@ -605,6 +607,8 @@ def run():
     # ── Async transcription thread ────────────────────────────────────────────
     _seg_queue: queue.Queue = queue.Queue()
 
+    _lang_detect_attempts = [0]   # segments tried while session_lang is still None
+
     def _transcribe_loop():
         """Background thread: transcribes audio segments in order."""
         nonlocal session_lang, whisper, _current_model_lang, device, compute_type, _transcribe_kwargs, corrected_file
@@ -668,14 +672,31 @@ def run():
             tr_info(f"Transcribed in {elapsed:.1f}s: lang={info.language} "
                     f"({info.language_probability:.0%}) segments={len(seg_list)}")
 
-            # Language detection on first segment
+            # Language detection: lock in when confident, fall back after retries
             if not session_lang:
                 try:
                     from transcriber import LANG_ALIAS
                     lang = LANG_ALIAS.get(info.language, info.language)
-                    if lang in {"zh", "ja", "en"} and info.language_probability >= 0.5:
+                    _lang_detect_attempts[0] += 1
+
+                    # CJK languages are acoustically distinct — accept at lower threshold
+                    threshold = 0.3 if lang in {"zh", "ja"} else 0.5
+                    locked = lang in {"zh", "ja", "en"} and info.language_probability >= threshold
+
+                    # After 3 uncertain segments, fall back to UI language
+                    if not locked and _lang_detect_attempts[0] >= 3:
+                        from i18n import _LANG as _ui_lang
+                        if _ui_lang in {"zh", "ja", "en"}:
+                            lang = _ui_lang
+                        elif lang not in {"zh", "ja", "en"}:
+                            lang = "en"
+                        tr_info(f"Language uncertain after {_lang_detect_attempts[0]} attempts "
+                                f"— using {'UI language' if _ui_lang in {'zh','ja','en'} else 'fallback'}: {lang}")
+                        locked = True
+
+                    if locked:
                         session_lang = lang
-                        tr_info(f"Language detected: {session_lang}")
+                        tr_info(f"Language locked: {session_lang} ({info.language_probability:.0%})")
                         with open(LANG_FILE, "w", encoding="utf-8") as f:
                             f.write(session_lang)
                         if _current_model_lang != session_lang:
@@ -733,15 +754,19 @@ def run():
     _worker.start()
 
     # ── Audio device setup ────────────────────────────────────────────────────
-    import pyaudiowpatch as pyaudio
-    from device_utils import select_active_device
+    if sys.platform == "win32":
+        import pyaudiowpatch as pyaudio
+    else:
+        import pyaudio
+
     pa = pyaudio.PyAudio()
+
+    from device_utils import select_active_device
     device_index, dev_info = select_active_device(pa)
     channels    = dev_info["maxInputChannels"]
     sample_rate = int(dev_info["defaultSampleRate"])
     sample_size = pa.get_sample_size(pyaudio.paInt16)
     sys_info(f"audio device: {dev_info['name']}  rate={sample_rate}")
-
     stream = pa.open(
         format=pyaudio.paInt16, channels=channels,
         rate=sample_rate, frames_per_buffer=CHUNK_SIZE,
@@ -800,7 +825,10 @@ def run():
             sys_info(f"Mic pipeline: {_mic_info['name']}  rate={_mic_rate}  ch={_mic_ch}")
 
             def _mic_run():
-                import pyaudiowpatch as _paw
+                if sys.platform == "win32":
+                    import pyaudiowpatch as _paw
+                else:
+                    import pyaudio as _paw
                 _pa2 = _paw.PyAudio()
                 _prev_onair = False
                 try:
@@ -965,7 +993,6 @@ def run():
                 session_was_active = False
                 continue
 
-            # Read audio chunk
             raw = stream.read(CHUNK_SIZE, exception_on_overflow=False)
             chunk = _to_mono16k(raw)
 
@@ -977,7 +1004,7 @@ def run():
                 except Exception:
                     pass
 
-            # Update AEC reference buffer with latest system audio (for echo detection in mic thread)
+            # Update AEC reference buffer
             if enable_mic:
                 _now_t = time.monotonic()
                 with _aec_lock:
@@ -1028,8 +1055,9 @@ def run():
                 tr_info("Waiting for MP3 conversion to complete...")
                 _ct.join(timeout=120)
 
-        stream.stop_stream()
-        stream.close()
+        if stream is not None:
+            stream.stop_stream()
+            stream.close()
         pa.terminate()
         sys_info("pipeline stopped")
 

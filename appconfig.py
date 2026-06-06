@@ -152,7 +152,10 @@ class AppConfig:
     # ── read helpers ──────────────────────────────────────────────────────────
 
     def get(self, section: str, key: str, fallback: str = "") -> str:
-        return self._cfg.get(section, key, fallback=fallback)
+        val = self._cfg.get(section, key, fallback=fallback)
+        if val and val.startswith("~"):
+            val = os.path.expanduser(val)
+        return val
 
     def getboolean(self, section: str, key: str, fallback: bool = False) -> bool:
         return self._cfg.getboolean(section, key, fallback=fallback)
