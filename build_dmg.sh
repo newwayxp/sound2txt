@@ -212,6 +212,7 @@ rm -f "$SETUP_SCRIPT" "$DONE_FILE" "${DONE_FILE}.err"
 [[ "$OPEN_BTN" == *"Launch"* ]] && open "$APP_DEST"
 INSTALLER_EOF
 chmod +x "$INST_APP/Contents/MacOS/installer"
+[ -f "$ICON_PATH" ] && cp "$ICON_PATH" "$INST_RES/app_icon.icns"
 
 cat > "$INST_APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -221,6 +222,7 @@ cat > "$INST_APP/Contents/Info.plist" <<'EOF'
   <key>CFBundleIdentifier</key>     <string>com.sound2text.installer</string>
   <key>CFBundleName</key>           <string>Sound2Text Installer</string>
   <key>CFBundleDisplayName</key>    <string>Sound2Text Installer</string>
+  <key>CFBundleIconFile</key>       <string>app_icon</string>
   <key>CFBundleVersion</key>        <string>1.0</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundlePackageType</key>    <string>APPL</string>
