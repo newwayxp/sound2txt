@@ -330,7 +330,8 @@ def run():
         from faster_whisper import WhisperModel
     except (OSError, ImportError) as e:
         sys_error(f"faster-whisper load failed: {e}")
-        sys_error("Run setup.bat to repair the installation")
+        setup_hint = "setup.bat" if sys.platform == "win32" else "setup_mac.sh"
+        sys_error(f"Run {setup_hint} to repair the installation")
         return
 
     # ── Device detection ──────────────────────────────────────────────────────
@@ -446,12 +447,13 @@ def run():
     raw_fh = None
     session_ts: str | None = None
 
+    _default_base  = os.path.join(os.path.expanduser("~"), "Documents", "Sound2Text")
     transcript_dir = cfg.get("paths", "transcript_dir",
-                             fallback=r"C:\Users\Public\Sound2Text\transcript")
+                             fallback=os.path.join(_default_base, "transcript"))
     corrected_dir  = cfg.get("summary", "corrected_dir",
-                             fallback=r"C:\Users\Public\Sound2Text\corrected")
+                             fallback=os.path.join(_default_base, "corrected"))
     audio_dir = cfg.get("paths", "audio_dir",
-                        fallback=r"C:\Users\Public\Sound2Text\audio")
+                        fallback=os.path.join(_default_base, "audio"))
 
     def _open_session():
         nonlocal transcript_file, corrected_file, raw_file_path, raw_fh, session_ts
@@ -733,7 +735,10 @@ def run():
     _worker.start()
 
     # ── Audio device setup ────────────────────────────────────────────────────
-    import pyaudiowpatch as pyaudio
+    if sys.platform == "win32":
+        import pyaudiowpatch as pyaudio
+    else:
+        import pyaudio
     from device_utils import select_active_device
     pa = pyaudio.PyAudio()
     device_index, dev_info = select_active_device(pa)

@@ -3,7 +3,11 @@ Microphone recording process.
 Captures local microphone input and saves to mic_dir as mic_TIMESTAMP.wav.
 Uses the same stop-signal mechanism as recorder.py.
 """
-import pyaudiowpatch as pyaudio
+import sys
+if sys.platform == "win32":
+    import pyaudiowpatch as pyaudio
+else:
+    import pyaudio
 import wave
 import os
 import time
@@ -67,7 +71,8 @@ def main():
         print("[MicRecorder] Mic recording disabled in config.")
         return
 
-    mic_dir        = cfg.get("paths", "mic_dir", fallback=r"C:\Users\Public\Sound2Text\mic")
+    _default_mic   = os.path.join(os.path.expanduser("~"), "Documents", "Sound2Text", "mic")
+    mic_dir        = cfg.get("paths", "mic_dir", fallback=_default_mic)
     mic_record_sec = cfg.getint("recording", "record_sec", fallback=30)
     os.makedirs(mic_dir, exist_ok=True)
     os.makedirs(os.path.join(mic_dir, "done"), exist_ok=True)

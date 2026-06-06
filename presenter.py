@@ -451,7 +451,10 @@ class Presenter:
                 # ※ recorder.py と同じ select_active_device で取得するのが正確だが
                 #    ここでは raw を保存して後で正確に変換できるようにする
                 from device_utils import select_active_device
-                import pyaudiowpatch as _pa
+                if sys.platform == "win32":
+                    import pyaudiowpatch as _pa
+                else:
+                    import pyaudio as _pa
                 _audio = _pa.PyAudio()
                 try:
                     _, dev_info = select_active_device(_audio)
@@ -560,7 +563,10 @@ class Presenter:
         pa     = None
         try:
             import numpy as np
-            import pyaudiowpatch as pyaudio
+            if sys.platform == "win32":
+                import pyaudiowpatch as pyaudio
+            else:
+                import pyaudio
             pa = pyaudio.PyAudio()
             try:
                 info = pa.get_default_input_device_info()
@@ -1036,8 +1042,13 @@ class Presenter:
         _tr_done_re  = re.compile(r"done[^\(]*\((loopback|mic)\):\s+(\S+\.wav)")
         _rec_sec  = self._config.getint("recording", "record_sec", fallback=30)
         audio_dir = self._config.get("paths", "audio_dir", fallback="")
-        primary_audio_prefix = "[Rec]"
-        primary_trans_source = "loopback"
+        rec_mode  = self._config.get("recording", "mode",  fallback="meeting").strip().lower()
+
+        # Primary source for dashboard timers (avoids double-counting).
+        # In meeting mode the loopback file covers the full session duration;
+        # in local_mic mode only mic files exist.
+        primary_audio_prefix = "[Rec]" if rec_mode == "meeting" else "[Mic]"
+        primary_trans_source = "loopback" if rec_mode == "meeting" else "mic"
 
         # Pipeline dashboard patterns
         _pl_vad_turn  = re.compile(r"VAD turn-end.*in ([\d.]+)s window")

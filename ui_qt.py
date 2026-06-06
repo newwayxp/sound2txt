@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 _STYLESHEET = """
 /* ── Base ── */
 QWidget {
-    font-family: "Segoe UI", "Yu Gothic UI", "PingFang SC", sans-serif;
+    font-family: __FONT_FAMILY__;
     font-size: 13px;
 }
 
@@ -890,7 +890,7 @@ class App(QMainWindow):
         self._transcript_view.setReadOnly(True)
         self._transcript_view.setPlaceholderText(t("transcript_hint"))
         self._transcript_view.setStyleSheet(
-            "QTextEdit { font-family: 'Meiryo UI', 'Microsoft YaHei', sans-serif;"
+            "QTextEdit { font-family: 'Hiragino Sans', 'PingFang SC', 'Meiryo UI', 'Microsoft YaHei';"
             "  font-size: 13px; line-height: 1.6; }"
         )
         vbox.addWidget(self._transcript_view)
@@ -908,7 +908,7 @@ class App(QMainWindow):
         self._minutes_view.setReadOnly(True)
         self._minutes_view.setPlaceholderText(t("minutes_hint"))
         self._minutes_view.setStyleSheet(
-            "QTextEdit { font-family: 'Meiryo UI', 'Microsoft YaHei', sans-serif;"
+            "QTextEdit { font-family: 'Hiragino Sans', 'PingFang SC', 'Meiryo UI', 'Microsoft YaHei';"
             "  font-size: 13px; line-height: 1.6; }"
         )
         vbox.addWidget(self._minutes_view)
@@ -1031,7 +1031,12 @@ if __name__ == "__main__":
     from presenter import Presenter
 
     app_qt = QApplication(sys.argv)
-    app_qt.setStyleSheet(_STYLESHEET)
+    _font_family = (
+        '"SF Pro Text", "Helvetica Neue", "Hiragino Sans", "PingFang SC"'
+        if sys.platform == "darwin" else
+        '"Segoe UI", "Yu Gothic UI", "PingFang SC"'
+    )
+    app_qt.setStyleSheet(_STYLESHEET.replace("__FONT_FAMILY__", _font_family))
 
     config    = AppConfig()
     presenter = Presenter(config)
