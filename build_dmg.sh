@@ -70,8 +70,8 @@ cat > "$LAUNCH_APP/Contents/Info.plist" <<'EOF'
   <key>CFBundleName</key>           <string>Sound2Text</string>
   <key>CFBundleDisplayName</key>    <string>Sound2Text</string>
   <key>CFBundleIconFile</key>       <string>app_icon</string>
-  <key>CFBundleVersion</key>        <string>1.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key>        <string>1.5.0</string>
+  <key>CFBundleShortVersionString</key><string>1.5.0</string>
   <key>CFBundlePackageType</key>    <string>APPL</string>
   <key>LSMinimumSystemVersion</key> <string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -223,8 +223,8 @@ cat > "$INST_APP/Contents/Info.plist" <<'EOF'
   <key>CFBundleName</key>           <string>Sound2Text Installer</string>
   <key>CFBundleDisplayName</key>    <string>Sound2Text Installer</string>
   <key>CFBundleIconFile</key>       <string>app_icon</string>
-  <key>CFBundleVersion</key>        <string>1.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key>        <string>1.5.0</string>
+  <key>CFBundleShortVersionString</key><string>1.5.0</string>
   <key>CFBundlePackageType</key>    <string>APPL</string>
   <key>LSMinimumSystemVersion</key> <string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
