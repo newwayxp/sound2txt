@@ -32,6 +32,7 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#AppName}
+SetupIconFile=app_icon.ico
 
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"
@@ -61,11 +62,12 @@ Source: "debug_modules.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "requirements.txt";   DestDir: "{app}"; Flags: ignoreversion
 Source: "setup.bat";          DestDir: "{app}"; Flags: ignoreversion
 Source: "config_default.ini"; DestDir: "{app}"; DestName: "config.ini"; Flags: ignoreversion onlyifdoesntexist
+Source: "app_icon.ico";       DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#AppName}\{#AppName}";                          Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"
+Name: "{autoprograms}\{#AppName}\{#AppName}";                          Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"; IconFilename: "{app}\app_icon.ico"
 Name: "{autoprograms}\{#AppName}\{cm:UninstallProgram,{#AppName}}";    Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}";                                       Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}";                                       Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"; Tasks: desktopicon; IconFilename: "{app}\app_icon.ico"
 
 [Run]
 ; Step 1: Upgrade pip

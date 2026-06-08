@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-gen_icon.py – Generate app_icon.icns for Sound2Text macOS .app bundles.
+gen_icon.py – Generate app icons for Sound2Text (macOS .icns + Windows .ico).
 
 Design: 7-bar audio waveform on a blue gradient rounded-square background.
 Run: python3 gen_icon.py
-Output: app_icon.icns (same directory as this script)
+Output: app_icon.icns (macOS, requires iconutil) and app_icon.ico (Windows)
 """
 import os, sys, shutil, subprocess
 import numpy as np
 from PIL import Image, ImageDraw
 
-_HERE   = os.path.dirname(os.path.abspath(__file__))
-_OUTPUT = os.path.join(_HERE, "app_icon.icns")
+_HERE     = os.path.dirname(os.path.abspath(__file__))
+_OUTPUT   = os.path.join(_HERE, "app_icon.icns")
+_OUTPUT_ICO = os.path.join(_HERE, "app_icon.ico")
 
 
 def _render(size: int) -> Image.Image:
@@ -96,8 +97,22 @@ def build_icns(out_path: str = _OUTPUT) -> str:
     return out_path
 
 
+def build_ico(out_path: str = _OUTPUT_ICO) -> str:
+    """Generate app_icon.ico (multi-resolution) for the Windows installer."""
+    sizes = [16, 32, 48, 64, 128, 256]
+    base = _render(256)
+    base.save(out_path, format="ICO", sizes=[(s, s) for s in sizes])
+    return out_path
+
+
 if __name__ == "__main__":
-    print("Generating Sound2Text icon …")
-    path = build_icns()
-    size = os.path.getsize(path)
-    print(f"✅  {path}  ({size // 1024} KB)")
+    print("Generating Sound2Text icons …")
+
+    ico_path = build_ico()
+    print(f"✅  {ico_path}  ({os.path.getsize(ico_path) // 1024} KB)")
+
+    if shutil.which("iconutil"):
+        icns_path = build_icns()
+        print(f"✅  {icns_path}  ({os.path.getsize(icns_path) // 1024} KB)")
+    else:
+        print("ℹ️  Skipping .icns (iconutil not available — macOS only)")
