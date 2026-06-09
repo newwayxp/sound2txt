@@ -347,9 +347,6 @@ def run():
     compute_type = "float16" if device == "cuda" else "int8"
 
     model_size = cfg.get("recording", "model_size", fallback="small").strip()
-    if model_size == "large-v3" and device == "cpu":
-        model_size = "medium"
-        sys_info("large-v3 is not recommended on CPU, switching to medium")
 
     # ── Session language ──────────────────────────────────────────────────────
     cfg_lang = cfg.get("recording", "language", fallback="auto").strip().lower()
@@ -925,7 +922,9 @@ def run():
 
             # Session start
             if session_active and not session_was_active:
-                # Re-read language from config.ini (may have changed since pipeline started)
+                # Re-read config.ini (language / model_size / device may have been
+                # changed in the settings UI since the pipeline started) so the new
+                # settings take effect on this recording without an app restart.
                 _sess_cfg = configparser.ConfigParser()
                 _sess_cfg.read(os.path.join(_BASE, "config.ini"), encoding="utf-8")
                 _sess_lang_raw = _sess_cfg.get("recording", "language", fallback="auto").strip().lower()
@@ -940,13 +939,42 @@ def run():
                     except Exception:
                         pass
 
-                if _sess_lang != session_lang:
-                    sys_info(f"Language: {session_lang or 'auto'} → {_sess_lang or 'auto'}")
+                # ── Re-read model size / device (user-configurable, no limit) ──
+                _new_device_cfg = _sess_cfg.get("recording", "device", fallback="auto").strip().lower()
+                if _new_device_cfg == "auto":
+                    try:
+                        import ctranslate2
+                        _new_device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+                    except Exception:
+                        _new_device = "cpu"
+                else:
+                    _new_device = _new_device_cfg
+                _new_model_size = _sess_cfg.get("recording", "model_size", fallback="small").strip()
+
+                _settings_changed = (_new_model_size != model_size) or (_new_device != device)
+                if _settings_changed:
+                    sys_info(f"Model/device changed: {model_size}/{device} → "
+                             f"{_new_model_size}/{_new_device}")
+                    model_size   = _new_model_size
+                    device       = _new_device
+                    compute_type = "float16" if device == "cuda" else "int8"
+                    # Rebuild per-language model map so the new base model_size is
+                    # used as the fallback for languages without a dedicated model.
+                    _LANG_MODELS = {
+                        "ja": _sess_cfg.get("models", "ja", fallback="kotoba-whisper-v2.0-ct2"),
+                        "zh": _sess_cfg.get("models", "zh", fallback=model_size),
+                        "en": _sess_cfg.get("models", "en", fallback=model_size),
+                    }
+
+                # Reload the model if the language, model size, or device changed.
+                if _sess_lang != session_lang or _settings_changed:
+                    if _sess_lang != session_lang:
+                        sys_info(f"Language: {session_lang or 'auto'} → {_sess_lang or 'auto'}")
                     session_lang = _sess_lang
                     _new_mp = _resolve_model(session_lang)
-                    if _new_mp != model_path:
+                    if _new_mp != model_path or _settings_changed:
                         try:
-                            sys_info(f"Reloading model for language change: {_new_mp}")
+                            sys_info(f"Reloading model: {_new_mp} (device={device})")
                             whisper = WhisperModel(_new_mp, device=device, compute_type=compute_type)
                             model_path = _new_mp
                             _transcribe_kwargs = _make_transcribe_kwargs(model_path)

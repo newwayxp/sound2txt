@@ -334,9 +334,10 @@ class App(QMainWindow):
         self.close()
 
     def lock_to_cpu_tiny(self) -> None:
+        # CUDA needs a GPU → lock the device to CPU when none is available.
+        # The model selection is intentionally NOT restricted.
         if hasattr(self, "_rb_device_cpu"):
             self._rb_device_cpu.setChecked(True)
-        # CPU では medium/large-v3 を無効化、small はそのまま使用可
         for w in self._gpu_locked_buttons:
             w.setEnabled(False)
 
@@ -403,11 +404,10 @@ class App(QMainWindow):
         elif hasattr(self, "_rb_device_auto"):
             self._rb_device_auto.setChecked(True)
 
-        # Model radio
+        # Model selection
         model = cfg.get("recording", "model_size", fallback="small")
-        rb_model = getattr(self, f"_rb_model_{model.replace('-', '_')}", None)
-        if rb_model:
-            rb_model.setChecked(True)
+        if hasattr(self, "_model_combo"):
+            self._model_combo.setCurrentText(model)
 
         # Quick lang combo
         if hasattr(self, "_quick_lang_combo"):
@@ -659,32 +659,18 @@ class App(QMainWindow):
             self._rb_device_auto.setChecked(True)
         row += 1
 
-        # Model radio buttons
+        # Model selection — editable so the user can pick any faster-whisper
+        # model name or a local model directory under models/. No GPU/CPU
+        # restriction; the choice takes effect on the next recording.
         grid.addWidget(QLabel(t("model_label")), row, 0, Qt.AlignmentFlag.AlignRight)
-        model_widget = QWidget()
-        model_hbox   = QHBoxLayout(model_widget)
-        model_hbox.setContentsMargins(0, 0, 0, 0)
-
-        model_group = QButtonGroup(w)
-        cur_model   = cfg.get("recording", "model_size", fallback="small")
-
-        model_rbs = {}
-        for val in ("tiny", "small", "medium", "large-v3"):
-            rb = QRadioButton(val)
-            model_group.addButton(rb)
-            model_hbox.addWidget(rb)
-            safe_key = val.replace("-", "_")
-            setattr(self, f"_rb_model_{safe_key}", rb)
-            model_rbs[val] = rb
-            # CPU でも tiny / small / medium は使用可能 → large-v3 のみロック
-            if val == "large-v3":
-                self._gpu_locked_buttons.append(rb)
-
-        model_hbox.addStretch()
-        grid.addWidget(model_widget, row, 1)
-
-        rb_cur_model = model_rbs.get(cur_model, model_rbs["small"])
-        rb_cur_model.setChecked(True)
+        self._model_combo = QComboBox()
+        self._model_combo.setEditable(True)
+        self._model_combo.addItems(
+            ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+        )
+        cur_model = cfg.get("recording", "model_size", fallback="small")
+        self._model_combo.setCurrentText(cur_model)
+        grid.addWidget(self._model_combo, row, 1)
         row += 1
 
         # Save button
@@ -699,19 +685,17 @@ class App(QMainWindow):
             return "auto"
 
         def _get_model():
-            for val, rb in model_rbs.items():
-                if rb.isChecked():
-                    return val
-            return "small"
+            text = self._model_combo.currentText().strip()
+            return text or "small"
 
         def _save():
             device = _get_device()
             model  = _get_model()
+            # CUDA needs a GPU, so fall back to CPU when none is available — but
+            # never override the user's model choice.
             if not self._presenter.cuda_available:
                 device = "cpu"
-                model  = "tiny"
                 self._rb_device_cpu.setChecked(True)
-                self._rb_model_tiny.setChecked(True)
             updates = {
                 ("recording", "device"):     device,
                 ("recording", "model_size"): model,

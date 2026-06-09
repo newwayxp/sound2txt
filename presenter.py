@@ -230,13 +230,11 @@ class Presenter:
     # ── CPU-only defaults ─────────────────────────────────────────────────────
 
     def _force_cpu_tiny_config(self) -> bool:
-        """Force config to cpu/tiny if not already; returns True if changed."""
+        """Force device to cpu when CUDA is unavailable; returns True if changed.
+        The user's model_size choice is left untouched (no restriction)."""
         changed = False
         if self._config.get("recording", "device", fallback="auto") != "cpu":
             self._config.set("recording", "device", "cpu")
-            changed = True
-        if self._config.get("recording", "model_size", fallback="small") != "tiny":
-            self._config.set("recording", "model_size", "tiny")
             changed = True
         if changed:
             self._config.save()
