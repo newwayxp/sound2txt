@@ -45,8 +45,7 @@ from appconfig import (
     START_FILE,
     STATE_FILE,
     STOP_SIGNAL,
-    _CUDA_AVAILABLE,
-    _CUDA_LIBS_OK,
+    cuda_status,
     _setup_cuda_dlls,
 )
 
@@ -79,7 +78,7 @@ class ViewProtocol:
     def set_window_title(self, title: str): ...
     def get_window_title(self) -> str: ...
     def destroy(self): ...
-    def lock_to_cpu_tiny(self): ...
+    def lock_to_cpu(self): ...
     def unlock_gpu_buttons(self): ...
     def set_cuda_btn_text(self, text: str): ...
     def set_cuda_btn_state(self, enabled: bool): ...
@@ -141,7 +140,9 @@ class Presenter:
         self._OLLAMA_STATE = "stopped"   # "stopped" | "starting" | "running"
 
         # ── subprocess env ────────────────────────────────────────────────────
-        _setup_cuda_dlls()
+        # NOTE: _setup_cuda_dlls() and CUDA detection are deferred to warm_up(),
+        # which runs in a background thread after the window is shown, so the UI
+        # appears immediately instead of blocking on the slow CUDA probe.
         self._env = os.environ.copy()
         self._env["PYTHONUTF8"]       = "1"
         self._env["PYTHONUNBUFFERED"] = "1"
@@ -175,10 +176,18 @@ class Presenter:
 
     # ── initialisation ────────────────────────────────────────────────────────
 
+    def warm_up(self) -> None:
+        """Heavy, view-free startup work that is safe to run off the main thread:
+        set up the CUDA DLL search path and probe for a GPU (result cached).
+        Run this from a background thread so the window can appear first."""
+        _setup_cuda_dlls()
+        cuda_status()
+
     def initialize(self) -> None:
         """
-        Called once after the view is set.
-        Runs CUDA checks, logs startup info, and applies defaults.
+        Called once after warm_up() completes, on the Qt main thread.
+        Reads the cached CUDA result, logs startup info, and applies defaults.
+        (Must run on the main thread — it updates view widgets.)
         """
         self._auto_select_backend()
         self._log_startup_info()
@@ -187,10 +196,10 @@ class Presenter:
     # ── CUDA helpers ──────────────────────────────────────────────────────────
 
     def _cuda_available(self) -> bool:
-        return _CUDA_AVAILABLE
+        return cuda_status()[0]
 
     def _cuda_libs_ok(self) -> bool:
-        return _CUDA_LIBS_OK
+        return cuda_status()[1]
 
     # ── backend auto-select ───────────────────────────────────────────────────
 
@@ -229,7 +238,7 @@ class Presenter:
 
     # ── CPU-only defaults ─────────────────────────────────────────────────────
 
-    def _force_cpu_tiny_config(self) -> bool:
+    def _force_cpu_config(self) -> bool:
         """Force device to cpu when CUDA is unavailable; returns True if changed.
         The user's model_size choice is left untouched (no restriction)."""
         changed = False
@@ -243,9 +252,9 @@ class Presenter:
     def _apply_cpu_only_defaults(self, log: bool = False) -> None:
         if self._cuda_available():
             return
-        changed = self._force_cpu_tiny_config()
+        changed = self._force_cpu_config()
         if self._view is not None:
-            self._view.lock_to_cpu_tiny()
+            self._view.lock_to_cpu()
             if log or changed:
                 from i18n import t
                 self._view.put_log(f"[UI] {t('gpu_unavailable')}")
@@ -334,7 +343,8 @@ class Presenter:
     @property
     def cuda_available(self) -> bool:
         """Whether CUDA GPU is usable (view uses this instead of importing appconfig)."""
-        return _CUDA_AVAILABLE and _CUDA_LIBS_OK
+        avail, libs_ok = cuda_status()
+        return avail and libs_ok
 
     def ensure_ollama_running(self) -> None:
         """Public: start Ollama if mode is ollama and not already running."""
@@ -634,9 +644,11 @@ class Presenter:
         if self._view is None:
             return
 
-        # Clean up signal files from any previous session
+        # Clean up signal files from any previous session.
+        # Include .pipeline_stop so a lingering stop signal (from a previous
+        # stop/close or crash) can never make the reused pipeline exit on start.
         for path in (STOP_SIGNAL, STATE_FILE, LANG_FILE,
-                     _MIC_ONAIR,
+                     _MIC_ONAIR, self._PIPELINE_STOP,
                      os.path.join(BASE, ".last_corrected")):
             try:
                 os.remove(path)
@@ -725,15 +737,14 @@ class Presenter:
             from i18n import t
             self._view.put_log(t("stopping"))
 
-        # pipeline の session シグナルを削除 → pipeline が終了処理を行う
+        # pipeline の session シグナルを削除 → pipeline がセッション終了処理を行い、
+        # アイドル状態に戻って次のセッション開始を待つ。
+        # pipeline プロセスはここでは停止しない（長寿命：次回 start() で再利用し、
+        # セッション開始時に config / モデルを再読込する）。停止はアプリ終了時のみ。
         try:
             os.remove(self._PIPELINE_SESSION)
         except FileNotFoundError:
             pass
-        # subtitle が非アクティブなら pipeline を停止
-        if not os.path.exists(self._PIPELINE_SUBTITLE):
-            with open(self._PIPELINE_STOP, "w") as f:
-                f.write("1")
 
         # macOS: restore original system output immediately on stop
         if sys.platform == "darwin":
@@ -1046,6 +1057,8 @@ class Presenter:
                 self._rec_proc.terminate()
             if self._tr_proc and self._tr_proc.poll() is None:
                 self._tr_proc.terminate()
+        # Shut down the long-lived pipeline process (only stopped on app close).
+        self._stop_pipeline()
         self._stop_ollama()
         if self._view:
             self._view.schedule(self._view.destroy)
@@ -1055,7 +1068,8 @@ class Presenter:
         self._force_quit()
 
     def _force_quit(self) -> None:
-        for proc in (self._rec_proc, self._tr_proc, self._ollama_proc):
+        for proc in (self._rec_proc, self._tr_proc, self._ollama_proc,
+                     self._pipeline_proc):
             if proc and proc.poll() is None:
                 try:
                     proc.kill()

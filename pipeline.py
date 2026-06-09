@@ -289,7 +289,7 @@ def _make_transcribe_kwargs(model_path: str) -> dict:
         return kwargs
 
     if cfg.get("feature_size", 80) == 128:
-        # Whisper Large-v3 based (kotoba-whisper, large-v3)
+        # Whisper Large-v3 based (large-v3)
         kwargs["vad_parameters"] = {"min_silence_duration_ms": 500, "threshold": 0.35}
 
     return kwargs
@@ -363,7 +363,7 @@ def run():
 
     # ── Language → model mapping ──────────────────────────────────────────────
     _LANG_MODELS = {
-        "ja": cfg.get("models", "ja", fallback="kotoba-whisper-v2.0-ct2"),
+        "ja": cfg.get("models", "ja", fallback=model_size),
         "zh": cfg.get("models", "zh", fallback=model_size),
         "en": cfg.get("models", "en", fallback=model_size),
     }
@@ -961,7 +961,7 @@ def run():
                     # Rebuild per-language model map so the new base model_size is
                     # used as the fallback for languages without a dedicated model.
                     _LANG_MODELS = {
-                        "ja": _sess_cfg.get("models", "ja", fallback="kotoba-whisper-v2.0-ct2"),
+                        "ja": _sess_cfg.get("models", "ja", fallback=model_size),
                         "zh": _sess_cfg.get("models", "zh", fallback=model_size),
                         "en": _sess_cfg.get("models", "en", fallback=model_size),
                     }

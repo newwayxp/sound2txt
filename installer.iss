@@ -1,5 +1,5 @@
 ; ============================================================
-;  Sound2Text Installer Script  v1.5.0
+;  Sound2Text Installer Script  v1.5.1
 ;  Inno Setup 6.x  --  build with build_installer.bat
 ;
 ;  Dependency check flow:
@@ -11,7 +11,7 @@
 ; ============================================================
 
 #define AppName    "Sound2Text"
-#define AppVersion "1.5.0"
+#define AppVersion "1.5.1"
 #define AppPublisher "Sound2Text"
 
 [Setup]

@@ -101,7 +101,7 @@ _T: dict[str, dict[str, str]] = {
     "ollama_model":  {"zh": "Ollama Model",               "ja": "Ollama モデル",                  "en": "Ollama Model"},
     "device_label":  {"zh": "运算设备",                   "ja": "実行デバイス",                   "en": "Device"},
     "device_auto":   {"zh": "自动（有GPU则用GPU）",        "ja": "自動（GPU 優先）",               "en": "Auto (GPU if available)"},
-    "gpu_unavailable":{"zh": "未检测到 CUDA GPU，已固定为 CPU + tiny", "ja": "CUDA GPU が見つからないため CPU + tiny に固定しました", "en": "CUDA GPU not detected; fixed to CPU + tiny"},
+    "gpu_unavailable":{"zh": "未检测到 CUDA GPU，已固定为 CPU（模型可自由选择）", "ja": "CUDA GPU が見つからないため CPU に固定しました（モデルは選択可能）", "en": "CUDA GPU not detected; fixed to CPU (model selectable)"},
     "model_label":   {"zh": "Whisper 模型",               "ja": "Whisper モデル",                 "en": "Whisper model"},
     "lang_label":    {"zh": "转写语言",                   "ja": "転写言語",                       "en": "Transcription language"},
     "lang_auto":     {"zh": "自动检测",                   "ja": "自動検出",                       "en": "Auto detect"},

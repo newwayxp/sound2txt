@@ -1,6 +1,6 @@
 # Sound2Text — Architecture Reference
 
-> Version: v1.3.12 (2026-06-04)  
+> Version: v1.5.1 (2026-06-09)  
 > Update this file before each session-limit approaches, by reading only the files affected by recent changes.
 
 ---
@@ -139,6 +139,11 @@ All cross-thread UI updates must use `_call_signal.emit(fn)`.
 4. Both modes: `hide_onair()` + `show_ptt_button()` (VU bar appears)
 5. Mic is **not** auto-started — user clicks VU meter
 
+> **Live model reload:** `pipeline.py` is a long-lived process. At each session
+> start it re-reads `language`, `model_size`, and `device` from `config.ini` and
+> reloads the Whisper model if any changed — so settings edits take effect on the
+> next recording without restarting the app.
+
 ### Mic Toggle (`presenter.toggle_mic()`)
 - If `mic_proc` alive → `stop_mic()` → `_stop_meter()` → `hide_onair()` → write `.ptt_stop` → wait 5s
 - Otherwise → `start_mic()` → spawn `mic_recorder.py --ptt` → `show_onair()` → `_start_meter()`
@@ -161,7 +166,7 @@ Key sections:
 
 | Section | Purpose |
 |---------|---------|
-| `[model]` | `backend` (cuda/cpu), `size` (tiny/small/medium/large-v3) |
+| `[recording]` | `device` (auto/cuda/cpu), `model_size` (user-editable: any faster-whisper name or local `models/` dir — no GPU/CPU restriction) |
 | `[paths]` | `audio_dir`, `transcript_dir`, `corrected_dir`, `memo_dir`, `mic_dir`, `vocab_file` |
 | `[llm]` | `api_key`, `api_url`, `model` |
 | `[network]` | `https_proxy`, `http_proxy`, `ssl_verify` |
@@ -197,8 +202,8 @@ Child processes inherit CUDA DLL paths via `PATH` env var set in `Presenter.__in
 
 ## Installer
 
-- Script: `installer.iss` (Inno Setup), version 1.3.11
-- Build: `build_installer.bat` → `dist/Sound2Text_Setup_1.3.11.exe`
+- Script: `installer.iss` (Inno Setup), version 1.5.1
+- Build: `build_installer.bat` → `dist/Sound2Text_Setup_1.5.1.exe`
 - Entry: `ui_qt.py` (old `ui.py` removed)
 - Python requirement: 3.10+
 

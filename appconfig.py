@@ -137,7 +137,21 @@ def _detect_cuda() -> tuple[bool, bool]:
     return False, False
 
 
-_CUDA_AVAILABLE, _CUDA_LIBS_OK = _detect_cuda()
+_CUDA_CACHE: tuple[bool, bool] | None = None
+
+
+def cuda_status() -> tuple[bool, bool]:
+    """Return cached ``(cuda_available, cuda_libs_ok)``.
+
+    Detection is slow (imports ctranslate2 / runs nvidia-smi), so it is no
+    longer performed at import time. The first call runs ``_detect_cuda()`` and
+    caches the result; callers warm this cache from a background thread after
+    the UI is shown so the window appears immediately.
+    """
+    global _CUDA_CACHE
+    if _CUDA_CACHE is None:
+        _CUDA_CACHE = _detect_cuda()
+    return _CUDA_CACHE
 
 
 # ── AppConfig ─────────────────────────────────────────────────────────────────

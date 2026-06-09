@@ -6,6 +6,7 @@ No customtkinter / tkinter imports.
 """
 from __future__ import annotations
 
+import os
 import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -21,7 +22,7 @@ from PyQt6.QtWidgets import (
     QSpacerItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from appconfig import AppConfig
+from appconfig import BASE, AppConfig
 from i18n import _LANG, t
 from widgets_qt import DashboardWidget, VUMeterWidget
 from log_util import LogConfig, FileLogger
@@ -251,8 +252,33 @@ class App(QMainWindow):
         self._log_signal.connect(self._log_box.append)
         self._call_signal.connect(lambda fn: fn())
 
-        # Deferred presenter startup
-        QTimer.singleShot(100, presenter.initialize)
+        # Deferred presenter startup: show the window first, run the slow CUDA
+        # detection in the background, and keep Start disabled until it finishes.
+        QTimer.singleShot(0, self._start_async_init)
+
+    # ── Async startup ─────────────────────────────────────────────────────────
+
+    def _start_async_init(self) -> None:
+        """Window is now visible. Disable Start, then run the slow CUDA probe in
+        a background thread so the UI stays responsive."""
+        self.set_start_enabled(False)
+        self.put_log("[UI] Initializing… detecting CUDA")
+
+        def _worker():
+            try:
+                self._presenter.warm_up()   # heavy, view-free, result cached
+            except Exception as e:
+                self.put_log(f"[ERROR] Startup detection failed: {e}")
+            # Finish on the Qt main thread — initialize() touches view widgets.
+            self.schedule(self._finish_async_init)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _finish_async_init(self) -> None:
+        """Runs on the Qt main thread after warm_up() completes."""
+        self._presenter.initialize()
+        self.set_start_enabled(True)
+        self.put_log("[UI] Ready")
 
     # ── ViewProtocol ──────────────────────────────────────────────────────────
 
@@ -333,7 +359,7 @@ class App(QMainWindow):
     def destroy(self) -> None:
         self.close()
 
-    def lock_to_cpu_tiny(self) -> None:
+    def lock_to_cpu(self) -> None:
         # CUDA needs a GPU → lock the device to CPU when none is available.
         # The model selection is intentionally NOT restricted.
         if hasattr(self, "_rb_device_cpu"):
@@ -405,8 +431,10 @@ class App(QMainWindow):
             self._rb_device_auto.setChecked(True)
 
         # Model selection
-        model = cfg.get("recording", "model_size", fallback="small")
+        model = cfg.get("recording", "model_size", fallback="small").strip()
         if hasattr(self, "_model_combo"):
+            if model and self._model_combo.findText(model) < 0:
+                self._model_combo.addItem(model)
             self._model_combo.setCurrentText(model)
 
         # Quick lang combo
@@ -659,16 +687,19 @@ class App(QMainWindow):
             self._rb_device_auto.setChecked(True)
         row += 1
 
-        # Model selection — editable so the user can pick any faster-whisper
-        # model name or a local model directory under models/. No GPU/CPU
-        # restriction; the choice takes effect on the next recording.
+        # Model selection — pick from the available models only (no free text):
+        # the standard faster-whisper sizes plus any local CT2 model directory
+        # found under models/. The choice takes effect on the next recording.
         grid.addWidget(QLabel(t("model_label")), row, 0, Qt.AlignmentFlag.AlignRight)
         self._model_combo = QComboBox()
-        self._model_combo.setEditable(True)
-        self._model_combo.addItems(
-            ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
-        )
-        cur_model = cfg.get("recording", "model_size", fallback="small")
+        self._model_combo.setEditable(False)
+        models = self._available_models()
+        cur_model = cfg.get("recording", "model_size", fallback="small").strip()
+        # Keep the currently-configured model selectable even if it is no longer
+        # present (e.g. a deleted local dir), so the UI reflects the real setting.
+        if cur_model and cur_model not in models:
+            models.append(cur_model)
+        self._model_combo.addItems(models)
         self._model_combo.setCurrentText(cur_model)
         grid.addWidget(self._model_combo, row, 1)
         row += 1
@@ -707,6 +738,23 @@ class App(QMainWindow):
         grid.addWidget(save_btn, row, 0, 1, 3, Qt.AlignmentFlag.AlignHCenter)
 
         return w
+
+    @staticmethod
+    def _available_models() -> list[str]:
+        """Models the user may select: the standard faster-whisper sizes plus
+        any local CT2 model directory (one containing model.bin) under models/."""
+        models = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+        models_dir = os.path.join(BASE, "models")
+        try:
+            for name in sorted(os.listdir(models_dir)):
+                path = os.path.join(models_dir, name)
+                if (os.path.isdir(path)
+                        and os.path.exists(os.path.join(path, "model.bin"))
+                        and name not in models):
+                    models.append(name)
+        except OSError:
+            pass
+        return models
 
     # ── Summary / API tab ─────────────────────────────────────────────────────
 
