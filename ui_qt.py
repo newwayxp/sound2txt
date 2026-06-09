@@ -228,6 +228,7 @@ class App(QMainWindow):
         self._presenter = presenter
         self._gpu_locked_buttons: list[QWidget] = []
         self._btn_cuda: QRadioButton | None = None
+        self._allow_close = False   # set True by destroy() once shutdown is done
 
         # Window basics
         self.setWindowTitle(t("title"))
@@ -357,7 +358,9 @@ class App(QMainWindow):
         return self.windowTitle()
 
     def destroy(self) -> None:
-        self.close()
+        # Called once the presenter's graceful shutdown has finished.
+        self._allow_close = True
+        QApplication.quit()
 
     def lock_to_cpu(self) -> None:
         # CUDA needs a GPU → lock the device to CPU when none is available.
@@ -1058,7 +1061,10 @@ class App(QMainWindow):
     # ── Window close ─────────────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:
-        event.ignore()  # prevent immediate close; let presenter decide
+        if self._allow_close:
+            event.accept()   # graceful shutdown finished → really close
+            return
+        event.ignore()       # keep window open; presenter finishes background work first
         self._presenter.on_close()
 
 

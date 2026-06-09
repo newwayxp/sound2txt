@@ -1,6 +1,6 @@
 # Sound2Text — Architecture Reference
 
-> Version: v1.5.1 (2026-06-09)  
+> Version: v1.5.2 (2026-06-09)  
 > Update this file before each session-limit approaches, by reading only the files affected by recent changes.
 
 ---
@@ -202,8 +202,8 @@ Child processes inherit CUDA DLL paths via `PATH` env var set in `Presenter.__in
 
 ## Installer
 
-- Script: `installer.iss` (Inno Setup), version 1.5.1
-- Build: `build_installer.bat` → `dist/Sound2Text_Setup_1.5.1.exe`
+- Script: `installer.iss` (Inno Setup), version 1.5.2
+- Build: `build_installer.bat` → `dist/Sound2Text_Setup_1.5.2.exe`
 - Entry: `ui_qt.py` (old `ui.py` removed)
 - Python requirement: 3.10+
 

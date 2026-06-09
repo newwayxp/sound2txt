@@ -19,6 +19,8 @@ CORRECTED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 _VOCAB_DEFAULT = os.path.join(_BASE_DIR, "vocabulary.txt")
 
+from glossary import resolve_glossary_file, load_glossary, apply_glossary, glossary_prompt_section
+
 
 def _network_kwargs(cfg: configparser.ConfigParser) -> dict:
     kwargs = {"verify": cfg.getboolean("network", "ssl_verify", fallback=True)}
@@ -287,11 +289,18 @@ def correct_transcript(raw: str, corrected_dir: str, ts: str,
             + ", ".join(vocab)
         )
 
-    prompt = CORRECT_PROMPT.format(transcript=raw) + vocab_section
+    # Deterministic 誤→正 glossary: inject as explicit rules AND apply after the LLM
+    glossary = load_glossary(resolve_glossary_file(cfg))
+    glossary_section = glossary_prompt_section(glossary)
+
+    prompt = CORRECT_PROMPT.format(transcript=raw) + vocab_section + glossary_section
     # Repeat the language guard at the END of the user prompt — models weight recent instructions highly
     if _lang_guard:
         prompt += f"\n\n[REMINDER] {_lang_guard}"
     corrected = _call(system, prompt, cfg).strip()
+    # Enforce the glossary deterministically (covers any terms the LLM missed,
+    # and still works when the API is unavailable).
+    corrected = apply_glossary(corrected, glossary)
 
     os.makedirs(corrected_dir, exist_ok=True)
     path = os.path.join(corrected_dir, f"corrected_{ts}.txt")

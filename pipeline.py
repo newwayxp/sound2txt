@@ -43,6 +43,7 @@ if _pre.has_section("network"):
 os.environ.setdefault("HUGGINGFACE_HUB_VERBOSITY", "error")
 
 from log_util import tr_info, tr_debug, tr_warn, tr_error, sys_info, sys_error
+from glossary import resolve_glossary_file, load_glossary, apply_glossary
 
 # ── signal files ──────────────────────────────────────────────────────────────
 SIGNAL_SESSION   = os.path.join(_BASE, ".pipeline_session")
@@ -406,13 +407,24 @@ def run():
         with open(vocab_file, encoding="utf-8") as f:
             vocab = [l.strip() for l in f if l.strip() and not l.startswith("#")]
 
+    # Whisper's initial_prompt is capped (~224 tokens); feeding the whole vocab
+    # would overflow and dilute the bias. Use only the top-N highest-priority
+    # terms (vocabulary.txt is ordered project-critical first). The full list
+    # still feeds the LLM correction step.
+    _ip_max = cfg.getint("recording", "initial_prompt_max_terms", fallback=64)
+
     def _initial_prompt(lang: str | None) -> str | None:
         # No base sentence — avoids Whisper hallucinating the prompt text.
         # language= parameter already tells Whisper which language to use.
         if vocab:
             sep = "、" if lang == "ja" else ", "
-            return sep.join(vocab)
+            return sep.join(vocab[:_ip_max])
         return None
+
+    # ── Glossary (deterministic 誤→正 replacement; works even when LLM is down) ──
+    _glossary = load_glossary(resolve_glossary_file(cfg))
+    if _glossary:
+        sys_info(f"glossary: {len(_glossary)} correction rule(s) loaded")
 
     # ── VAD ───────────────────────────────────────────────────────────────────
     silence_s = cfg.getfloat("subtitle", "silence_sec",   fallback=2.0)
@@ -740,6 +752,9 @@ def run():
                 tr_info(f"[pipeline] corrected: {corrected_text}")
             else:
                 corrected_text = original  # no correction or API unavailable
+
+            # Deterministic glossary fix (applies even if the LLM step was skipped)
+            corrected_text = apply_glossary(corrected_text, _glossary)
 
             # Append to corrected file and update signal for UI polling
             if corrected_file:

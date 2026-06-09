@@ -128,6 +128,7 @@ class Presenter:
         # ── state flags ───────────────────────────────────────────────────────
         self._running         = False
         self._stopping        = False
+        self._closing         = False   # graceful shutdown in progress
         self._meter_active    = False
         self._session_id      = 0   # incremented each start(); guards stale async callbacks
 
@@ -571,13 +572,15 @@ class Presenter:
             self._sub_win_proc = None
         self._view and self._view.put_log("[UI] 字幕停止")
 
-    def _stop_pipeline(self) -> None:
-        """pipeline に停止シグナルを送り、終了を待つ。"""
+    def _stop_pipeline(self, timeout: float = 30) -> None:
+        """pipeline に停止シグナルを送り、終了を待つ。
+        timeout は wait の上限（プロセスは終了次第すぐ返る）。閉じる際は
+        MP3 変換の完了を待てるよう大きめの値を渡す。"""
         with open(self._PIPELINE_STOP, "w") as f:
             f.write("1")
         if self._pipeline_proc and self._pipeline_proc.poll() is None:
             try:
-                self._pipeline_proc.wait(timeout=10)
+                self._pipeline_proc.wait(timeout=timeout)
             except Exception:
                 self._pipeline_proc.terminate()
         self._pipeline_proc = None
@@ -1052,16 +1055,44 @@ class Presenter:
     # ── window lifecycle ──────────────────────────────────────────────────────
 
     def on_close(self) -> None:
-        if self._running:
-            if self._rec_proc and self._rec_proc.poll() is None:
-                self._rec_proc.terminate()
-            if self._tr_proc and self._tr_proc.poll() is None:
-                self._tr_proc.terminate()
-        # Shut down the long-lived pipeline process (only stopped on app close).
-        self._stop_pipeline()
-        self._stop_ollama()
+        # Second close press while already shutting down → force quit now.
+        if self._closing:
+            self._view and self._view.put_log("[UI] 強制終了します")
+            self._force_quit()
+            return
+        self._closing = True
+        # Wait for background work (final transcription, MP3 conversion, minutes)
+        # to finish before actually closing, instead of killing it mid-way.
+        self._view and self._view.put_log(
+            "[UI] 終了処理中… バックグラウンド処理の完了を待っています"
+            "（もう一度閉じると強制終了）"
+        )
         if self._view:
-            self._view.schedule(self._view.destroy)
+            self._view.schedule(lambda: self._view.set_start_enabled(False))
+            self._view.schedule(lambda: self._view.set_stop_enabled(False))
+        threading.Thread(target=self._graceful_shutdown, daemon=True).start()
+
+    def _graceful_shutdown(self) -> None:
+        """Finish outstanding background work, then close the window.
+        Runs off the Qt thread so the UI stays responsive while waiting."""
+        try:
+            # 1. If still recording, stop to finalize the current session
+            #    (flush audio, transcribe remainder, start MP3 conversion, summary).
+            if self._running and not self._stopping:
+                self.stop()
+            # 2. Wait for the finalize + summarize chain to complete (bounded).
+            deadline = time.time() + 300
+            while self._running and time.time() < deadline:
+                time.sleep(0.5)
+            # 3. Stop the long-lived pipeline; give its shutdown enough time to
+            #    finish any in-progress MP3 conversion before the process exits.
+            self._stop_pipeline(timeout=180)
+            self._stop_ollama()
+        except Exception as e:
+            _log("SYS", "ERROR", f"graceful shutdown error: {e}")
+        finally:
+            if self._view:
+                self._view.schedule(self._view.destroy)
 
     def force_quit(self) -> None:
         """Immediate kill – used on second close attempt."""
