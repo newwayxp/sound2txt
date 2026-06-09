@@ -780,27 +780,39 @@ class Presenter:
     # ── on-demand file watcher ────────────────────────────────────────────────
 
     def _poll_corrected_file(self) -> None:
-        """Poll .last_corrected during session and update the Transcript tab in real time."""
-        _state = os.path.join(BASE, ".last_corrected")
-        _sid       = self._session_id   # session this poll thread belongs to
-        last_path  = None
-        last_mtime = 0.0
+        """Poll the live transcript and corrected files during a session and
+        update the Transcript / Corrected tabs separately in real time.
+
+        The raw transcript (STATE_FILE → .last_transcript) feeds the Transcript
+        tab; the corrected text (.last_corrected) feeds the Corrected tab. The
+        two are kept distinct so corrections never overwrite the raw output."""
+        _corr_state = os.path.join(BASE, ".last_corrected")
+        _sid        = self._session_id   # session this poll thread belongs to
+        # (state_pointer_file, view_method, last_path, last_mtime)
+        watches = [
+            [STATE_FILE,   "show_transcript", None, 0.0],
+            [_corr_state,  "show_corrected",  None, 0.0],
+        ]
         while self._running and self._session_id == _sid:
-            try:
-                if os.path.exists(_state):
-                    with open(_state, encoding="utf-8") as f:
+            for w in watches:
+                state_file, method = w[0], w[1]
+                try:
+                    if not os.path.exists(state_file):
+                        continue
+                    with open(state_file, encoding="utf-8") as f:
                         path = f.read().strip()
-                    if path and os.path.exists(path):
-                        mtime = os.path.getmtime(path)
-                        if path != last_path or mtime > last_mtime + 0.5:
-                            last_path  = path
-                            last_mtime = mtime
-                            _p = path
-                            if self._view and hasattr(self._view, "show_transcript"):
-                                if self._session_id == _sid:  # re-check before scheduling
-                                    self._view.schedule(lambda p=_p: self._view.show_transcript(p))
-            except Exception:
-                pass
+                    if not (path and os.path.exists(path)):
+                        continue
+                    mtime = os.path.getmtime(path)
+                    if path != w[2] or mtime > w[3] + 0.5:
+                        w[2], w[3] = path, mtime
+                        _p = path
+                        if self._view and hasattr(self._view, method):
+                            if self._session_id == _sid:  # re-check before scheduling
+                                self._view.schedule(
+                                    lambda p=_p, m=method: getattr(self._view, m)(p))
+                except Exception:
+                    pass
             time.sleep(3)
 
     def _wait_pipeline_and_summarize(self) -> None:
@@ -968,20 +980,21 @@ class Presenter:
         transcript_path = self._read_last_transcript()
         if transcript_path:
             self._view and self._view.put_log(f"[UI] Transcript file: {transcript_path}")
-            # Prefer corrected file if available (poll thread already showed it during session)
-            _display_path = transcript_path
+            # Raw transcript → Transcript tab (never overwritten by corrections).
+            if self._view and hasattr(self._view, "show_transcript"):
+                _p = transcript_path
+                _schedule_if_current(lambda p=_p: self._view.show_transcript(p))
+            # Corrected text → its own Corrected tab.
             _corrected_state = os.path.join(BASE, ".last_corrected")
             try:
                 if os.path.exists(_corrected_state):
                     with open(_corrected_state, encoding="utf-8") as _f:
                         _cp = _f.read().strip()
-                    if _cp and os.path.exists(_cp):
-                        _display_path = _cp
+                    if _cp and os.path.exists(_cp) and self._view \
+                            and hasattr(self._view, "show_corrected"):
+                        _schedule_if_current(lambda p=_cp: self._view.show_corrected(p))
             except Exception:
                 pass
-            if self._view and hasattr(self._view, "show_transcript"):
-                _p = _display_path
-                _schedule_if_current(lambda p=_p: self._view.show_transcript(p))
         else:
             self._view and self._view.put_log("[UI] Transcript file was not created")
 
@@ -990,23 +1003,12 @@ class Presenter:
                 _schedule_if_current(lambda: self._view.set_sum_status("generating", "#ddaa00"))
             from i18n import t
 
-            # ── Step 1: Correction (runs first, gives user corrected text ASAP) ──
-            self._view and self._view.put_log("[UI] Starting correction (Step 1/2)...")
-            sum_proc1 = subprocess.Popen(
-                [sys.executable, "-X", "utf8", os.path.join(BASE, "summarizer.py"),
-                 "--step", "correct", transcript_path],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", env=self._env,
-            )
-            threading.Thread(target=self._pipe, args=(sum_proc1, "[Sum]"), daemon=True).start()
-            self._wait_process(sum_proc1, "summarizer.py (correct)", timeout_sec=600)
-
-            corrected = self._latest_file(
-                self._config.get("summary", "corrected_dir", fallback=""), "corrected_*.txt")
-            if corrected:
-                self._view and self._view.put_log(f"[UI] Corrected text: {corrected}")
-
-            # ── Step 2: Meeting minutes (use corrected file if available) ──────
+            # Minutes are generated directly from the real-time corrected file
+            # produced per-segment during the session (pipeline.py). No second,
+            # full re-correction pass — that would create a duplicate corrected
+            # file and make the displayed text diverge from the minutes input.
+            # Fall back to the raw transcript only if no corrected file exists
+            # (e.g. correction disabled or the API was unavailable).
             _corrected_state = os.path.join(BASE, ".last_corrected")
             minutes_input = transcript_path
             try:
@@ -1019,7 +1021,7 @@ class Presenter:
             except Exception:
                 pass
 
-            self._view and self._view.put_log("[UI] Generating meeting minutes (Step 2/2)...")
+            self._view and self._view.put_log("[UI] Generating meeting minutes...")
             sum_proc2 = subprocess.Popen(
                 [sys.executable, "-X", "utf8", os.path.join(BASE, "summarizer.py"),
                  "--step", "summary", minutes_input],

@@ -224,12 +224,29 @@ def _correct_segment(text: str, lang: str | None,
     if not url or not api_key or not model:
         return text
 
-    _correction_prompts = {
-        "ja": f"会議音声の自動転写テキストの誤認識・句読点を修正してください。説明不要。修正後のテキストだけを出力。\n\n{text}",
-        "zh": f"请修正以下会议语音自动转录文字中的识别错误和标点符号，只输出修正后的文字，不要解释。\n\n{text}",
-        "en": f"Fix ASR recognition errors and punctuation in this meeting transcript. Output only the corrected text.\n\n{text}",
-    }
-    prompt = _correction_prompts.get(lang or "", _correction_prompts["en"])
+    # Strong, language-agnostic system prompt. Small local models (e.g. qwen2.5)
+    # otherwise tend to "explain" or translate fragments instead of just fixing
+    # them, polluting the transcript with meta-commentary.
+    _system = (
+        "You are an ASR transcript proofreader. You fix ONLY mis-recognized words "
+        "and punctuation in the given text.\n"
+        "ABSOLUTE RULES — follow every one:\n"
+        "1. Output ONLY the corrected text. No explanations, notes, comments, or labels.\n"
+        "2. Keep the EXACT original language(s). NEVER translate. Mixed-language text "
+        "stays mixed exactly as-is.\n"
+        "3. Do NOT add, remove, summarize, or rephrase content. Keep length similar.\n"
+        "4. If a part is unclear, leave it unchanged. When in doubt, output it verbatim.\n"
+        "5. Never describe what you changed. Never write '对应' / '比如' / '因此' / "
+        "'修正後' / 'Here is' style meta text.\n"
+        "出力は校正後のテキストのみ。説明・翻訳・注釈は一切禁止。"
+    )
+    _user = {
+        "ja": f"次のテキストの誤認識と句読点のみを修正し、校正後のテキストだけを返してください:\n\n{text}",
+        "zh": f"仅修正下面文字的识别错误和标点，只返回修正后的文字本身:\n\n{text}",
+        "en": f"Fix only the recognition errors and punctuation below. Return only the corrected text:\n\n{text}",
+    }.get(lang or "", None)
+    if _user is None:
+        _user = f"Fix only the recognition errors and punctuation below. Return only the corrected text:\n\n{text}"
 
     verify  = cfg.getboolean("network", "ssl_verify", fallback=True)
     px      = cfg.get("network", "https_proxy", fallback="")
@@ -240,9 +257,10 @@ def _correct_segment(text: str, lang: str | None,
         r = requests.post(
             url,
             json={"model": model,
-                  "messages": [{"role": "user", "content": prompt}],
-                  "max_tokens": max(200, len(text) * 3),
-                  "temperature": 0.2},
+                  "messages": [{"role": "system", "content": _system},
+                               {"role": "user",   "content": _user}],
+                  "max_tokens": max(120, int(len(text) * 1.8)),
+                  "temperature": 0.0},
             headers={"Authorization": f"Bearer {api_key}"},
             proxies=proxies, verify=verify, timeout=20,
         )
@@ -255,7 +273,23 @@ def _correct_segment(text: str, lang: str | None,
             r"Here is.{0,30}:\s*|Corrected.{0,20}:\s*)", "",
             result, flags=_re.IGNORECASE
         ).strip()
-        return result if result else text
+        if not result:
+            return text
+        # Pollution guard: a proper correction stays close to the input length.
+        # If the model returned a much longer string, it almost certainly added
+        # explanations/translations — discard it and keep the original text.
+        if len(result) > len(text) * 2 + 30:
+            tr_debug(f"correction discarded (output too long: "
+                     f"{len(result)} vs {len(text)} chars) — keeping original")
+            return text
+        # Meta-commentary guard: telltale phrases that only appear when the model
+        # is explaining rather than correcting.
+        _meta_markers = ("对应处", "对应的", "修正后的文本", "因此，修正", "请替换",
+                         "具体活动名称", "假设这是", "Note:", "Explanation:")
+        if any(m in result for m in _meta_markers):
+            tr_debug("correction discarded (meta-commentary detected) — keeping original")
+            return text
+        return result
     except Exception as e:
         tr_debug(f"correction API error: {e}")
         return text
@@ -616,6 +650,15 @@ def run():
     # ── Async transcription thread ────────────────────────────────────────────
     _seg_queue: queue.Queue = queue.Queue()
 
+    def _enqueue(seg: bytes, source: str) -> None:
+        """Queue an audio segment together with the wall-clock time the speech
+        was actually emitted. Computed here in the capture thread as
+        ``now - segment_duration`` so the displayed timestamp reflects when the
+        sound occurred, not when (much later) transcription/correction finished.
+        Both system and mic segments are 16 kHz mono int16."""
+        emit_ts = time.time() - len(seg) / 2 / SAMPLE_RATE
+        _seg_queue.put((seg, source, emit_ts))
+
     _lang_detect_attempts = [0]   # segments tried while session_lang is still None
 
     def _transcribe_loop():
@@ -628,7 +671,7 @@ def run():
                 _seg_queue.task_done()
                 break
 
-            audio_bytes, _seg_source = item
+            audio_bytes, _seg_source, _emit_ts = item
             _src_label = _mic_label(session_lang) if _seg_source == "mic" else ""
             seg_dur = len(audio_bytes) / (SAMPLE_RATE * 2)
             tr_info(f"Transcribing {seg_dur:.1f}s {_seg_source} audio (queue depth={_seg_queue.qsize()})")
@@ -744,7 +787,13 @@ def run():
                 continue
 
             tr_info(f"[pipeline] {'[mic] ' if _seg_source == 'mic' else ''}original: {original}")
-            _append_transcript(_src_label + original)
+            # Timestamp = when the sound was actually emitted (captured at enqueue
+            # time as now - segment_duration). Shared by both the raw transcript and
+            # the corrected line so they match exactly and reflect real audio time,
+            # not the (later) time transcription/correction finished.
+            from datetime import datetime
+            _seg_ts = datetime.fromtimestamp(_emit_ts).strftime("%H:%M:%S")
+            _append_transcript(_src_label + original, _seg_ts)
 
             # Per-segment correction: call LLM immediately after transcription
             corrected_text = _correct_segment(original, session_lang, cfg)
@@ -758,7 +807,7 @@ def run():
 
             # Append to corrected file and update signal for UI polling
             if corrected_file:
-                _append_corrected(_src_label + corrected_text, corrected_file)
+                _append_corrected(_src_label + corrected_text, corrected_file, _seg_ts)
 
             _seg_queue.task_done()
 
@@ -894,7 +943,7 @@ def run():
                                     if _is_echo_segment(_fseg, _snap, _AEC_THRESH):
                                         tr_info("AEC: echo segment suppressed (on-air off flush)")
                                     else:
-                                        _seg_queue.put((_fseg, "mic"))
+                                        _enqueue(_fseg, "mic")
                             _prev_onair = _onair
 
                             if _onair and _in_sess:
@@ -907,7 +956,7 @@ def run():
                                     if _is_echo_segment(_mseg, _snap, _AEC_THRESH):
                                         tr_info("AEC: echo segment suppressed")
                                     else:
-                                        _seg_queue.put((_mseg, "mic"))
+                                        _enqueue(_mseg, "mic")
                         except Exception as _e:
                             tr_warn(f"Mic read error: {_e}")
                             time.sleep(0.05)
@@ -997,6 +1046,24 @@ def run():
                         except Exception as _me:
                             sys_error(f"Model reload failed: {_me}")
 
+                # Drain stale audio buffered by the device while the session was
+                # stopped. The main loop does not read the stream during idle, so
+                # the OS/WASAPI buffer fills up; without draining, the restart would
+                # process seconds of old audio first — a long stretch with sample
+                # frames counted in the log but no live transcription appearing.
+                try:
+                    _drained = 0
+                    while stream.get_read_available() >= CHUNK_SIZE:
+                        stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                        _drained += CHUNK_SIZE
+                        if _drained > sample_rate * 60:   # safety cap: 60s
+                            break
+                    if _drained:
+                        sys_info(f"Drained {_drained / sample_rate:.1f}s of stale "
+                                 f"buffered audio at session start")
+                except Exception as _de:
+                    tr_warn(f"stream drain error: {_de}")
+
                 _open_session()
                 session_was_active = True
                 with open(os.path.join(_BASE, ".recording_start"), "w") as f:
@@ -1009,7 +1076,7 @@ def run():
                 if seg:
                     if raw_fh:
                         raw_fh.write(seg)
-                    _seg_queue.put((seg, "system"))
+                    _enqueue(seg, "system")
 
                 # Flush remaining audio from mic VAD buffer + save on-air recording
                 if enable_mic:
@@ -1026,7 +1093,7 @@ def run():
                     with _mic_vad_lock:
                         mic_seg = _mic_vad.force_flush()
                     if mic_seg:
-                        _seg_queue.put((mic_seg, "mic"))
+                        _enqueue(mic_seg, "mic")
 
                 # Wait for all pending transcriptions before closing session
                 sys_info("Waiting for transcriptions to complete...")
@@ -1058,7 +1125,7 @@ def run():
             # Feed to VAD
             seg = vad.feed(chunk)
             if seg:
-                _seg_queue.put((seg, "system"))
+                _enqueue(seg, "system")
 
     except KeyboardInterrupt:
         pass
@@ -1066,7 +1133,7 @@ def run():
         # Flush remaining audio from system VAD
         seg = vad.force_flush()
         if seg:
-            _seg_queue.put((seg, "system"))
+            _enqueue(seg, "system")
 
         # Flush remaining audio from mic VAD + save on-air recording, then stop mic thread
         if enable_mic:
@@ -1079,7 +1146,7 @@ def run():
             with _mic_vad_lock:
                 mic_seg = _mic_vad.force_flush()
             if mic_seg:
-                _seg_queue.put((mic_seg, "mic"))
+                _enqueue(mic_seg, "mic")
         _mic_stop.set()
         if _mic_thread is not None:
             _mic_thread.join(timeout=3)
@@ -1111,25 +1178,28 @@ def run():
             pass
 
 
-def _append_transcript(text: str):
+def _append_transcript(text: str, ts: str = ""):
     """Append transcribed text to the transcript file recorded in STATE_FILE."""
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
             path = f.read().strip()
         if path and os.path.exists(os.path.dirname(path)):
             from datetime import datetime
-            ts = datetime.now().strftime("%H:%M:%S")
+            ts = ts or datetime.now().strftime("%H:%M:%S")
             with open(path, "a", encoding="utf-8-sig") as f:
                 f.write(f"[{ts}] {text}\n")
     except Exception as e:
         tr_error(f"transcript append error: {e}")
 
 
-def _append_corrected(text: str, path: str):
-    """Append corrected text to the corrected file and update CORRECTED_STATE."""
+def _append_corrected(text: str, path: str, ts: str = ""):
+    """Append corrected text to the corrected file and update CORRECTED_STATE.
+
+    *ts* should be the transcription-time stamp so the corrected line keeps the
+    original time rather than the (later) time the correction finished."""
     try:
         from datetime import datetime
-        ts = datetime.now().strftime("%H:%M:%S")
+        ts = ts or datetime.now().strftime("%H:%M:%S")
         with open(path, "a", encoding="utf-8-sig") as f:
             f.write(f"[{ts}] {text}\n")
         # Touch CORRECTED_STATE so the presenter's polling thread detects the update

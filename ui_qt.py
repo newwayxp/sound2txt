@@ -403,6 +403,17 @@ class App(QMainWindow):
         except Exception as e:
             self._transcript_view.setPlainText(f"[Error reading transcript: {e}]")
 
+    def show_corrected(self, path: str) -> None:
+        """Display corrected transcript file content in the Corrected tab."""
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                text = f.read()
+            self._corrected_view.setPlainText(text)
+            from PyQt6.QtGui import QTextCursor
+            self._corrected_view.moveCursor(QTextCursor.MoveOperation.End)
+        except Exception as e:
+            self._corrected_view.setPlainText(f"[Error reading corrected text: {e}]")
+
     def show_minutes(self, path: str) -> None:
         """Display meeting minutes file content in the Minutes tab."""
         try:
@@ -415,8 +426,9 @@ class App(QMainWindow):
             self._minutes_view.setPlainText(f"[Error reading minutes: {e}]")
 
     def clear_results(self) -> None:
-        """Clear transcript and minutes tabs when a new session starts."""
+        """Clear transcript, corrected and minutes tabs when a new session starts."""
         self._transcript_view.clear()
+        self._corrected_view.clear()
         self._minutes_view.clear()
 
     # ── Initial UI state from config ──────────────────────────────────────────
@@ -566,6 +578,7 @@ class App(QMainWindow):
     def _build_settings_tabs(self, parent: QWidget) -> QTabWidget:
         tabs = QTabWidget(parent)
         tabs.addTab(self._build_tab_transcript(tabs), t("tab_transcript"))
+        tabs.addTab(self._build_tab_corrected(tabs),  t("tab_corrected"))
         tabs.addTab(self._build_tab_minutes(tabs),    t("tab_minutes"))
         # Visual separator between result tabs and settings tabs
         _sep = QWidget()
@@ -588,15 +601,18 @@ class App(QMainWindow):
         grid.setColumnStretch(1, 1)   # col 0=label, col 1=input, col 2=browse
 
         cfg = self._presenter._config
-        # (icon, label_key, section, config_key, default_path)
+        # (row_type, icon, label_key, section, config_key, default_path)
+        # row_type: "dir" = directory picker, "file" = file picker
         rows_def = [
-            ("🔊", "audio_dir",  "paths",   "audio_dir",      r"C:\Users\Public\Sound2Text\audio"),
-            ("📝", "tr_dir",     "paths",   "transcript_dir",  r"C:\Users\Public\Sound2Text\transcript"),
-            ("✏️", "corr_dir",   "summary", "corrected_dir",   r"C:\Users\Public\Sound2Text\corrected"),
-            ("📋", "sum_dir",    "summary", "summary_dir",     r"C:\Users\Public\Sound2Text\memo"),
+            ("dir",  "🔊", "audio_dir",    "paths",   "audio_dir",      r"C:\Users\Public\Sound2Text\audio"),
+            ("dir",  "📝", "tr_dir",       "paths",   "transcript_dir", r"C:\Users\Public\Sound2Text\transcript"),
+            ("dir",  "✏️", "corr_dir",     "summary", "corrected_dir",  r"C:\Users\Public\Sound2Text\corrected"),
+            ("dir",  "📋", "sum_dir",      "summary", "summary_dir",    r"C:\Users\Public\Sound2Text\memo"),
+            ("file", "📖", "vocab_file",   "paths",   "vocab_file",     ""),
+            ("file", "📖", "glossary_file","paths",   "glossary_file",  ""),
         ]
         entries: dict = {}
-        for row, (icon, lbl_key, sec, key, default) in enumerate(rows_def):
+        for row, (rtype, icon, lbl_key, sec, key, default) in enumerate(rows_def):
             # Icon + label in one widget, left-aligned, fixed width
             label_w = QWidget()
             label_h = QHBoxLayout(label_w)
@@ -626,7 +642,10 @@ class App(QMainWindow):
             btn = QPushButton("📂")
             btn.setObjectName("btnBrowse")
             btn.setFixedWidth(36)
-            btn.clicked.connect(lambda _, v=le: self._browse_dir(v))
+            if rtype == "file":
+                btn.clicked.connect(lambda _, v=le: self._browse_file(v))
+            else:
+                btn.clicked.connect(lambda _, v=le: self._browse_dir(v))
             grid.addWidget(btn, row, 2)
 
         save_btn = QPushButton(t("save"))
@@ -644,6 +663,15 @@ class App(QMainWindow):
     def _browse_dir(self, line_edit: QLineEdit) -> None:
         path = QFileDialog.getExistingDirectory(
             self, "", line_edit.text() or "C:\\"
+        )
+        if path:
+            line_edit.setText(path.replace("/", "\\"))
+
+    def _browse_file(self, line_edit: QLineEdit) -> None:
+        import os as _os
+        start = _os.path.dirname(line_edit.text()) if line_edit.text() else "C:\\"
+        path, _ = QFileDialog.getOpenFileName(
+            self, "", start, "Text files (*.txt);;All files (*)"
         )
         if path:
             line_edit.setText(path.replace("/", "\\"))
@@ -937,6 +965,24 @@ class App(QMainWindow):
             "  font-size: 13px; line-height: 1.6; }"
         )
         vbox.addWidget(self._transcript_view)
+        return w
+
+    # ── Corrected tab ─────────────────────────────────────────────────────────
+
+    def _build_tab_corrected(self, parent: QWidget) -> QWidget:
+        w = QWidget()
+        vbox = QVBoxLayout(w)
+        vbox.setContentsMargins(8, 8, 8, 8)
+        vbox.setSpacing(4)
+
+        self._corrected_view = QTextEdit()
+        self._corrected_view.setReadOnly(True)
+        self._corrected_view.setPlaceholderText(t("corrected_hint"))
+        self._corrected_view.setStyleSheet(
+            "QTextEdit { font-family: 'Hiragino Sans', 'PingFang SC', 'Meiryo UI', 'Microsoft YaHei';"
+            "  font-size: 13px; line-height: 1.6; }"
+        )
+        vbox.addWidget(self._corrected_view)
         return w
 
     # ── Minutes tab ───────────────────────────────────────────────────────────
