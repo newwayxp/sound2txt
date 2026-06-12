@@ -1031,17 +1031,24 @@ class Presenter:
                 text=True, encoding="utf-8", errors="replace", env=self._env,
             )
             threading.Thread(target=self._pipe, args=(sum_proc2, "[Sum]"), daemon=True).start()
-            self._wait_process(sum_proc2, "summarizer.py (summary)", timeout_sec=600)
+            try:
+                self._wait_process(sum_proc2, "summarizer.py (summary)", timeout_sec=600)
 
-            summary = self._latest_file(
-                self._config.get("summary", "summary_dir", fallback=""), "summary_*.md")
-            if summary:
-                self._view and self._view.put_log(f"[UI] Summary file: {summary}")
-                if self._view and hasattr(self._view, "show_minutes"):
-                    _p = summary
-                    _schedule_if_current(lambda p=_p: self._view.show_minutes(p))
-
-            _schedule_if_current(lambda: self._view.set_sum_status("done", "#44dd44"))
+                summary = self._latest_file(
+                    self._config.get("summary", "summary_dir", fallback=""), "summary_*.md")
+                if summary:
+                    self._view and self._view.put_log(f"[UI] Summary file: {summary}")
+                    if self._view and hasattr(self._view, "show_minutes"):
+                        _p = summary
+                        _schedule_if_current(lambda p=_p: self._view.show_minutes(p))
+                    _schedule_if_current(lambda: self._view.set_sum_status("done", "#44dd44"))
+                else:
+                    self._view and self._view.put_log("[UI] Summary generation failed or skipped")
+                    _schedule_if_current(lambda: self._view.set_sum_status("error", "#ff6b6b"))
+            except Exception as e:
+                _log("SYS", "ERROR", f"summarizer process error: {e}")
+                self._view and self._view.put_log(f"[UI] [ERROR] Summary generation error: {e}")
+                _schedule_if_current(lambda: self._view.set_sum_status("error", "#ff6b6b"))
         else:
             self._view and self._view.put_log(
                 "[UI] Summary skipped because transcript file is missing"

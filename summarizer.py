@@ -387,10 +387,13 @@ def run(transcript_path: str, cfg: configparser.ConfigParser, language: str = ""
         corrected = correct_transcript(raw, corrected_dir, ts, cfg)
         make_summary(corrected, language, summary_dir, ts, cfg)
     except requests.exceptions.HTTPError as e:
-        print(f"[Summarizer] API error: {e}")
+        print(f"[ERROR] [Summarizer] API error: {e}")
+        return False
+    except requests.exceptions.RequestException as e:
+        print(f"[ERROR] [Summarizer] network error: {e}")
         return False
     except Exception as e:
-        print(f"[Summarizer] error: {e}")
+        print(f"[ERROR] [Summarizer] error: {e}")
         return False
 
     return True
@@ -461,9 +464,11 @@ def run_step(step: str, transcript_path: str, cfg: configparser.ConfigParser,
             make_summary(corrected, language, summary_dir, ts, cfg)
 
     except requests.exceptions.HTTPError as e:
-        print(f"[Summarizer] API error: {e}"); return False
+        print(f"[ERROR] [Summarizer] API error: {e}"); return False
+    except requests.exceptions.RequestException as e:
+        print(f"[ERROR] [Summarizer] network error: {e}"); return False
     except Exception as e:
-        print(f"[Summarizer] error: {e}"); return False
+        print(f"[ERROR] [Summarizer] error: {e}"); return False
 
     return True
 
