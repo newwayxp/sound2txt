@@ -793,6 +793,7 @@ class Presenter:
             [STATE_FILE,   "show_transcript", None, 0.0],
             [_corr_state,  "show_corrected",  None, 0.0],
         ]
+        POLL_INTERVAL = 0.5  # check every 500ms instead of 3s for faster responsiveness
         while self._running and self._session_id == _sid:
             for w in watches:
                 state_file, method = w[0], w[1]
@@ -804,16 +805,17 @@ class Presenter:
                     if not (path and os.path.exists(path)):
                         continue
                     mtime = os.path.getmtime(path)
-                    if path != w[2] or mtime > w[3] + 0.5:
+                    # Update if path changed OR if file was modified (use smaller threshold)
+                    if path != w[2] or mtime > w[3]:
                         w[2], w[3] = path, mtime
                         _p = path
                         if self._view and hasattr(self._view, method):
                             if self._session_id == _sid:  # re-check before scheduling
                                 self._view.schedule(
                                     lambda p=_p, m=method: getattr(self._view, m)(p))
-                except Exception:
-                    pass
-            time.sleep(3)
+                except Exception as e:
+                    self._log(f"Poll error on {state_file}: {e}", level="warning")
+            time.sleep(POLL_INTERVAL)
 
     def _wait_pipeline_and_summarize(self) -> None:
         """pipeline がセッション終了処理を完了するまで待ち、纪要を生成する。"""
