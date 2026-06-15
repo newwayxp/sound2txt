@@ -24,19 +24,25 @@ if TYPE_CHECKING:
 class CLIView:
     """Minimal ViewProtocol implementation for CLI mode.
 
-    Suppresses all log output during processing.
-    Final results are displayed after completion.
+    Displays dynamic recording status while suppressing detailed logs.
     """
 
-    def __init__(self, silent: bool = True):
+    def __init__(self, show_status: bool = True):
         self._last_transcript = None
         self._last_corrected = None
-        self._silent = silent
+        self._show_status = show_status
+        self._last_status = ""
 
     def put_log(self, msg: str) -> None:
-        # Silent mode: suppress all logs during processing
-        if not self._silent:
-            print(msg)
+        # Show only key status updates (REC, TR, SUM)
+        if not self._show_status:
+            return
+
+        # Extract status keywords
+        if any(x in msg for x in ["[REC]", "[TR]", "[SUM]", "[UI]"]):
+            # Show brief status without full details
+            if "started" in msg or "complete" in msg or "done" in msg or "ERROR" in msg:
+                print(msg)
 
     def schedule(self, fn) -> None:
         fn()
@@ -192,130 +198,44 @@ Examples:
         # Load config with CLI overrides
         config = _load_config_with_overrides(args.model, args.llm, args.language)
 
-        # Create minimal view (silent mode: no output during processing)
-        view = CLIView(silent=True)
-        sys.stderr.write("[DEBUG] View created\n")
+        # Create minimal view (show status: display key updates only)
+        view = CLIView(show_status=True)
 
         # Import and initialize Presenter
         from presenter import Presenter
 
         presenter = Presenter(config)
         presenter.set_view(view)
-        sys.stderr.write("[DEBUG] Presenter initialized\n")
 
         # Warm up (CUDA detection)
-        sys.stderr.write("[DEBUG] Warm-up...\n")
         presenter.warm_up()
-        sys.stderr.write("[DEBUG] Warm-up complete\n")
 
         # For CLI mode, skip presenter.initialize() which requires UI
-        sys.stderr.write("[DEBUG] Skipping UI initialization for CLI mode\n")
-
-        # Auto-start recording
-        sys.stderr.write("[DEBUG] Starting recording...\n")
-        sys.stderr.flush()
+        # Auto-start recording immediately
         presenter.start()
-        sys.stderr.write("[DEBUG] Recording started - waiting for completion\n")
-        sys.stderr.flush()
 
         # Wait for recording to complete (user presses Ctrl+C or session ends naturally)
         # The presenter runs pipeline in background
         try:
-            sys.stderr.write("[DEBUG] Entering wait loop...\n")
-            sys.stderr.flush()
-            wait_count = 0
             while presenter._running:
-                wait_count += 1
-                if wait_count % 20 == 0:  # Log every 10 seconds
-                    sys.stderr.write(f"[DEBUG] Still running... ({wait_count * 0.5}s elapsed)\n")
-                    sys.stderr.flush()
                 time.sleep(0.5)
-            sys.stderr.write(f"[DEBUG] Loop exited after {wait_count * 0.5}s\n")
-            sys.stderr.flush()
         except KeyboardInterrupt:
-            sys.stderr.write("\n[INFO] Stopping recording and waiting for summarization...\n")
-            sys.stderr.flush()
+            print("\n[*] Stopping recording and waiting for summarization...")
             presenter.stop()
 
         # Wait for summarization to complete (up to 300 seconds)
-        sys.stderr.write("[INFO] Processing... (waiting for summarization)\n")
-        sys.stderr.flush()
         for attempt in range(300):
             if not presenter._running:
-                sys.stderr.write("[INFO] Processing complete.\n")
-                sys.stderr.flush()
                 break
-            remaining = 300 - attempt
-            if attempt % 10 == 0:  # Show progress every 10 seconds
-                sys.stderr.write(f"[INFO] Still processing... ({remaining}s remaining)\n")
-                sys.stderr.flush()
             time.sleep(1)
         else:
-            sys.stderr.write("[WARN] Timeout waiting for summarization\n")
-            sys.stderr.flush()
+            print("[!] Timeout waiting for summarization")
 
-        # Read and output the results
-        time.sleep(2)  # ensure files are fully written
-
-        # Get corrected file path from signal file
-        corrected_state_file = os.path.join(BASE, ".last_corrected")
-        corrected_file = None
-
-        # Read .last_corrected signal file
-        if os.path.exists(corrected_state_file):
-            try:
-                with open(corrected_state_file, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                    if content:
-                        corrected_file = content
-            except Exception as e:
-                sys.stderr.write(f"[DEBUG] Failed to read signal file: {e}\n")
-        else:
-            sys.stderr.write(f"[DEBUG] Signal file not found: {corrected_state_file}\n")
-
-        # Get summary file (latest summary_*.md in summary_dir)
-        summary_dir = config.get("summary", "summary_dir",
-                                fallback=os.path.join(os.path.expanduser("~"), "Public", "Sound2Text", "memo"))
-        summary_file = None
-        if os.path.exists(summary_dir):
-            try:
-                from pathlib import Path
-                summaries = sorted(Path(summary_dir).glob("summary_*.md"), key=os.path.getmtime, reverse=True)
-                if summaries:
-                    summary_file = str(summaries[0])
-            except Exception as e:
-                sys.stderr.write(f"[DEBUG] Failed to find summary: {e}\n")
-        else:
-            sys.stderr.write(f"[DEBUG] Summary dir not found: {summary_dir}\n")
-
-        # Output results (final text only)
-        if corrected_file:
-            if os.path.exists(corrected_file):
-                try:
-                    with open(corrected_file, "r", encoding="utf-8") as f:
-                        corrected_text = f.read()
-                        if corrected_text:
-                            print(corrected_text)
-                except Exception as e:
-                    sys.stderr.write(f"[ERROR] Failed to read corrected file: {e}\n")
-            else:
-                sys.stderr.write(f"[DEBUG] Corrected file not found: {corrected_file}\n")
-        else:
-            sys.stderr.write(f"[DEBUG] No corrected file path found\n")
-
-        if summary_file:
-            if os.path.exists(summary_file):
-                try:
-                    with open(summary_file, "r", encoding="utf-8") as f:
-                        summary_text = f.read()
-                        if summary_text:
-                            print(summary_text)
-                except Exception as e:
-                    sys.stderr.write(f"[ERROR] Failed to read summary file: {e}\n")
-            else:
-                sys.stderr.write(f"[DEBUG] Summary file not found: {summary_file}\n")
-        else:
-            sys.stderr.write(f"[DEBUG] No summary file found\n")
+        # Processing complete
+        # Files are automatically saved to:
+        # - corrected_*.txt in config.ini [paths] corrected_dir
+        # - summary_*.md in config.ini [summary] summary_dir
+        sys.stderr.write("[INFO] Session complete. Results saved to disk.\n")
 
         sys.exit(0)
 
