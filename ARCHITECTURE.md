@@ -46,8 +46,8 @@ appconfig.py  Model/Config — ConfigParser wrapper + CUDA detection
 ```
 
 **Entry points:**
-- `python ui_qt.py` — GUI mode
-- `python start.py` — CLI mode (no GUI)
+- `python ui_qt.py` — GUI mode (default)
+- `python start.py [--model MODEL] [--llm LLM] [--language LANG]` — CLI mode (auto-start, no GUI)
 
 ---
 
@@ -66,7 +66,7 @@ appconfig.py  Model/Config — ConfigParser wrapper + CUDA detection
 | `summarizer.py` | Child process: LLM correction (step 1/2) + meeting notes (step 2/2) |
 | `device_utils.py` | WASAPI device auto-selection logic |
 | `debug_modules.py` | Standalone diagnostic tests (loopback / audio / mic / pipeline / transcriber / summarizer / ui) |
-| `start.py` | CLI launcher (spawns recorder + transcriber + summarizer without GUI) |
+| `start.py` | CLI launcher (auto-start transcription without GUI, accepts `--model` / `--llm` args) |
 | `config_default.ini` | Template for `config.ini` (user-specific, gitignored) |
 
 ---
