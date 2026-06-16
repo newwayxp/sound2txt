@@ -185,12 +185,17 @@ def _call_openai(
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     payload  = {"model": model, "messages": messages, "stream": True}
 
+    # Adaptive timeout: longer for long user prompts (estimate 1 token ≈ 4 chars)
+    estimated_tokens = len(user) // 4 + 500
+    timeout_sec = min(600, max(120, estimated_tokens // 100))  # 1s per 100 tokens, capped at 10min
+    print(f"[Summarizer] API call: {estimated_tokens} tokens, timeout={timeout_sec}s")
+
     resp = requests.post(
         url,
         headers=headers,
         json=payload,
         stream=True,
-        timeout=120,
+        timeout=timeout_sec,
         **request_kwargs,
     )
     resp.raise_for_status()
@@ -253,7 +258,11 @@ def _call(system: str, user: str, cfg: configparser.ConfigParser) -> str:
 
 def correct_transcript(raw: str, corrected_dir: str, ts: str,
                         cfg: configparser.ConfigParser, language: str = "") -> str:
-    print("[Summarizer] Step1: correcting transcript...")
+    import time
+    t_start = time.time()
+    raw_len = len(raw)
+    raw_lines = len(raw.splitlines())
+    print(f"[Summarizer] Step1: correcting transcript ({raw_len} chars, {raw_lines} lines)...")
 
     # Build a language-specific ABSOLUTE instruction prepended in the target language
     # so local models (Ollama/qwen) respect it even when the rest of the prompt is English.
@@ -297,7 +306,13 @@ def correct_transcript(raw: str, corrected_dir: str, ts: str,
     # Repeat the language guard at the END of the user prompt — models weight recent instructions highly
     if _lang_guard:
         prompt += f"\n\n[REMINDER] {_lang_guard}"
+
+    t_api_start = time.time()
+    print(f"[Summarizer] calling correction API...")
     corrected = _call(system, prompt, cfg).strip()
+    api_elapsed = time.time() - t_api_start
+    print(f"[Summarizer] API response: {api_elapsed:.1f}s")
+
     # Enforce the glossary deterministically (covers any terms the LLM missed,
     # and still works when the API is unavailable).
     corrected = apply_glossary(corrected, glossary)
@@ -309,23 +324,35 @@ def correct_transcript(raw: str, corrected_dir: str, ts: str,
     # Record the exact path so the summary step can use it without guessing
     with open(CORRECTED_FILE, "w", encoding="utf-8") as f:
         f.write(path)
-    print(f"[Summarizer] correction done -> {path}")
+
+    elapsed = time.time() - t_start
+    print(f"[Summarizer] correction done -> {path} ({elapsed:.1f}s total)")
     return corrected
 
 
 # ── Step 2: 纪要生成 ──────────────────────────────────────────────────────────
 
 def make_summary(corrected: str, language: str, summary_dir: str, ts: str, cfg: configparser.ConfigParser) -> None:
-    print(f"[Summarizer] Step2: generating summary (lang={language})...")
+    import time
+    t_start = time.time()
+    corrected_len = len(corrected)
+    print(f"[Summarizer] Step2: generating summary (lang={language}, {corrected_len} chars)...")
     date   = datetime.now().strftime("%Y-%m-%d %H:%M")
     system, user = _summary_prompts(language, date, corrected)
+
+    t_api_start = time.time()
+    print(f"[Summarizer] calling summary API...")
     summary = _call(system, user, cfg).strip()
+    api_elapsed = time.time() - t_api_start
+    print(f"[Summarizer] API response: {api_elapsed:.1f}s")
 
     os.makedirs(summary_dir, exist_ok=True)
     path = os.path.join(summary_dir, f"summary_{ts}.md")
     with open(path, "w", encoding="utf-8-sig") as f:
         f.write(summary)
-    print(f"[Summarizer] summary done -> {path}")
+
+    elapsed = time.time() - t_start
+    print(f"[Summarizer] summary done -> {path} ({elapsed:.1f}s total)")
 
 
 # ── メイン ───────────────────────────────────────────────────────────────────

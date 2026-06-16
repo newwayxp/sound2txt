@@ -135,6 +135,8 @@ class Presenter:
         # ── transcriber tracking ─────────────────────────────────────────────
         self._tr_current_file  = ""
         self._tr_last_activity = 0.0
+        self._start_time       = 0.0   # when recording started
+        self._stop_time        = 0.0   # when stop() was called
 
         # ── Ollama ────────────────────────────────────────────────────────────
         self._OLLAMA_LOCK  = threading.Lock()
@@ -696,8 +698,9 @@ class Presenter:
         self._view.put_log(f"[UI] Transcript directory: {transcript_dir}")
 
         # Write recording start time so transcriber skips pre-recording files
+        self._start_time = time.time()
         with open(START_FILE, "w") as _sf:
-            _sf.write(str(time.time()))
+            _sf.write(str(self._start_time))
         self._view.put_log(f"[UI] Recording started at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         rec_mode   = self._config.get("recording", "mode",       fallback="meeting").strip().lower()
@@ -733,6 +736,8 @@ class Presenter:
         if self._stopping:
             self._view and self._view.put_log("[UI] Stop is already in progress")
             return
+        import time
+        self._stop_time = time.time()  # Record stop time for later analysis
         self._stopping = True
 
         if self._view:
@@ -852,10 +857,14 @@ class Presenter:
             self._stop_meter()
             if self._view:
                 self._view.schedule(lambda: self._view.hide_onair())
-                self._view.schedule(self._set_controls_idle)
+            # NOTE: Do NOT call _set_controls_idle here!
+            # Summary pipeline is still running in background.
+            # _set_controls_idle will be called when summary completes.
 
     def _file_watch_loop_impl(self) -> None:
         """ファイル監視メインループ：新ファイルごとに transcriber --file を起動。"""
+        import time
+        t_start = time.time()
         audio_dir  = self._config.get("paths", "audio_dir")
         rec_sec    = self._config.getint("recording", "record_sec", fallback=30)
 
@@ -953,6 +962,15 @@ class Presenter:
         # ── 以降は纪要生成パイプラインへ（旧 _after_trans_impl の後半）──────
         # この関数を呼び出した _file_watch_loop の finally で後処理、
         # 纪要は _run_summary_pipeline を別途呼ぶ
+
+        # Log transcription timing
+        tr_elapsed = time.time() - t_start
+        if self._start_time > 0:
+            total_rec_time = self._stop_time - self._start_time if self._stop_time > 0 else 0
+            _log("SYS", "INFO", f"Recording duration: {total_rec_time:.1f}s, "
+                                f"Transcription time: {tr_elapsed:.1f}s "
+                                f"({tr_elapsed/max(total_rec_time,1):.1f}x realtime)")
+
         threading.Thread(target=self._run_summary_pipeline, daemon=True).start()
 
     def _after_trans_impl(self) -> None:
@@ -960,12 +978,16 @@ class Presenter:
 
     def _run_summary_pipeline(self) -> None:
         """纪要生成パイプライン（file_watch_loop 終了後に呼ばれる）。"""
+        import time
+        t_start = time.time()
         try:
             self._run_summary_pipeline_impl()
         except Exception as e:
             _log("SYS", "ERROR", f"summary pipeline error: {e}")
             self._view and self._view.put_log(f"[UI] [ERROR] 纪要生成エラー: {e}")
         finally:
+            elapsed = time.time() - t_start
+            _log("SYS", "INFO", f"summary pipeline completed in {elapsed:.1f}s")
             self._running  = False
             self._stopping = False
             if self._view:

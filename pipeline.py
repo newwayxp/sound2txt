@@ -721,7 +721,8 @@ def run():
                     pass
 
             elapsed = time.monotonic() - t0
-            tr_info(f"Transcribed in {elapsed:.1f}s: lang={info.language} "
+            throughput = seg_dur / elapsed if elapsed > 0 else 0
+            tr_info(f"Transcribed in {elapsed:.1f}s ({throughput:.2f}x speed): lang={info.language} "
                     f"({info.language_probability:.0%}) segments={len(seg_list)}")
 
             # Language detection: lock in when confident, fall back after retries
