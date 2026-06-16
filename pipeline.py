@@ -648,7 +648,10 @@ def run():
         sys_info("Session complete signal written")
 
     # ── Async transcription thread ────────────────────────────────────────────
-    _seg_queue: queue.Queue = queue.Queue()
+    # OPTIMIZATION: Limit queue size to prevent memory buildup on long recordings.
+    # When queue is full, _enqueue() will block until transcriber catches up.
+    # This provides automatic flow control - input speed can't exceed output speed.
+    _seg_queue: queue.Queue = queue.Queue(maxsize=5)
 
     def _enqueue(seg: bytes, source: str) -> None:
         """Queue an audio segment together with the wall-clock time the speech
