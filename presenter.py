@@ -840,8 +840,9 @@ class Presenter:
             _log("SYS", "WARN", "session_done タイムアウト → フォールバック: RAW 変換を試みる")
             self._finalize_recorder_raw()  # 安全策: 残 RAW ファイルを変換
 
-        if self._view:
-            self._view.schedule(lambda: self._view.set_tr_status("stopped", "gray60"))
+        # NOTE: Do NOT set transcription status to "stopped" here!
+        # Wait for summary pipeline to complete before showing any completion status.
+        # This ensures UI doesn't show "done" while background processing is still running.
 
         # 纪要生成
         threading.Thread(target=self._run_summary_pipeline, daemon=True).start()
@@ -956,12 +957,8 @@ class Presenter:
                 with open(LANG_FILE, "w", encoding="utf-8") as f:
                     f.write(self._session_lang)
 
-        if self._view:
-            self._view.schedule(lambda: self._view.set_tr_status("stopped", "gray60"))
-
-        # ── 以降は纪要生成パイプラインへ（旧 _after_trans_impl の後半）──────
-        # この関数を呼び出した _file_watch_loop の finally で後処理、
-        # 纪要は _run_summary_pipeline を別途呼ぶ
+        # NOTE: Do NOT set transcription status to "stopped" here!
+        # Summary pipeline is starting in background. Only mark as stopped when summary completes.
 
         # Log transcription timing
         tr_elapsed = time.time() - t_start
@@ -971,6 +968,7 @@ class Presenter:
                                 f"Transcription time: {tr_elapsed:.1f}s "
                                 f"({tr_elapsed/max(total_rec_time,1):.1f}x realtime)")
 
+        # ── 以降は纪要生成パイプラインへ──────────
         threading.Thread(target=self._run_summary_pipeline, daemon=True).start()
 
     def _after_trans_impl(self) -> None:
@@ -1151,6 +1149,8 @@ class Presenter:
         if self._view:
             self._view.set_start_enabled(True)
             self._view.set_stop_enabled(False)
+            # Set transcription status to stopped only now, when all processing is complete
+            self._view.set_tr_status("stopped", "gray60")
             self._view.dashboard_reset()
 
     # ── process helpers ───────────────────────────────────────────────────────
