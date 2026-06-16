@@ -80,11 +80,16 @@ class AccumulatingVAD:
     def __init__(self, threshold: float = 0.5,
                  silence_sec: float = 2.0,
                  min_accum_sec: float = 1.0,
-                 max_sec: float = 30.0):
+                 max_sec: float = 30.0,
+                 min_speech_sec: float = 0.5):
         self._threshold    = threshold
         self._turn_silence = silence_sec
         self._min_sec      = min_accum_sec
         self._max_sec      = max_sec
+        # Minimum speech in a force-flushed window for it to be worth transcribing.
+        # Windows below this are silence/music: Whisper returns nothing yet can burn
+        # 100s+ on them (temperature fallback), so we drop them from transcription.
+        self._min_speech   = min_speech_sec
 
         self._accum: list[np.ndarray] = []
         self._accum_dur   = 0.0
@@ -92,19 +97,47 @@ class AccumulatingVAD:
         self._silence_dur = 0.0
         self._speaking    = False
 
+        # Load the Silero VAD. faster-whisper >=1.x exposes it via get_vad_model()
+        # (the constructor needs the bundled ONNX path, and __call__ takes
+        # num_samples — NOT the sample rate). The previous SileroVADModel() call
+        # with no args raised on every chunk, silently falling back to a crude
+        # amplitude check that misclassifies quiet speech as silence — which, with
+        # the silence-skip, dropped real speech from transcription.
         self._model = None
+        self._vad_frame = 512   # Silero v6 processes audio in 512-sample frames
+        # Rolling buffer: capture chunks (after 48k→16k resampling) are often
+        # SMALLER than one Silero frame — e.g. a 1024-frame read at 48 kHz becomes
+        # ~341 samples at 16 kHz, < 512 — so Silero could never run per-chunk and
+        # we silently fell back to amplitude (→ quiet speech read as silence →
+        # everything skipped). Accumulate across chunks until ≥1 frame is available.
+        self._vad_buf    = np.zeros(0, dtype=np.float32)
+        self._last_speech = False
         try:
-            from faster_whisper.vad import SileroVADModel
-            self._model = SileroVADModel()
-            sys_info(f"VAD: Silero (silence={silence_sec}s min={min_accum_sec}s max={max_sec}s)")
-        except Exception:
-            sys_info(f"VAD: amplitude (silence={silence_sec}s min={min_accum_sec}s max={max_sec}s)")
+            from faster_whisper.vad import get_vad_model
+            self._model = get_vad_model()
+            sys_info(f"VAD: Silero v6 (silence={silence_sec}s min={min_accum_sec}s "
+                     f"max={max_sec}s thr={threshold})")
+        except Exception as e:
+            sys_info(f"VAD: amplitude fallback (Silero load failed: {e}) "
+                     f"(silence={silence_sec}s min={min_accum_sec}s max={max_sec}s)")
+
+    def has_model(self) -> bool:
+        """True when the reliable Silero VAD is loaded (vs amplitude fallback)."""
+        return self._model is not None
 
     def _is_speech(self, chunk: np.ndarray) -> bool:
-        if self._model:
+        if self._model is not None:
             try:
-                prob = self._model(chunk.astype(np.float32) / 32768.0, SAMPLE_RATE)
-                return float(prob) >= self._threshold
+                self._vad_buf = np.concatenate(
+                    [self._vad_buf, chunk.astype(np.float32) / 32768.0])
+                n = (len(self._vad_buf) // self._vad_frame) * self._vad_frame
+                if n >= self._vad_frame:
+                    frames = self._vad_buf[:n]
+                    self._vad_buf = self._vad_buf[n:]   # keep sub-frame remainder
+                    out = np.asarray(self._model(frames, num_samples=self._vad_frame))
+                    self._last_speech = float(out.max()) >= self._threshold
+                # Between frame boundaries, reuse the most recent decision.
+                return self._last_speech
             except Exception:
                 pass
         return int(np.abs(chunk).mean()) >= 300
@@ -140,6 +173,22 @@ class AccumulatingVAD:
                         self._silence_dur = 0.0
 
         if self._accum_dur >= self._max_sec:
+            # Only trust a low speech_dur enough to DROP the window when the
+            # reliable Silero VAD is active. With the crude amplitude fallback,
+            # quiet speech can read as 0s of speech, so skipping would lose it —
+            # transcribe everything instead and let Whisper's own VAD/filters cope.
+            if self._model is not None and self._speech_dur < self._min_speech:
+                # Window full but essentially no speech (silence/music). Transcribing
+                # it wastes large amounts of CPU for an empty result and needlessly
+                # grows the backlog; the audio is still saved to the session
+                # recording separately, so nothing is lost from the MP3.
+                # Logged at INFO (parseable) so the dashboard "audio recorded" timer
+                # still advances for this window even though it isn't transcribed.
+                tr_info(f"VAD silence-skip: {self._accum_dur:.1f}s accumulated "
+                        f"(speech={self._speech_dur:.1f}s < {self._min_speech:.1f}s) "
+                        f"— recorded, not transcribed")
+                self._reset()
+                return None
             tr_info(f"VAD force-flush: {self._accum_dur:.1f}s accumulated "
                     f"(speech={self._speech_dur:.1f}s) → sending to transcribe")
             return self._flush("force")
@@ -296,13 +345,27 @@ def _correct_segment(text: str, lang: str | None,
 
 
 # ── model-specific transcription parameters ───────────────────────────────────
-def _make_transcribe_kwargs(model_path: str) -> dict:
-    """Return transcribe() kwargs appropriate for the given model."""
+def _make_transcribe_kwargs(model_path: str, device: str = "cpu") -> dict:
+    """Return transcribe() kwargs appropriate for the given model and device.
+
+    On CPU, beam search (beam_size=5) is several times slower than greedy
+    decoding for a marginal accuracy gain, which is the difference between
+    keeping up with real time and building an ever-growing backlog. Use greedy
+    (beam_size=1) on CPU and reserve beam search for CUDA.
+
+    The temperature fallback list is the other big CPU time sink: when a decode
+    fails the quality thresholds (repetition / compression ratio), faster-whisper
+    re-decodes the WHOLE window once per temperature. On hard/music segments all
+    6 values get tried → a single 8 s clip can take 100 s+ (0.08x), freezing the
+    serial worker and growing the backlog. Cap CPU to 2 temperatures so the
+    worst case is ~2× a normal decode instead of ~12×; CUDA is fast enough to
+    keep the full list."""
     import json as _json
 
     kwargs: dict = dict(
-        beam_size                  = 5,
-        temperature                = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+        beam_size                  = 1 if device == "cpu" else 5,
+        temperature                = ([0.0, 0.2] if device == "cpu"
+                                      else [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]),
         vad_filter                 = True,
         vad_parameters             = {"min_silence_duration_ms": 400, "threshold": 0.4},
         condition_on_previous_text = False,
@@ -430,7 +493,7 @@ def run():
             return
     sys_info(f"model ready (device={device})")
     _current_model_lang = session_lang
-    _transcribe_kwargs = _make_transcribe_kwargs(model_path)
+    _transcribe_kwargs = _make_transcribe_kwargs(model_path, device)
     sys_info(f"transcribe: beam={_transcribe_kwargs['beam_size']} "
              f"vad={_transcribe_kwargs['vad_parameters']}")
 
@@ -461,10 +524,12 @@ def run():
         sys_info(f"glossary: {len(_glossary)} correction rule(s) loaded")
 
     # ── VAD ───────────────────────────────────────────────────────────────────
-    silence_s = cfg.getfloat("subtitle", "silence_sec",   fallback=2.0)
-    min_s     = cfg.getfloat("subtitle", "min_accum_sec", fallback=1.0)
-    max_s     = cfg.getfloat("subtitle", "max_sec",       fallback=30.0)
-    vad = AccumulatingVAD(silence_sec=silence_s, min_accum_sec=min_s, max_sec=max_s)
+    silence_s    = cfg.getfloat("subtitle", "silence_sec",    fallback=2.0)
+    min_s        = cfg.getfloat("subtitle", "min_accum_sec",  fallback=1.0)
+    max_s        = cfg.getfloat("subtitle", "max_sec",        fallback=30.0)
+    min_speech_s = cfg.getfloat("subtitle", "min_speech_sec", fallback=0.5)
+    vad = AccumulatingVAD(silence_sec=silence_s, min_accum_sec=min_s, max_sec=max_s,
+                          min_speech_sec=min_speech_s)
 
     # ── Mic state (shared across _open_session / _mic_run / _close_session) ──
     _mic_state: dict = {
@@ -489,6 +554,14 @@ def run():
     raw_file_path:    str | None = None
     raw_fh = None
     session_ts: str | None = None
+    # Per-segment audio cache: each VAD segment is written to a small WAV file in
+    # this directory and only its *path* is queued, so the in-memory queue never
+    # holds raw PCM. This decouples capture from (slow) transcription without RAM
+    # build-up. Files are deleted as the worker consumes them; the dir is removed
+    # when the session ends.
+    seg_cache_dir: str | None = None
+    _seg_seq      = [0]                       # monotonic segment counter
+    _seg_seq_lock = threading.Lock()          # protects _seg_seq across threads
 
     _default_base  = os.path.join(os.path.expanduser("~"), "Documents", "Sound2Text")
     transcript_dir = os.path.expanduser(cfg.get("paths", "transcript_dir",
@@ -500,6 +573,7 @@ def run():
 
     def _open_session():
         nonlocal transcript_file, corrected_file, raw_file_path, raw_fh, session_ts
+        nonlocal seg_cache_dir
         from datetime import datetime
         session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(transcript_dir, exist_ok=True)
@@ -509,6 +583,25 @@ def run():
         corrected_file  = os.path.join(corrected_dir,  f"corrected_{session_ts}.txt")
         raw_file_path   = os.path.join(audio_dir, f".tmp_audio_{session_ts}.raw")
         raw_fh = open(raw_file_path, "wb")
+        seg_cache_dir = os.path.join(audio_dir, f".seg_cache_{session_ts}")
+        # Sweep orphaned caches left by a previously crashed session (single
+        # pipeline process → no concurrent session can own them).
+        try:
+            for _d in os.listdir(audio_dir):
+                if _d.startswith(".seg_cache_") and _d != os.path.basename(seg_cache_dir):
+                    _stale = os.path.join(audio_dir, _d)
+                    if os.path.isdir(_stale):
+                        for _f in os.listdir(_stale):
+                            try:
+                                os.remove(os.path.join(_stale, _f))
+                            except Exception:
+                                pass
+                        os.rmdir(_stale)
+        except Exception:
+            pass
+        os.makedirs(seg_cache_dir, exist_ok=True)
+        with _seg_seq_lock:
+            _seg_seq[0] = 0
         with open(transcript_file, "w", encoding="utf-8-sig") as f:
             ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             f.write(f"=== Session started {ts_str} ===\n\n")
@@ -531,6 +624,13 @@ def run():
 
     def _close_session(channels: int, sample_size: int, sample_rate: int):
         nonlocal raw_fh, raw_file_path, transcript_file, corrected_file, session_ts
+        nonlocal seg_cache_dir
+        # Sanity check: the queue is drained before _close_session is called, so no
+        # seg cache files should remain. Log any leftovers to catch a regression.
+        _left = (len(os.listdir(seg_cache_dir))
+                 if seg_cache_dir and os.path.isdir(seg_cache_dir) else 0)
+        sys_info(f"finalize: queue drained, seg_cache files left={_left} "
+                 f"(expected 0); converting raw → wav/mp3")
         if raw_fh:
             raw_fh.close()
             raw_fh = None
@@ -638,6 +738,22 @@ def run():
             with open(LANG_FILE, "w", encoding="utf-8") as f:
                 f.write(session_lang)
 
+        # Remove the segment cache dir. By the time _close_session runs the queue
+        # has been drained (main loop joins it first), so all seg files are gone;
+        # clear any stragglers just in case, then drop the directory.
+        if seg_cache_dir and os.path.isdir(seg_cache_dir):
+            try:
+                for _fn in os.listdir(seg_cache_dir):
+                    try:
+                        os.remove(os.path.join(seg_cache_dir, _fn))
+                    except Exception:
+                        pass
+                os.rmdir(seg_cache_dir)
+                tr_info("Segment cache cleaned up")
+            except Exception as _ce:
+                tr_warn(f"Segment cache cleanup error: {_ce}")
+        seg_cache_dir = None
+
         raw_file_path   = None
         transcript_file = None
         corrected_file  = None
@@ -648,19 +764,44 @@ def run():
         sys_info("Session complete signal written")
 
     # ── Async transcription thread ────────────────────────────────────────────
-    # OPTIMIZATION: Limit queue size to prevent memory buildup on long recordings.
-    # When queue is full, _enqueue() will block until transcriber catches up.
-    # This provides automatic flow control - input speed can't exceed output speed.
-    _seg_queue: queue.Queue = queue.Queue(maxsize=5)
+    # The queue carries only segment *file paths* (see _enqueue), never PCM, so it
+    # can stay unbounded without memory growth: capture is never blocked and no
+    # audio is dropped even when transcription falls far behind. Disk usage is
+    # bounded by session length and the files are deleted as they are consumed.
+    _seg_queue: queue.Queue = queue.Queue()
 
     def _enqueue(seg: bytes, source: str) -> None:
-        """Queue an audio segment together with the wall-clock time the speech
-        was actually emitted. Computed here in the capture thread as
-        ``now - segment_duration`` so the displayed timestamp reflects when the
-        sound occurred, not when (much later) transcription/correction finished.
-        Both system and mic segments are 16 kHz mono int16."""
+        """Persist an audio segment to the on-disk cache and queue its path.
+
+        ``emit_ts`` is the wall-clock time the speech was actually emitted,
+        computed here in the capture thread as ``now - segment_duration`` so the
+        displayed timestamp reflects when the sound occurred, not when (much
+        later) transcription/correction finished. Both system and mic segments
+        are 16 kHz mono int16. Writing the segment to disk (instead of queuing
+        the bytes) keeps the in-memory queue tiny regardless of backlog."""
         emit_ts = time.time() - len(seg) / 2 / SAMPLE_RATE
-        _seg_queue.put((seg, source, emit_ts))
+        cache = seg_cache_dir or tempfile.gettempdir()
+        with _seg_seq_lock:
+            _seg_seq[0] += 1
+            idx = _seg_seq[0]
+        seg_path = os.path.join(cache, f"seg_{idx:06d}_{source}.wav")
+        try:
+            with wave.open(seg_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(SAMPLE_RATE)
+                wf.writeframes(seg)
+        except Exception as e:
+            tr_error(f"segment cache write error: {e}")
+            return
+        # File is fully written + closed BEFORE it is queued, so the worker can
+        # never pick up a half-written segment (the "don't process the file that
+        # is still being recorded" guarantee). The log line below is emitted only
+        # after both steps, making that ordering observable.
+        _seg_queue.put((seg_path, source, emit_ts))
+        tr_info(f"seg cached+queued: {os.path.basename(seg_path)} "
+                f"({len(seg)}B, emit={time.strftime('%H:%M:%S', time.localtime(emit_ts))}) "
+                f"depth={_seg_queue.qsize()}")
 
     _lang_detect_attempts = [0]   # segments tried while session_lang is still None
 
@@ -674,25 +815,21 @@ def run():
                 _seg_queue.task_done()
                 break
 
-            audio_bytes, _seg_source, _emit_ts = item
+            seg_path, _seg_source, _emit_ts = item
             _src_label = _mic_label(session_lang) if _seg_source == "mic" else ""
-            seg_dur = len(audio_bytes) / (SAMPLE_RATE * 2)
+            try:
+                with wave.open(seg_path, "rb") as _wf:
+                    seg_dur = _wf.getnframes() / float(_wf.getframerate() or SAMPLE_RATE)
+            except Exception:
+                seg_dur = 0.0
             tr_info(f"Transcribing {seg_dur:.1f}s {_seg_source} audio (queue depth={_seg_queue.qsize()})")
 
-            # Write temp WAV
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_f:
-                tmp = tmp_f.name
+            # Transcribe the cached segment file directly (no temp re-write).
             t0 = time.monotonic()
             try:
-                with wave.open(tmp, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(SAMPLE_RATE)
-                    wf.writeframes(audio_bytes)
-
                 prompt = _initial_prompt(session_lang)
                 segs, info = whisper.transcribe(
-                    tmp,
+                    seg_path,
                     language       = session_lang,
                     initial_prompt = prompt,
                     **_transcribe_kwargs,
@@ -705,9 +842,10 @@ def run():
                     device = "cpu"
                     compute_type = "int8"
                     whisper = WhisperModel(model_path, device="cpu", compute_type="int8")
+                    _transcribe_kwargs = _make_transcribe_kwargs(model_path, "cpu")
                     try:
                         segs, info = whisper.transcribe(
-                            tmp, language=session_lang, **_transcribe_kwargs)
+                            seg_path, language=session_lang, **_transcribe_kwargs)
                         seg_list = list(segs)
                     except Exception as e2:
                         tr_error(f"transcribe error (CPU fallback): {e2}")
@@ -719,14 +857,21 @@ def run():
                     continue
             finally:
                 try:
-                    os.remove(tmp)
+                    os.remove(seg_path)
+                    tr_debug(f"seg removed: {os.path.basename(seg_path)}")
                 except Exception:
                     pass
 
             elapsed = time.monotonic() - t0
             throughput = seg_dur / elapsed if elapsed > 0 else 0
-            tr_info(f"Transcribed in {elapsed:.1f}s ({throughput:.2f}x speed): lang={info.language} "
-                    f"({info.language_probability:.0%}) segments={len(seg_list)}")
+            # emit→finish lag: how far behind real time this result is. The line's
+            # written timestamp uses emit (audio) time, NOT this finish time.
+            _emit_str = time.strftime('%H:%M:%S', time.localtime(_emit_ts))
+            _fin_str  = time.strftime('%H:%M:%S')
+            tr_info(f"Transcribed in {elapsed:.1f}s ({throughput:.2f}x speed): "
+                    f"emit={_emit_str} finished={_fin_str} lag={time.time()-_emit_ts:.0f}s "
+                    f"lang={info.language} ({info.language_probability:.0%}) "
+                    f"segments={len(seg_list)} queue={_seg_queue.qsize()}")
 
             # Language detection: lock in when confident, fall back after retries
             if not session_lang:
@@ -760,7 +905,7 @@ def run():
                             if new_path != model_path:
                                 tr_info(f"Switching to {session_lang} model...")
                                 whisper = WhisperModel(new_path, device=device, compute_type=compute_type)
-                                _transcribe_kwargs = _make_transcribe_kwargs(new_path)
+                                _transcribe_kwargs = _make_transcribe_kwargs(new_path, device)
                                 _current_model_lang = session_lang
                                 tr_info("Model switched")
                 except Exception:
@@ -862,7 +1007,8 @@ def run():
     # Mixing happens at text level. On Air button (MIC_ONAIR signal) controls
     # whether mic feeds into the VAD.
     enable_mic    = cfg.getboolean("recording", "enable_mic", fallback=True)
-    _mic_vad      = AccumulatingVAD(silence_sec=silence_s, min_accum_sec=min_s, max_sec=max_s)
+    _mic_vad      = AccumulatingVAD(silence_sec=silence_s, min_accum_sec=min_s, max_sec=max_s,
+                                    min_speech_sec=min_speech_s)
     _mic_vad_lock = threading.Lock()
     _mic_stop     = threading.Event()
     _mic_thread:  threading.Thread | None = None
@@ -1045,7 +1191,7 @@ def run():
                             sys_info(f"Reloading model: {_new_mp} (device={device})")
                             whisper = WhisperModel(_new_mp, device=device, compute_type=compute_type)
                             model_path = _new_mp
-                            _transcribe_kwargs = _make_transcribe_kwargs(model_path)
+                            _transcribe_kwargs = _make_transcribe_kwargs(model_path, device)
                             _current_model_lang = session_lang
                         except Exception as _me:
                             sys_error(f"Model reload failed: {_me}")
@@ -1075,6 +1221,9 @@ def run():
 
             # Session end
             if not session_active and session_was_active:
+                from datetime import datetime as _dt
+                sys_info(f"STOP detected at {_dt.now().strftime('%H:%M:%S')} — "
+                         f"draining {_seg_queue.qsize()} queued segment(s) before finalize")
                 # Flush remaining audio from system VAD buffer
                 seg = vad.force_flush()
                 if seg:

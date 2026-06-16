@@ -180,21 +180,73 @@ class Presenter:
     # ── initialisation ────────────────────────────────────────────────────────
 
     def warm_up(self) -> None:
-        """Heavy, view-free startup work that is safe to run off the main thread:
-        set up the CUDA DLL search path and probe for a GPU (result cached).
-        Run this from a background thread so the window can appear first."""
+        """Heavy, view-free startup work, safe to run off the main thread.
+
+        The CUDA probe (import ctranslate2 / nvidia-smi) is slow, so we avoid it
+        whenever the saved ``device`` already tells us what to do — a user's
+        hardware rarely changes between runs:
+
+        * ``cpu``  → skip entirely. If CUDA turns out to be available we still
+          *offer* it via a low-priority background probe started in initialize().
+        * ``cuda`` → set up the DLL search path but **don't** probe; trust the
+          setting. If CUDA is actually broken the pipeline falls back to CPU at
+          runtime and we restrict to CPU then.
+        * ``auto`` → must detect to choose a backend, so probe (cached)."""
+        device = self._config.get("recording", "device", fallback="auto").strip().lower()
+        if device == "cpu":
+            return
         _setup_cuda_dlls()
-        cuda_status()
+        if device == "auto":
+            cuda_status()
 
     def initialize(self) -> None:
         """
         Called once after warm_up() completes, on the Qt main thread.
-        Reads the cached CUDA result, logs startup info, and applies defaults.
+        Applies the device setting to the UI without re-probing CUDA for explicit
+        cpu/cuda configs (the probe is the slow part of startup).
         (Must run on the main thread — it updates view widgets.)
         """
-        self._auto_select_backend()
+        device = self._config.get("recording", "device", fallback="auto").strip().lower()
         self._log_startup_info()
+
+        if device == "cuda":
+            # Trust the saved CUDA setting: enable the GPU UI, no probe.
+            if self._view is not None:
+                self._view.set_cuda_btn_text("CUDA (GPU)")
+                self._view.set_cuda_btn_state(True)
+                self._view.unlock_gpu_buttons()
+            return
+
+        if device == "cpu":
+            # Reflect CPU immediately, no probe. Then check in the background
+            # whether CUDA is in fact available and, if so, offer it to the user.
+            if self._view is not None:
+                self._view.lock_to_cpu()
+            self._start_cuda_offer_probe()
+            return
+
+        # auto: cuda_status() was warmed in warm_up(); use the cached result.
+        self._auto_select_backend()
         self._apply_cpu_only_defaults(log=False)
+
+    def _start_cuda_offer_probe(self) -> None:
+        """Background, low-priority CUDA probe for a CPU-configured user. If a
+        usable GPU is found, enable the CUDA option so the user can opt in — but
+        do not switch the device automatically (their CPU choice is respected)."""
+        def _probe():
+            try:
+                _setup_cuda_dlls()
+                avail, libs_ok = cuda_status()
+            except Exception:
+                return
+            if avail and libs_ok and self._view is not None:
+                def _offer():
+                    self._view.set_cuda_btn_text("CUDA (GPU)")
+                    self._view.set_cuda_btn_state(True)
+                    self._view.unlock_gpu_buttons()
+                self._view.schedule(_offer)
+                self._view.put_log("[UI] CUDA detected — GPU option is now available")
+        threading.Thread(target=_probe, daemon=True).start()
 
     # ── CUDA helpers ──────────────────────────────────────────────────────────
 
@@ -227,10 +279,16 @@ class Presenter:
     def _log_startup_info(self) -> None:
         if self._view is None:
             return
-        self._view.put_log(
-            f"[UI] CUDA available={self._cuda_available()} "
-            f"libs_ok={self._cuda_libs_ok()}"
-        )
+        device = self._config.get("recording", "device", fallback="auto").strip().lower()
+        if device == "auto":
+            # auto already probed in warm_up(); reading the cache is free.
+            self._view.put_log(
+                f"[UI] CUDA available={self._cuda_available()} "
+                f"libs_ok={self._cuda_libs_ok()}"
+            )
+        else:
+            # Explicit cpu/cuda: trust the config, don't trigger the slow probe.
+            self._view.put_log(f"[UI] device={device} (from config — startup probe skipped)")
         mode  = self._config.get("summary", "mode", fallback="openai")
         lang  = self._config.get("recording", "language", fallback="auto")
         dev   = self._config.get("recording", "device",   fallback="auto")
@@ -253,6 +311,17 @@ class Presenter:
         return changed
 
     def _apply_cpu_only_defaults(self, log: bool = False) -> None:
+        # Explicit device settings are trusted without probing CUDA (the probe is
+        # the slow part of startup, and hardware rarely changes between runs).
+        device = self._config.get("recording", "device", fallback="auto").strip().lower()
+        if device == "cpu":
+            if self._view is not None:
+                self._view.lock_to_cpu()
+            return
+        if device == "cuda":
+            # Trust CUDA; a runtime failure restricts to CPU later.
+            return
+        # auto: decide from the cached probe result.
         if self._cuda_available():
             return
         changed = self._force_cpu_config()
@@ -261,6 +330,24 @@ class Presenter:
             if log or changed:
                 from i18n import t
                 self._view.put_log(f"[UI] {t('gpu_unavailable')}")
+
+    def _restrict_to_cpu(self) -> None:
+        """Persist device=cpu and lock the UI after a runtime CUDA failure.
+        Idempotent — only acts the first time and only if not already CPU."""
+        if getattr(self, "_cuda_restricted", False):
+            return
+        if self._config.get("recording", "device", fallback="auto").strip().lower() == "cpu":
+            self._cuda_restricted = True
+            return
+        self._cuda_restricted = True
+        self._config.set("recording", "device", "cpu")
+        self._config.save()
+        _log("SYS", "WARN", "CUDA failed at runtime → device restricted to cpu")
+        if self._view is not None:
+            self._view.schedule(self._view.lock_to_cpu)
+            self._view.put_log(
+                "[UI] CUDA が実行時に失敗 → CPU に制限しました（次回以降は CPU で起動）"
+            )
 
     def apply_startup_defaults(self, log: bool = True) -> None:
         """Called from view's _apply_initial_ui_state after reading config."""
@@ -574,10 +661,12 @@ class Presenter:
             self._sub_win_proc = None
         self._view and self._view.put_log("[UI] 字幕停止")
 
-    def _stop_pipeline(self, timeout: float = 30) -> None:
+    def _stop_pipeline(self, timeout: float = 600) -> None:
         """pipeline に停止シグナルを送り、終了を待つ。
-        timeout は wait の上限（プロセスは終了次第すぐ返る）。閉じる際は
-        MP3 変換の完了を待てるよう大きめの値を渡す。"""
+        timeout は wait の上限（プロセスは終了次第すぐ返るので、大きくしても
+        通常は待たない）。pipeline は終了時に残キューを完全に消化してから抜けるため、
+        ハード不足でバックログが多い場合に備えて十分大きく取る。閉じる際は
+        さらに大きい値（1800s）を渡す。"""
         with open(self._PIPELINE_STOP, "w") as f:
             f.write("1")
         if self._pipeline_proc and self._pipeline_proc.poll() is None:
@@ -823,10 +912,20 @@ class Presenter:
             time.sleep(POLL_INTERVAL)
 
     def _wait_pipeline_and_summarize(self) -> None:
-        """pipeline がセッション終了処理を完了するまで待ち、纪要を生成する。"""
+        """pipeline がセッション終了処理（残キューの転写 → 音声変換）を完了するまで
+        待ってから纪要を生成する。
+
+        転写はファイルキューに溜まったバックログを1件ずつ処理するため、停止時に
+        まだ多数のセグメントが残っていると、消化に発話音声より長くかかることがある
+        （特に CPU 転写）。固定タイムアウトで打ち切ると、(1) まだ pipeline が開いて
+        いる .raw を RAW フォールバックが触って WinError 32、(2) 未完成の corrected
+        ファイルから纪要を生成して末尾が欠ける、という問題が起きる。よって
+        pipeline プロセスが生きている限り SESS_DONE を待つ（生存確認＋巨大な安全上限）。"""
         _SESS_DONE = os.path.join(BASE, ".pipeline_session_done")
-        # pipeline_session_done シグナルを待つ（最大 60 秒）
-        deadline = time.time() + 60
+        HARD_CAP   = 3600  # 絶対上限（秒）。通常は SESS_DONE 受信で抜ける。
+        deadline   = time.time() + HARD_CAP
+        _last_log  = 0.0
+        got_done   = False
         while time.time() < deadline:
             if os.path.exists(_SESS_DONE):
                 try:
@@ -834,11 +933,30 @@ class Presenter:
                 except Exception:
                     pass
                 _log("SYS", "INFO", "session_done シグナル受信")
+                got_done = True
                 break
+            # pipeline が SESS_DONE を書かずに落ちていたら待つ意味がない
+            if self._pipeline_proc is not None and self._pipeline_proc.poll() is not None:
+                _log("SYS", "WARN", "pipeline プロセスが終了（session_done 未受信）")
+                break
+            now = time.time()
+            if now - _last_log >= 15:
+                _last_log = now
+                self._view and self._view.put_log(
+                    "[UI] pipeline が残りの転写を処理中… 完了を待っています"
+                )
             time.sleep(0.5)
-        else:
-            _log("SYS", "WARN", "session_done タイムアウト → フォールバック: RAW 変換を試みる")
-            self._finalize_recorder_raw()  # 安全策: 残 RAW ファイルを変換
+
+        if not got_done:
+            # ここに来るのは pipeline が死んでいる／上限超過の異常時のみ。
+            # pipeline がまだ生きている（.raw を保持中）なら RAW 変換は競合するので行わない。
+            alive = (self._pipeline_proc is not None
+                     and self._pipeline_proc.poll() is None)
+            if alive:
+                _log("SYS", "WARN", "session_done 未受信だが pipeline 稼働中 → RAW 変換はスキップ")
+            else:
+                _log("SYS", "WARN", "session_done 未受信 → フォールバック: RAW 変換を試みる")
+                self._finalize_recorder_raw()  # 安全策: 残 RAW ファイルを変換
 
         # NOTE: Do NOT set transcription status to "stopped" here!
         # Wait for summary pipeline to complete before showing any completion status.
@@ -1111,13 +1229,32 @@ class Presenter:
             #    (flush audio, transcribe remainder, start MP3 conversion, summary).
             if self._running and not self._stopping:
                 self.stop()
-            # 2. Wait for the finalize + summarize chain to complete (bounded).
-            deadline = time.time() + 300
+            # 2. Wait for the finalize + summarize chain to complete.
+            #    With insufficient hardware the transcription backlog at stop can
+            #    be large — up to ~20 min of buffered audio, which at sub-realtime
+            #    CPU speed may take 30–40 min to drain. A short fixed timeout would
+            #    cut transcription off and lose the tail, so we wait as long as the
+            #    pipeline process is alive (it owns the work), capped only by a very
+            #    generous ceiling. The user can press close a second time to force
+            #    quit if they don't want to wait.
+            deadline  = time.time() + 3600   # 60 min absolute ceiling
+            _last_log = 0.0
             while self._running and time.time() < deadline:
+                # If the pipeline died, there is nothing left to wait for.
+                if (self._pipeline_proc is not None
+                        and self._pipeline_proc.poll() is not None):
+                    break
+                now = time.time()
+                if now - _last_log >= 15:
+                    _last_log = now
+                    self._view and self._view.put_log(
+                        "[UI] バックグラウンド処理の完了を待っています…（もう一度閉じると強制終了）"
+                    )
                 time.sleep(0.5)
             # 3. Stop the long-lived pipeline; give its shutdown enough time to
-            #    finish any in-progress MP3 conversion before the process exits.
-            self._stop_pipeline(timeout=180)
+            #    finish draining any remaining queue + in-progress MP3 conversion
+            #    before the process exits.
+            self._stop_pipeline(timeout=1800)
             self._stop_ollama()
         except Exception as e:
             _log("SYS", "ERROR", f"graceful shutdown error: {e}")
@@ -1170,8 +1307,15 @@ class Presenter:
         # Pipeline dashboard patterns
         _pl_vad_turn  = re.compile(r"VAD turn-end.*in ([\d.]+)s window")
         _pl_vad_force = re.compile(r"VAD force-flush: ([\d.]+)s accumulated")
-        _pl_whisper_in  = re.compile(r"Transcribing ([\d.]+)s system audio")
-        _pl_whisper_out = re.compile(r"Transcribed in [\d.]+s:")
+        # Silence-skipped windows are recorded but not transcribed; still count
+        # them toward the "audio recorded" timer so it tracks real elapsed audio.
+        _pl_vad_skip  = re.compile(r"VAD silence-skip: ([\d.]+)s accumulated")
+        # NOTE: keep these in sync with pipeline.py's log strings. The "Transcribed
+        # in" line gained a "(<x> speed): emit=… " suffix, so the old pattern that
+        # required a colon right after the seconds ("…s:") stopped matching and the
+        # transcription counter froze at 0. Match the leading text only.
+        _pl_whisper_in  = re.compile(r"Transcribing ([\d.]+)s (?:system|mic) audio")
+        _pl_whisper_out = re.compile(r"Transcribed in [\d.]+s")
         _pl_pending = [0.0]  # pending audio secs for trans counter
 
         for line in proc.stdout:
@@ -1182,6 +1326,13 @@ class Presenter:
             # 構造化ログを先に解析し、正規表現は msg 部分に適用する
             parsed = parse_log_line(text)
             search_text = parsed[3] if parsed else text  # msg or raw text
+
+            # Runtime CUDA failure: the pipeline (started with a trusted device=cuda
+            # config, no startup probe) logs that it is falling back to CPU. React
+            # by restricting the device to CPU so we don't retry CUDA next time.
+            if prefix == "[PL]" and ("falling back to CPU" in search_text
+                                     or "switching to CPU" in search_text):
+                self._restrict_to_cpu()
 
             if prefix == "[Tr]":
                 m = _tr_file_re.search(search_text)
@@ -1197,10 +1348,12 @@ class Presenter:
                         self._view.schedule(lambda s=secs: self._view.dashboard_add_trans(s))
 
             elif prefix == "[PL]":
-                # Pipeline VAD flush → update audio counter (middle)
+                # Pipeline VAD flush (or silence-skip) → update audio counter (middle)
                 m = _pl_vad_turn.search(search_text)
                 if not m:
                     m = _pl_vad_force.search(search_text)
+                if not m:
+                    m = _pl_vad_skip.search(search_text)
                 if m and self._view and self._running:
                     secs = float(m.group(1))
                     self._view.schedule(lambda s=secs: self._view.dashboard_add_audio(s))

@@ -260,10 +260,11 @@ class App(QMainWindow):
     # ── Async startup ─────────────────────────────────────────────────────────
 
     def _start_async_init(self) -> None:
-        """Window is now visible. Disable Start, then run the slow CUDA probe in
-        a background thread so the UI stays responsive."""
+        """Window is now visible. Disable Start, then run startup work (and, only
+        when device=auto, the slow CUDA probe) in a background thread so the UI
+        stays responsive."""
         self.set_start_enabled(False)
-        self.put_log("[UI] Initializing… detecting CUDA")
+        self.put_log("[UI] Initializing…")
 
         def _worker():
             try:

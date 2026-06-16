@@ -189,6 +189,14 @@ Examples:
         metavar="LANG",
         help="Language code (auto, ja, en, zh, etc.)"
     )
+    parser.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        metavar="N",
+        help="Auto-stop after N seconds, then wait for processing to finish "
+             "(non-interactive testing; without this, stop with Ctrl+C)"
+    )
     args = parser.parse_args()
 
     try:
@@ -214,13 +222,24 @@ Examples:
         # Auto-start recording immediately
         presenter.start()
 
-        # Wait for recording to complete (user presses Ctrl+C or session ends naturally)
-        # The presenter runs pipeline in background
+        # Wait for recording to complete (user presses Ctrl+C, fixed --seconds
+        # duration elapses, or session ends naturally).
+        # The presenter runs pipeline in background.
         try:
-            while presenter._running:
-                time.sleep(0.5)
+            if args.seconds:
+                _t0 = time.time()
+                while presenter._running and (time.time() - _t0) < args.seconds:
+                    time.sleep(0.5)
+                _stop_clock = time.strftime("%H:%M:%S")
+                print(f"\n[*] Auto-stop after {args.seconds:.0f}s "
+                      f"(stop wall-clock={_stop_clock}); waiting for processing...")
+                presenter.stop()
+            else:
+                while presenter._running:
+                    time.sleep(0.5)
         except KeyboardInterrupt:
-            print("\n[*] Stopping recording and waiting for summarization...")
+            print(f"\n[*] Stopping recording (stop wall-clock={time.strftime('%H:%M:%S')}) "
+                  f"and waiting for summarization...")
             presenter.stop()
 
         # Wait for summarization to complete (up to 300 seconds)
