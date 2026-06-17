@@ -254,6 +254,7 @@ Examples:
         # Files are automatically saved to:
         # - corrected_*.txt in config.ini [paths] corrected_dir
         # - summary_*.md in config.ini [summary] summary_dir
+        presenter._stop_pipeline(timeout=1800)
         sys.stderr.write("[INFO] Session complete. Results saved to disk.\n")
 
         sys.exit(0)

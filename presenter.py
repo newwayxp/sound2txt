@@ -46,7 +46,6 @@ from appconfig import (
     STATE_FILE,
     STOP_SIGNAL,
     cuda_status,
-    _setup_cuda_dlls,
 )
 
 _MIC_ONAIR = os.path.join(BASE, ".mic_onair")
@@ -121,6 +120,7 @@ class Presenter:
 
         # ── pipeline (unified: VAD + Whisper + translation) ───────────────────
         self._pipeline_proc:  subprocess.Popen | None = None
+        self._pipeline_owned = False
         self._sub_win_proc:   subprocess.Popen | None = None
         # backward compat alias
         self._sub_proc = None
@@ -143,9 +143,9 @@ class Presenter:
         self._OLLAMA_STATE = "stopped"   # "stopped" | "starting" | "running"
 
         # ── subprocess env ────────────────────────────────────────────────────
-        # NOTE: _setup_cuda_dlls() and CUDA detection are deferred to warm_up(),
-        # which runs in a background thread after the window is shown, so the UI
-        # appears immediately instead of blocking on the slow CUDA probe.
+        # NOTE: CUDA is never probed at startup. The configured device is used
+        # as-is; the pipeline child process sets up its own CUDA DLLs and decides
+        # the backend at session start, falling back to CPU on a runtime failure.
         self._env = os.environ.copy()
         self._env["PYTHONUTF8"]       = "1"
         self._env["PYTHONUNBUFFERED"] = "1"
@@ -180,156 +180,39 @@ class Presenter:
     # ── initialisation ────────────────────────────────────────────────────────
 
     def warm_up(self) -> None:
-        """Heavy, view-free startup work, safe to run off the main thread.
+        """View-free startup work, safe to run off the main thread.
 
-        The CUDA probe (import ctranslate2 / nvidia-smi) is slow, so we avoid it
-        whenever the saved ``device`` already tells us what to do — a user's
-        hardware rarely changes between runs:
-
-        * ``cpu``  → skip entirely. If CUDA turns out to be available we still
-          *offer* it via a low-priority background probe started in initialize().
-        * ``cuda`` → set up the DLL search path but **don't** probe; trust the
-          setting. If CUDA is actually broken the pipeline falls back to CPU at
-          runtime and we restrict to CPU then.
-        * ``auto`` → must detect to choose a backend, so probe (cached)."""
-        device = self._config.get("recording", "device", fallback="auto").strip().lower()
-        if device == "cpu":
-            return
-        _setup_cuda_dlls()
-        if device == "auto":
-            cuda_status()
+        Per design, CUDA is **not** probed at startup: the saved ``device`` is
+        taken from config as-is. A ``device=cuda`` config is used directly at
+        recording time and only falls back to CPU (updating config) if the GPU
+        fails at runtime; ``auto`` is resolved by the pipeline at session start.
+        CUDA is validated on demand when the user picks it in the settings UI."""
+        return
 
     def initialize(self) -> None:
-        """
-        Called once after warm_up() completes, on the Qt main thread.
-        Applies the device setting to the UI without re-probing CUDA for explicit
-        cpu/cuda configs (the probe is the slow part of startup).
-        (Must run on the main thread — it updates view widgets.)
-        """
-        device = self._config.get("recording", "device", fallback="auto").strip().lower()
+        """Called once after warm_up(), on the Qt main thread. Reflects the saved
+        device in the UI as-is — startup must NOT probe CUDA. Whatever the config
+        says (cpu/cuda/auto) is trusted; CUDA failures are handled at runtime, and
+        CUDA is validated on demand when the user selects it in settings.
+        (Must run on the main thread — it updates view widgets.)"""
         self._log_startup_info()
-
-        if device == "cuda":
-            # Trust the saved CUDA setting: enable the GPU UI, no probe.
-            if self._view is not None:
-                self._view.set_cuda_btn_text("CUDA (GPU)")
-                self._view.set_cuda_btn_state(True)
-                self._view.unlock_gpu_buttons()
-            return
-
-        if device == "cpu":
-            # Reflect CPU immediately, no probe. Then check in the background
-            # whether CUDA is in fact available and, if so, offer it to the user.
-            if self._view is not None:
-                self._view.lock_to_cpu()
-            self._start_cuda_offer_probe()
-            return
-
-        # auto: cuda_status() was warmed in warm_up(); use the cached result.
-        self._auto_select_backend()
-        self._apply_cpu_only_defaults(log=False)
-
-    def _start_cuda_offer_probe(self) -> None:
-        """Background, low-priority CUDA probe for a CPU-configured user. If a
-        usable GPU is found, enable the CUDA option so the user can opt in — but
-        do not switch the device automatically (their CPU choice is respected)."""
-        def _probe():
-            try:
-                _setup_cuda_dlls()
-                avail, libs_ok = cuda_status()
-            except Exception:
-                return
-            if avail and libs_ok and self._view is not None:
-                def _offer():
-                    self._view.set_cuda_btn_text("CUDA (GPU)")
-                    self._view.set_cuda_btn_state(True)
-                    self._view.unlock_gpu_buttons()
-                self._view.schedule(_offer)
-                self._view.put_log("[UI] CUDA detected — GPU option is now available")
-        threading.Thread(target=_probe, daemon=True).start()
-
-    # ── CUDA helpers ──────────────────────────────────────────────────────────
-
-    def _cuda_available(self) -> bool:
-        return cuda_status()[0]
-
-    def _cuda_libs_ok(self) -> bool:
-        return cuda_status()[1]
-
-    # ── backend auto-select ───────────────────────────────────────────────────
-
-    def _auto_select_backend(self) -> None:
-        """Detect CUDA and update the CUDA radio button state in the view."""
-        if self._view is None:
-            return
-        if self._cuda_available():
-            if self._cuda_libs_ok():
-                self._view.set_cuda_btn_text("CUDA (GPU)")
-                self._view.set_cuda_btn_state(True)
-            else:
-                self._view.set_cuda_btn_text("CUDA (libs missing)")
-                self._view.set_cuda_btn_state(False)
-            self._view.unlock_gpu_buttons()
-        else:
+        if self._view is not None:
             self._view.set_cuda_btn_text("CUDA (GPU)")
-            self._view.set_cuda_btn_state(False)
 
     # ── startup log ───────────────────────────────────────────────────────────
 
     def _log_startup_info(self) -> None:
         if self._view is None:
             return
-        device = self._config.get("recording", "device", fallback="auto").strip().lower()
-        if device == "auto":
-            # auto already probed in warm_up(); reading the cache is free.
-            self._view.put_log(
-                f"[UI] CUDA available={self._cuda_available()} "
-                f"libs_ok={self._cuda_libs_ok()}"
-            )
-        else:
-            # Explicit cpu/cuda: trust the config, don't trigger the slow probe.
-            self._view.put_log(f"[UI] device={device} (from config — startup probe skipped)")
+        # Startup never probes CUDA — just echo the config verbatim.
         mode  = self._config.get("summary", "mode", fallback="openai")
         lang  = self._config.get("recording", "language", fallback="auto")
         dev   = self._config.get("recording", "device",   fallback="auto")
         model = self._config.get("recording", "model_size", fallback="small")
         self._view.put_log(
-            f"[UI] Config: mode={mode} lang={lang} device={dev} model={model}"
+            f"[UI] Config: mode={mode} lang={lang} device={dev} model={model} "
+            f"(device used as-is; no startup CUDA probe)"
         )
-
-    # ── CPU-only defaults ─────────────────────────────────────────────────────
-
-    def _force_cpu_config(self) -> bool:
-        """Force device to cpu when CUDA is unavailable; returns True if changed.
-        The user's model_size choice is left untouched (no restriction)."""
-        changed = False
-        if self._config.get("recording", "device", fallback="auto") != "cpu":
-            self._config.set("recording", "device", "cpu")
-            changed = True
-        if changed:
-            self._config.save()
-        return changed
-
-    def _apply_cpu_only_defaults(self, log: bool = False) -> None:
-        # Explicit device settings are trusted without probing CUDA (the probe is
-        # the slow part of startup, and hardware rarely changes between runs).
-        device = self._config.get("recording", "device", fallback="auto").strip().lower()
-        if device == "cpu":
-            if self._view is not None:
-                self._view.lock_to_cpu()
-            return
-        if device == "cuda":
-            # Trust CUDA; a runtime failure restricts to CPU later.
-            return
-        # auto: decide from the cached probe result.
-        if self._cuda_available():
-            return
-        changed = self._force_cpu_config()
-        if self._view is not None:
-            self._view.lock_to_cpu()
-            if log or changed:
-                from i18n import t
-                self._view.put_log(f"[UI] {t('gpu_unavailable')}")
 
     def _restrict_to_cpu(self) -> None:
         """Persist device=cpu and lock the UI after a runtime CUDA failure.
@@ -350,8 +233,9 @@ class Presenter:
             )
 
     def apply_startup_defaults(self, log: bool = True) -> None:
-        """Called from view's _apply_initial_ui_state after reading config."""
-        self._apply_cpu_only_defaults(log=log)
+        """Called after settings are saved. The device is taken as-is (a CUDA
+        choice was already validated when the radio was clicked), so this only
+        ensures the configured output directories exist — no CUDA probing."""
         self._ensure_dirs()
 
     def _ensure_dirs(self) -> None:
@@ -609,6 +493,34 @@ class Presenter:
     _PIPELINE_SUBTITLE = os.path.join(BASE, ".pipeline_subtitle")
     _PIPELINE_SESSION  = os.path.join(BASE, ".pipeline_session")
     _PIPELINE_STOP     = os.path.join(BASE, ".pipeline_stop")
+    _PIPELINE_LOCK     = os.path.join(BASE, ".pipeline.lock")
+
+    def _pipeline_lock_held(self) -> bool:
+        """Best-effort check for an already running pipeline process."""
+        try:
+            fh = open(self._PIPELINE_LOCK, "a+b")
+            fh.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    return False
+                except OSError:
+                    return True
+                finally:
+                    fh.close()
+            import fcntl
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                return False
+            except OSError:
+                return True
+            finally:
+                fh.close()
+        except Exception:
+            return False
 
     def _ensure_pipeline_running(self) -> None:
         """pipeline.py が起動していなければ起動する。"""
@@ -619,11 +531,18 @@ class Presenter:
             os.remove(self._PIPELINE_STOP)
         except FileNotFoundError:
             pass
+        if self._pipeline_lock_held():
+            self._pipeline_proc = None
+            self._pipeline_owned = False
+            _log("SYS", "INFO", "pipeline already running; reusing existing instance")
+            self._view and self._view.put_log("[UI] pipeline 既存インスタンスを使用")
+            return
         self._pipeline_proc = subprocess.Popen(
             [sys.executable, "-X", "utf8", os.path.join(BASE, "pipeline.py")],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", env=self._env,
         )
+        self._pipeline_owned = True
         threading.Thread(
             target=self._pipe, args=(self._pipeline_proc, "[PL]"), daemon=True
         ).start()
@@ -667,6 +586,10 @@ class Presenter:
         通常は待たない）。pipeline は終了時に残キューを完全に消化してから抜けるため、
         ハード不足でバックログが多い場合に備えて十分大きく取る。閉じる際は
         さらに大きい値（1800s）を渡す。"""
+        if not self._pipeline_owned:
+            self._pipeline_proc = None
+            _log("SYS", "INFO", "pipeline stop skipped (external instance)")
+            return
         with open(self._PIPELINE_STOP, "w") as f:
             f.write("1")
         if self._pipeline_proc and self._pipeline_proc.poll() is None:
@@ -675,6 +598,7 @@ class Presenter:
             except Exception:
                 self._pipeline_proc.terminate()
         self._pipeline_proc = None
+        self._pipeline_owned = False
         _log("SYS", "INFO", "pipeline stopped")
 
     def _stop_meter(self) -> None:
@@ -749,9 +673,10 @@ class Presenter:
             except FileNotFoundError:
                 pass
 
-        # Re-read config and enforce CPU-only if needed
+        # Re-read config. The device is used exactly as configured (cuda is tried
+        # directly; the pipeline falls back to CPU + updates config only if the GPU
+        # fails at runtime). No CUDA probe here.
         self._reload_config()
-        self._apply_cpu_only_defaults(log=True)
 
         self._running   = True
         self._stopping  = False
@@ -1304,19 +1229,12 @@ class Presenter:
         primary_audio_prefix = "[Rec]"
         primary_trans_source = "loopback"
 
-        # Pipeline dashboard patterns
-        _pl_vad_turn  = re.compile(r"VAD turn-end.*in ([\d.]+)s window")
-        _pl_vad_force = re.compile(r"VAD force-flush: ([\d.]+)s accumulated")
-        # Silence-skipped windows are recorded but not transcribed; still count
-        # them toward the "audio recorded" timer so it tracks real elapsed audio.
-        _pl_vad_skip  = re.compile(r"VAD silence-skip: ([\d.]+)s accumulated")
-        # NOTE: keep these in sync with pipeline.py's log strings. The "Transcribed
-        # in" line gained a "(<x> speed): emit=… " suffix, so the old pattern that
-        # required a colon right after the seconds ("…s:") stopped matching and the
-        # transcription counter froze at 0. Match the leading text only.
-        _pl_whisper_in  = re.compile(r"Transcribing ([\d.]+)s (?:system|mic) audio")
-        _pl_whisper_out = re.compile(r"Transcribed in [\d.]+s")
-        _pl_pending = [0.0]  # pending audio secs for trans counter
+        # Pipeline dashboard patterns. Keep these in sync with pipeline.py.
+        # Audio Rec increments only after the segment WAV has been fully written
+        # to the disk cache. Transcribed increments only after transcription,
+        # correction/glossary, and corrected-file append have completed.
+        _pl_seg_cached = re.compile(r"seg cached\+queued: .* dur=([\d.]+)s,")
+        _pl_finalized  = re.compile(r"Segment finalized: ([\d.]+)s (?:system|mic) audio")
 
         for line in proc.stdout:
             text = line.rstrip()
@@ -1348,25 +1266,16 @@ class Presenter:
                         self._view.schedule(lambda s=secs: self._view.dashboard_add_trans(s))
 
             elif prefix == "[PL]":
-                # Pipeline VAD flush (or silence-skip) → update audio counter (middle)
-                m = _pl_vad_turn.search(search_text)
-                if not m:
-                    m = _pl_vad_force.search(search_text)
-                if not m:
-                    m = _pl_vad_skip.search(search_text)
+                # Segment cache write complete → update audio counter (middle)
+                m = _pl_seg_cached.search(search_text)
                 if m and self._view and self._running:
                     secs = float(m.group(1))
                     self._view.schedule(lambda s=secs: self._view.dashboard_add_audio(s))
 
-                # Pipeline transcription start → track segment duration
-                m2 = _pl_whisper_in.search(search_text)
+                # Corrected-file append complete → update trans counter (right)
+                m2 = _pl_finalized.search(search_text)
                 if m2:
-                    _pl_pending[0] = float(m2.group(1))
-
-                # Pipeline transcription complete → update trans counter (right)
-                if _pl_whisper_out.search(search_text) and _pl_pending[0] > 0:
-                    secs = _pl_pending[0]
-                    _pl_pending[0] = 0.0
+                    secs = float(m2.group(1))
                     if self._view and self._running:
                         self._view.schedule(lambda s=secs: self._view.dashboard_add_trans(s))
 

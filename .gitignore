@@ -16,6 +16,7 @@ config.ini
 .pipeline_session
 .pipeline_stop
 .pipeline_session_done
+.pipeline.lock
 .last_transcript
 .last_corrected
 .last_language

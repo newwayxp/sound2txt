@@ -104,6 +104,8 @@ _T: dict[str, dict[str, str]] = {
     "device_label":  {"zh": "运算设备",                   "ja": "実行デバイス",                   "en": "Device"},
     "device_auto":   {"zh": "自动（有GPU则用GPU）",        "ja": "自動（GPU 優先）",               "en": "Auto (GPU if available)"},
     "gpu_unavailable":{"zh": "未检测到 CUDA GPU，已固定为 CPU（模型可自由选择）", "ja": "CUDA GPU が見つからないため CPU に固定しました（モデルは選択可能）", "en": "CUDA GPU not detected; fixed to CPU (model selectable)"},
+    "cuda_checking": {"zh": "正在检测 CUDA…",               "ja": "CUDA を確認中…",                 "en": "Checking CUDA…"},
+    "cuda_no_gpu":   {"zh": "未检测到 GPU，无法设置为 CUDA，已改回 CPU", "ja": "GPU が見つからないため CUDA に設定できません。CPU に戻しました", "en": "No GPU detected; cannot use CUDA. Reverted to CPU"},
     "model_label":   {"zh": "Whisper 模型",               "ja": "Whisper モデル",                 "en": "Whisper model"},
     "lang_label":    {"zh": "转写语言",                   "ja": "転写言語",                       "en": "Transcription language"},
     "lang_auto":     {"zh": "自动检测",                   "ja": "自動検出",                       "en": "Auto detect"},

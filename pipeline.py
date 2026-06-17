@@ -22,6 +22,7 @@ import collections
 import configparser
 import threading
 import warnings
+import re
 import numpy as np
 
 warnings.filterwarnings("ignore")
@@ -49,6 +50,7 @@ from glossary import resolve_glossary_file, load_glossary, apply_glossary
 SIGNAL_SESSION   = os.path.join(_BASE, ".pipeline_session")
 SIGNAL_STOP      = os.path.join(_BASE, ".pipeline_stop")
 SIGNAL_SESS_DONE = os.path.join(_BASE, ".pipeline_session_done")
+SIGNAL_LOCK      = os.path.join(_BASE, ".pipeline.lock")
 MIC_ONAIR        = os.path.join(_BASE, ".mic_onair")
 LANG_FILE          = os.path.join(_BASE, ".last_language")
 STATE_FILE         = os.path.join(_BASE, ".last_transcript")
@@ -66,6 +68,86 @@ HALLUCINATION = [
     "日本語の会議録音", "普通话录音的简体中文",
     "Meeting transcript",
 ]
+
+
+def _is_repetition_hallucination(text: str) -> bool:
+    """Detect Whisper loop hallucinations such as repeated single terms.
+
+    Hard/noisy audio can make Whisper emit long low-information loops
+    ("プロセス、プロセス..." or "税金の税金..."). These can pass no_speech/logprob
+    filters, then spend extra time in LLM correction and poison the transcript.
+    Keep this conservative: only drop text with a dominant repeated token or a
+    repeated short phrase covering most of the segment.
+    """
+    compact = re.sub(r"\s+", "", text)
+    if len(compact) < 24:
+        return False
+
+    tokens = [t for t in re.split(r"[、。,.!?！？\s]+", text) if t]
+    if len(tokens) >= 8:
+        counts = collections.Counter(tokens)
+        token, count = counts.most_common(1)[0]
+        if len(token) >= 2 and count >= 6 and count / len(tokens) >= 0.65:
+            return True
+
+    for size in range(2, min(10, len(compact) // 3) + 1):
+        sliding = [compact[i:i + size] for i in range(0, len(compact) - size + 1)]
+        counts = collections.Counter(sliding)
+        phrase, count = counts.most_common(1)[0]
+        if count >= 8 and (count * len(phrase)) / len(compact) >= 0.45:
+            return True
+
+        chunks = [compact[i:i + size] for i in range(0, len(compact) - size + 1, size)]
+        if len(chunks) < 6:
+            continue
+        counts = collections.Counter(chunks)
+        phrase, count = counts.most_common(1)[0]
+        if count >= 6 and (count * len(phrase)) / len(compact) >= 0.55:
+            return True
+    return False
+
+
+def _acquire_pipeline_lock():
+    """Return an exclusive process lock handle, or None if another pipeline runs."""
+    fh = open(SIGNAL_LOCK, "a+b")
+    fh.seek(0)
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    try:
+        fh.seek(0)
+        fh.write(b"1")
+        fh.flush()
+        fh.seek(0)
+    except Exception:
+        pass
+    return fh
+
+
+def _release_pipeline_lock(fh) -> None:
+    if not fh:
+        return
+    try:
+        fh.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        fh.close()
+    except Exception:
+        pass
 
 
 # ── VAD (silence-based speech segment detection) ─────────────────────────────
@@ -355,16 +437,15 @@ def _make_transcribe_kwargs(model_path: str, device: str = "cpu") -> dict:
 
     The temperature fallback list is the other big CPU time sink: when a decode
     fails the quality thresholds (repetition / compression ratio), faster-whisper
-    re-decodes the WHOLE window once per temperature. On hard/music segments all
-    6 values get tried → a single 8 s clip can take 100 s+ (0.08x), freezing the
-    serial worker and growing the backlog. Cap CPU to 2 temperatures so the
-    worst case is ~2× a normal decode instead of ~12×; CUDA is fast enough to
-    keep the full list."""
+    re-decodes the WHOLE window once per temperature. On hard/music segments even
+    2 values can make a 4 s clip take 30 s+. Use a one-item list on CPU to keep
+    the API shape correct while disabling CPU fallback storms; CUDA is fast
+    enough to keep the full list."""
     import json as _json
 
     kwargs: dict = dict(
         beam_size                  = 1 if device == "cpu" else 5,
-        temperature                = ([0.0, 0.2] if device == "cpu"
+        temperature                = ([0.0] if device == "cpu"
                                       else [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]),
         vad_filter                 = True,
         vad_parameters             = {"min_silence_duration_ms": 400, "threshold": 0.4},
@@ -395,6 +476,11 @@ def _make_transcribe_kwargs(model_path: str, device: str = "cpu") -> dict:
 
 # ── main pipeline ─────────────────────────────────────────────────────────────
 def run():
+    _pipeline_lock = _acquire_pipeline_lock()
+    if _pipeline_lock is None:
+        sys_error("Another pipeline.py instance is already running; exiting")
+        return
+
     cfg = configparser.ConfigParser()
     cfg.read(os.path.join(_BASE, "config.ini"), encoding="utf-8")
 
@@ -466,9 +552,18 @@ def run():
         "en": cfg.get("models", "en", fallback=model_size),
     }
     _models_dir = os.path.join(_BASE, "models")
+    _HEAVY_CPU_MODELS = {"large", "large-v1", "large-v2", "large-v3"}
+
+    def _is_heavy_cpu_model(candidate: str) -> bool:
+        name = os.path.basename(candidate.rstrip("\\/")).lower()
+        return name in _HEAVY_CPU_MODELS
 
     def _resolve_model(lang: str | None) -> str:
         candidate = _LANG_MODELS.get(lang or "", model_size)
+        if device == "cpu" and candidate != model_size and _is_heavy_cpu_model(candidate):
+            sys_info(f"CPU mode: skipping language model override {candidate} "
+                     f"(lang={lang}); using {model_size}")
+            candidate = model_size
         local_path = os.path.join(_models_dir, candidate)
         if os.path.isdir(local_path) and os.path.exists(os.path.join(local_path, "model.bin")):
             sys_info(f"Using language model: {candidate} (lang={lang})")
@@ -798,9 +893,11 @@ def run():
         # never pick up a half-written segment (the "don't process the file that
         # is still being recorded" guarantee). The log line below is emitted only
         # after both steps, making that ordering observable.
+        seg_dur = len(seg) / 2 / SAMPLE_RATE
         _seg_queue.put((seg_path, source, emit_ts))
         tr_info(f"seg cached+queued: {os.path.basename(seg_path)} "
-                f"({len(seg)}B, emit={time.strftime('%H:%M:%S', time.localtime(emit_ts))}) "
+                f"({len(seg)}B, dur={seg_dur:.1f}s, "
+                f"emit={time.strftime('%H:%M:%S', time.localtime(emit_ts))}) "
                 f"depth={_seg_queue.qsize()}")
 
     _lang_detect_attempts = [0]   # segments tried while session_lang is still None
@@ -815,150 +912,166 @@ def run():
                 _seg_queue.task_done()
                 break
 
-            seg_path, _seg_source, _emit_ts = item
-            _src_label = _mic_label(session_lang) if _seg_source == "mic" else ""
+            # Every non-sentinel item MUST reach task_done() exactly once, or the
+            # session-end _seg_queue.join() blocks forever and recording can never
+            # stop (the pipeline never writes .pipeline_session_done). Wrap the whole
+            # body so any unexpected error drops just this one segment and the worker
+            # keeps draining the backlog instead of dying silently.
             try:
-                with wave.open(seg_path, "rb") as _wf:
-                    seg_dur = _wf.getnframes() / float(_wf.getframerate() or SAMPLE_RATE)
-            except Exception:
-                seg_dur = 0.0
-            tr_info(f"Transcribing {seg_dur:.1f}s {_seg_source} audio (queue depth={_seg_queue.qsize()})")
+                seg_path, _seg_source, _emit_ts = item
+                _src_label = _mic_label(session_lang) if _seg_source == "mic" else ""
+                try:
+                    with wave.open(seg_path, "rb") as _wf:
+                        seg_dur = _wf.getnframes() / float(_wf.getframerate() or SAMPLE_RATE)
+                except Exception:
+                    seg_dur = 0.0
+                tr_info(f"Transcribing {seg_dur:.1f}s {_seg_source} audio (queue depth={_seg_queue.qsize()})")
 
-            # Transcribe the cached segment file directly (no temp re-write).
-            t0 = time.monotonic()
-            try:
-                prompt = _initial_prompt(session_lang)
-                segs, info = whisper.transcribe(
-                    seg_path,
-                    language       = session_lang,
-                    initial_prompt = prompt,
-                    **_transcribe_kwargs,
-                )
-                seg_list = list(segs)
+                # Transcribe the cached segment file directly (no temp re-write).
+                t0 = time.monotonic()
+                try:
+                    prompt = _initial_prompt(session_lang)
+                    segs, info = whisper.transcribe(
+                        seg_path,
+                        language       = session_lang,
+                        initial_prompt = prompt,
+                        **_transcribe_kwargs,
+                    )
+                    seg_list = list(segs)
+
+                except Exception as e:
+                    if device == "cuda" and ("cublas" in str(e).lower() or "cuda" in str(e).lower()):
+                        tr_info(f"CUDA error, switching to CPU: {e}")
+                        # The CPU model rebuild itself can fail; if it does, the
+                        # error must NOT escape (it would kill the worker). Drop the
+                        # segment and continue — the outer finally still task_done()s.
+                        try:
+                            device = "cpu"
+                            compute_type = "int8"
+                            whisper = WhisperModel(model_path, device="cpu", compute_type="int8")
+                            _transcribe_kwargs = _make_transcribe_kwargs(model_path, "cpu")
+                            segs, info = whisper.transcribe(
+                                seg_path, language=session_lang, **_transcribe_kwargs)
+                            seg_list = list(segs)
+                        except Exception as e2:
+                            tr_error(f"transcribe error (CPU fallback): {e2}")
+                            continue
+                    else:
+                        tr_error(f"transcribe error: {e}")
+                        continue
+                finally:
+                    try:
+                        os.remove(seg_path)
+                        tr_debug(f"seg removed: {os.path.basename(seg_path)}")
+                    except Exception:
+                        pass
+
+                elapsed = time.monotonic() - t0
+                throughput = seg_dur / elapsed if elapsed > 0 else 0
+                # emit→finish lag: how far behind real time this result is. The line's
+                # written timestamp uses emit (audio) time, NOT this finish time.
+                _emit_str = time.strftime('%H:%M:%S', time.localtime(_emit_ts))
+                _fin_str  = time.strftime('%H:%M:%S')
+                tr_info(f"Transcribed in {elapsed:.1f}s ({throughput:.2f}x speed): "
+                        f"emit={_emit_str} finished={_fin_str} lag={time.time()-_emit_ts:.0f}s "
+                        f"lang={info.language} ({info.language_probability:.0%}) "
+                        f"segments={len(seg_list)} queue={_seg_queue.qsize()}")
+
+                # Language detection: lock in when confident, fall back after retries
+                if not session_lang:
+                    try:
+                        from transcriber import LANG_ALIAS
+                        lang = LANG_ALIAS.get(info.language, info.language)
+                        _lang_detect_attempts[0] += 1
+
+                        # CJK languages are acoustically distinct — accept at lower threshold
+                        threshold = 0.3 if lang in {"zh", "ja"} else 0.5
+                        locked = lang in {"zh", "ja", "en"} and info.language_probability >= threshold
+
+                        # After 3 uncertain segments, fall back to UI language
+                        if not locked and _lang_detect_attempts[0] >= 3:
+                            from i18n import _LANG as _ui_lang
+                            if _ui_lang in {"zh", "ja", "en"}:
+                                lang = _ui_lang
+                            elif lang not in {"zh", "ja", "en"}:
+                                lang = "en"
+                            tr_info(f"Language uncertain after {_lang_detect_attempts[0]} attempts "
+                                    f"— using {'UI language' if _ui_lang in {'zh','ja','en'} else 'fallback'}: {lang}")
+                            locked = True
+
+                        if locked:
+                            session_lang = lang
+                            tr_info(f"Language locked: {session_lang} ({info.language_probability:.0%})")
+                            with open(LANG_FILE, "w", encoding="utf-8") as f:
+                                f.write(session_lang)
+                            if _current_model_lang != session_lang:
+                                new_path = _resolve_model(session_lang)
+                                if new_path != model_path:
+                                    tr_info(f"Switching to {session_lang} model...")
+                                    whisper = WhisperModel(new_path, device=device, compute_type=compute_type)
+                                    _transcribe_kwargs = _make_transcribe_kwargs(new_path, device)
+                                    _current_model_lang = session_lang
+                                    tr_info("Model switched")
+                    except Exception:
+                        pass
+
+                # Filter hallucinations and low-confidence segments
+                lines = []
+                for i, s in enumerate(seg_list):
+                    text = s.text.strip()
+                    nsp  = getattr(s, "no_speech_prob", 0.0)
+                    lp   = getattr(s, "avg_logprob", 0.0)
+                    if not text:
+                        tr_debug(f"  seg[{i}] EMPTY (nsp={nsp:.2f} lp={lp:.2f})")
+                        continue
+                    if any(h in text for h in HALLUCINATION):
+                        tr_debug(f"  seg[{i}] HALLUCINATION: {text[:40]}")
+                        continue
+                    if _is_repetition_hallucination(text):
+                        tr_debug(f"  seg[{i}] REPETITION_HALLUCINATION: {text[:60]}")
+                        continue
+                    if nsp > 0.7:
+                        tr_debug(f"  seg[{i}] LOW_CONF no_speech={nsp:.2f}: {text[:40]}")
+                        continue
+                    tr_debug(f"  seg[{i}] OK nsp={nsp:.2f} lp={lp:.2f}: {text[:60]}")
+                    lines.append(text)
+
+                original = " ".join(lines).strip()
+                if not original:
+                    tr_debug("WHISPER_EMPTY (all segments filtered)")
+                    continue
+
+                tr_info(f"[pipeline] {'[mic] ' if _seg_source == 'mic' else ''}original: {original}")
+                # Timestamp = when the sound was actually emitted (captured at enqueue
+                # time as now - segment_duration). Shared by both the raw transcript and
+                # the corrected line so they match exactly and reflect real audio time,
+                # not the (later) time transcription/correction finished.
+                from datetime import datetime
+                _seg_ts = datetime.fromtimestamp(_emit_ts).strftime("%H:%M:%S")
+                _append_transcript(_src_label + original, _seg_ts)
+
+                # Per-segment correction: call LLM immediately after transcription
+                corrected_text = _correct_segment(original, session_lang, cfg)
+                if corrected_text != original:
+                    tr_info(f"[pipeline] corrected: {corrected_text}")
+                else:
+                    corrected_text = original  # no correction or API unavailable
+
+                # Deterministic glossary fix (applies even if the LLM step was skipped)
+                corrected_text = apply_glossary(corrected_text, _glossary)
+
+                # Append to corrected file and update signal for UI polling
+                if corrected_file:
+                    _append_corrected(_src_label + corrected_text, corrected_file, _seg_ts)
+                    tr_info(f"Segment finalized: {seg_dur:.1f}s {_seg_source} audio "
+                            f"transcribed+corrected")
 
             except Exception as e:
-                if device == "cuda" and ("cublas" in str(e).lower() or "cuda" in str(e).lower()):
-                    tr_info(f"CUDA error, switching to CPU: {e}")
-                    device = "cpu"
-                    compute_type = "int8"
-                    whisper = WhisperModel(model_path, device="cpu", compute_type="int8")
-                    _transcribe_kwargs = _make_transcribe_kwargs(model_path, "cpu")
-                    try:
-                        segs, info = whisper.transcribe(
-                            seg_path, language=session_lang, **_transcribe_kwargs)
-                        seg_list = list(segs)
-                    except Exception as e2:
-                        tr_error(f"transcribe error (CPU fallback): {e2}")
-                        _seg_queue.task_done()
-                        continue
-                else:
-                    tr_error(f"transcribe error: {e}")
-                    _seg_queue.task_done()
-                    continue
+                # Last-resort guard: never let an unexpected error kill the worker
+                # (that would hang the session-end queue join).
+                tr_error(f"transcribe worker error (segment dropped): {e}")
             finally:
-                try:
-                    os.remove(seg_path)
-                    tr_debug(f"seg removed: {os.path.basename(seg_path)}")
-                except Exception:
-                    pass
-
-            elapsed = time.monotonic() - t0
-            throughput = seg_dur / elapsed if elapsed > 0 else 0
-            # emit→finish lag: how far behind real time this result is. The line's
-            # written timestamp uses emit (audio) time, NOT this finish time.
-            _emit_str = time.strftime('%H:%M:%S', time.localtime(_emit_ts))
-            _fin_str  = time.strftime('%H:%M:%S')
-            tr_info(f"Transcribed in {elapsed:.1f}s ({throughput:.2f}x speed): "
-                    f"emit={_emit_str} finished={_fin_str} lag={time.time()-_emit_ts:.0f}s "
-                    f"lang={info.language} ({info.language_probability:.0%}) "
-                    f"segments={len(seg_list)} queue={_seg_queue.qsize()}")
-
-            # Language detection: lock in when confident, fall back after retries
-            if not session_lang:
-                try:
-                    from transcriber import LANG_ALIAS
-                    lang = LANG_ALIAS.get(info.language, info.language)
-                    _lang_detect_attempts[0] += 1
-
-                    # CJK languages are acoustically distinct — accept at lower threshold
-                    threshold = 0.3 if lang in {"zh", "ja"} else 0.5
-                    locked = lang in {"zh", "ja", "en"} and info.language_probability >= threshold
-
-                    # After 3 uncertain segments, fall back to UI language
-                    if not locked and _lang_detect_attempts[0] >= 3:
-                        from i18n import _LANG as _ui_lang
-                        if _ui_lang in {"zh", "ja", "en"}:
-                            lang = _ui_lang
-                        elif lang not in {"zh", "ja", "en"}:
-                            lang = "en"
-                        tr_info(f"Language uncertain after {_lang_detect_attempts[0]} attempts "
-                                f"— using {'UI language' if _ui_lang in {'zh','ja','en'} else 'fallback'}: {lang}")
-                        locked = True
-
-                    if locked:
-                        session_lang = lang
-                        tr_info(f"Language locked: {session_lang} ({info.language_probability:.0%})")
-                        with open(LANG_FILE, "w", encoding="utf-8") as f:
-                            f.write(session_lang)
-                        if _current_model_lang != session_lang:
-                            new_path = _resolve_model(session_lang)
-                            if new_path != model_path:
-                                tr_info(f"Switching to {session_lang} model...")
-                                whisper = WhisperModel(new_path, device=device, compute_type=compute_type)
-                                _transcribe_kwargs = _make_transcribe_kwargs(new_path, device)
-                                _current_model_lang = session_lang
-                                tr_info("Model switched")
-                except Exception:
-                    pass
-
-            # Filter hallucinations and low-confidence segments
-            lines = []
-            for i, s in enumerate(seg_list):
-                text = s.text.strip()
-                nsp  = getattr(s, "no_speech_prob", 0.0)
-                lp   = getattr(s, "avg_logprob", 0.0)
-                if not text:
-                    tr_debug(f"  seg[{i}] EMPTY (nsp={nsp:.2f} lp={lp:.2f})")
-                    continue
-                if any(h in text for h in HALLUCINATION):
-                    tr_debug(f"  seg[{i}] HALLUCINATION: {text[:40]}")
-                    continue
-                if nsp > 0.7:
-                    tr_debug(f"  seg[{i}] LOW_CONF no_speech={nsp:.2f}: {text[:40]}")
-                    continue
-                tr_debug(f"  seg[{i}] OK nsp={nsp:.2f} lp={lp:.2f}: {text[:60]}")
-                lines.append(text)
-
-            original = " ".join(lines).strip()
-            if not original:
-                tr_debug("WHISPER_EMPTY (all segments filtered)")
                 _seg_queue.task_done()
-                continue
-
-            tr_info(f"[pipeline] {'[mic] ' if _seg_source == 'mic' else ''}original: {original}")
-            # Timestamp = when the sound was actually emitted (captured at enqueue
-            # time as now - segment_duration). Shared by both the raw transcript and
-            # the corrected line so they match exactly and reflect real audio time,
-            # not the (later) time transcription/correction finished.
-            from datetime import datetime
-            _seg_ts = datetime.fromtimestamp(_emit_ts).strftime("%H:%M:%S")
-            _append_transcript(_src_label + original, _seg_ts)
-
-            # Per-segment correction: call LLM immediately after transcription
-            corrected_text = _correct_segment(original, session_lang, cfg)
-            if corrected_text != original:
-                tr_info(f"[pipeline] corrected: {corrected_text}")
-            else:
-                corrected_text = original  # no correction or API unavailable
-
-            # Deterministic glossary fix (applies even if the LLM step was skipped)
-            corrected_text = apply_glossary(corrected_text, _glossary)
-
-            # Append to corrected file and update signal for UI polling
-            if corrected_file:
-                _append_corrected(_src_label + corrected_text, corrected_file, _seg_ts)
-
-            _seg_queue.task_done()
 
     _worker = threading.Thread(target=_transcribe_loop, daemon=True, name="transcribe")
     _worker.start()

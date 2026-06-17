@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -18,8 +19,8 @@ from PyQt6.QtGui import QColor, QFont, QPalette
 from PyQt6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QRadioButton, QSlider, QSizePolicy,
-    QSpacerItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QMainWindow, QMessageBox, QPushButton, QRadioButton, QSlider, QSizePolicy,
+    QSpacerItem, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from appconfig import BASE, AppConfig
@@ -226,7 +227,6 @@ class App(QMainWindow):
         super().__init__()
 
         self._presenter = presenter
-        self._gpu_locked_buttons: list[QWidget] = []
         self._btn_cuda: QRadioButton | None = None
         self._allow_close = False   # set True by destroy() once shutdown is done
 
@@ -364,24 +364,105 @@ class App(QMainWindow):
         QApplication.quit()
 
     def lock_to_cpu(self) -> None:
-        # CUDA needs a GPU → lock the device to CPU when none is available.
-        # The model selection is intentionally NOT restricted.
+        # Reflect a CPU device in the UI (startup config or a runtime CUDA
+        # fallback). Per the free-settings policy the GPU radios are NOT disabled
+        # — the user may re-select CUDA at any time, which re-validates it.
         if hasattr(self, "_rb_device_cpu"):
             self._rb_device_cpu.setChecked(True)
-        for w in self._gpu_locked_buttons:
-            w.setEnabled(False)
 
     def unlock_gpu_buttons(self) -> None:
-        for w in self._gpu_locked_buttons:
-            w.setEnabled(True)
+        # No-op: device radios are never disabled (free-settings policy). Kept
+        # for ViewProtocol compatibility.
+        pass
 
     def set_cuda_btn_text(self, text: str) -> None:
         if self._btn_cuda is not None:
             self._btn_cuda.setText(text)
 
     def set_cuda_btn_state(self, enabled: bool) -> None:
+        # Free-settings policy: the CUDA radio stays selectable regardless of the
+        # probe result. Selecting it triggers an on-demand validation instead.
         if self._btn_cuda is not None:
-            self._btn_cuda.setEnabled(enabled)
+            self._btn_cuda.setEnabled(True)
+
+    # ── Busy overlay ───────────────────────────────────────────────────────────
+
+    def _ensure_busy_overlay(self) -> QWidget:
+        ov = getattr(self, "_busy_overlay", None)
+        if ov is None:
+            ov = QWidget(self)
+            ov.setObjectName("busyOverlay")
+            ov.setStyleSheet("#busyOverlay { background-color: rgba(0,0,0,0.45); }")
+            lbl = QLabel("", ov)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet(
+                "color: white; font-size: 16px; font-weight: 600; background: transparent;"
+            )
+            self._busy_label = lbl
+            self._busy_overlay = ov
+            ov.hide()
+        return ov
+
+    def show_busy(self, text: str) -> None:
+        ov = self._ensure_busy_overlay()
+        ov.setGeometry(self.rect())
+        self._busy_label.setGeometry(ov.rect())
+        self._busy_label.setText(text)
+        ov.raise_()
+        ov.show()
+        QApplication.processEvents()
+
+    def hide_busy(self) -> None:
+        ov = getattr(self, "_busy_overlay", None)
+        if ov is not None:
+            ov.hide()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().resizeEvent(event)
+        ov = getattr(self, "_busy_overlay", None)
+        if ov is not None and ov.isVisible():
+            ov.setGeometry(self.rect())
+            self._busy_label.setGeometry(ov.rect())
+
+    # ── CUDA on-demand validation ──────────────────────────────────────────────
+
+    def _on_cuda_radio_clicked(self) -> None:
+        """User picked CUDA. Validate the GPU on demand behind a busy mask; if no
+        usable GPU is found, warn and revert the selection to CPU."""
+        self.show_busy(t("cuda_checking"))
+        self._busy_shown_at = time.monotonic()
+
+        def _probe():
+            try:
+                ok = bool(self._presenter.cuda_available)
+            except Exception:
+                ok = False
+            self.schedule(lambda: self._finish_cuda_probe(ok))
+
+        threading.Thread(target=_probe, daemon=True).start()
+
+    def _finish_cuda_probe(self, ok: bool) -> None:
+        # The CUDA probe result is cached after the first call, so a repeat check
+        # returns almost instantly — the busy mask would flash invisibly. Keep it
+        # on screen for a minimum so the user actually sees the feedback.
+        _MIN_MS = 350
+        shown = (time.monotonic() - getattr(self, "_busy_shown_at", 0.0)) * 1000
+        remaining = int(_MIN_MS - shown)
+        if remaining > 0:
+            QTimer.singleShot(remaining, lambda: self._after_cuda_probe(ok))
+        else:
+            self._after_cuda_probe(ok)
+
+    def _after_cuda_probe(self, ok: bool) -> None:
+        self.hide_busy()
+        if ok:
+            self.put_log("[UI] CUDA available — device set to CUDA")
+            return
+        # No usable GPU: revert to CPU and inform the user.
+        if hasattr(self, "_rb_device_cpu"):
+            self._rb_device_cpu.setChecked(True)
+        self.put_log(f"[UI] {t('cuda_no_gpu')}")
+        QMessageBox.warning(self, t("title"), t("cuda_no_gpu"))
 
     # Status labels are no-ops (like ui.py)
     def set_rec_status(self, text_key: str, color: str) -> None:
@@ -416,13 +497,16 @@ class App(QMainWindow):
             self._corrected_view.setPlainText(f"[Error reading corrected text: {e}]")
 
     def show_minutes(self, path: str) -> None:
-        """Display meeting minutes file content in the Minutes tab."""
+        """Display meeting minutes file content as rendered Markdown."""
         try:
             with open(path, encoding="utf-8-sig") as f:
                 text = f.read()
-            self._minutes_view.setPlainText(text)
             from PyQt6.QtGui import QTextCursor
-            self._minutes_view.moveCursor(QTextCursor.MoveOperation.End)
+            try:
+                self._minutes_view.setMarkdown(text)
+            except Exception:
+                self._minutes_view.setPlainText(text)
+            self._minutes_view.moveCursor(QTextCursor.MoveOperation.Start)
         except Exception as e:
             self._minutes_view.setPlainText(f"[Error reading minutes: {e}]")
 
@@ -707,8 +791,9 @@ class App(QMainWindow):
         dev_hbox.addStretch()
         grid.addWidget(dev_widget, row, 1)
 
-        # Lock GPU buttons (auto and cuda) until CUDA is confirmed
-        self._gpu_locked_buttons.extend([self._rb_device_auto, self._rb_device_cuda])
+        # Free-settings policy: the radios are never disabled. Picking CUDA
+        # validates the GPU on demand (busy overlay + revert on failure).
+        self._rb_device_cuda.clicked.connect(self._on_cuda_radio_clicked)
 
         # Set initial device radio
         if cur_device == "cuda":
@@ -754,11 +839,9 @@ class App(QMainWindow):
         def _save():
             device = _get_device()
             model  = _get_model()
-            # CUDA needs a GPU, so fall back to CPU when none is available — but
-            # never override the user's model choice.
-            if not self._presenter.cuda_available:
-                device = "cpu"
-                self._rb_device_cpu.setChecked(True)
+            # No forced override here: a CUDA selection was already validated when
+            # the radio was clicked (see _on_cuda_radio_clicked), so we trust the
+            # current radio state and save it verbatim.
             updates = {
                 ("recording", "device"):     device,
                 ("recording", "model_size"): model,
@@ -994,12 +1077,32 @@ class App(QMainWindow):
         vbox.setContentsMargins(8, 8, 8, 8)
         vbox.setSpacing(4)
 
-        self._minutes_view = QTextEdit()
+        self._minutes_view = QTextBrowser()
         self._minutes_view.setReadOnly(True)
+        self._minutes_view.setOpenExternalLinks(True)
         self._minutes_view.setPlaceholderText(t("minutes_hint"))
+        self._minutes_view.document().setDefaultStyleSheet(
+            """
+            body {
+                font-family: 'Hiragino Sans', 'PingFang SC', 'Meiryo UI', 'Microsoft YaHei';
+                font-size: 14px;
+                line-height: 1.65;
+            }
+            h1 { font-size: 22px; margin-top: 12px; margin-bottom: 8px; }
+            h2 { font-size: 18px; margin-top: 12px; margin-bottom: 6px; }
+            h3 { font-size: 15px; margin-top: 10px; margin-bottom: 4px; }
+            ul, ol { margin-left: 18px; }
+            li { margin-top: 3px; margin-bottom: 3px; }
+            p { margin-top: 6px; margin-bottom: 6px; }
+            """
+        )
         self._minutes_view.setStyleSheet(
-            "QTextEdit { font-family: 'Hiragino Sans', 'PingFang SC', 'Meiryo UI', 'Microsoft YaHei';"
-            "  font-size: 13px; line-height: 1.6; }"
+            "QTextBrowser {"
+            "  font-family: 'Hiragino Sans', 'PingFang SC', 'Meiryo UI', 'Microsoft YaHei';"
+            "  font-size: 14px;"
+            "  line-height: 1.65;"
+            "  padding: 8px;"
+            "}"
         )
         vbox.addWidget(self._minutes_view)
         return w

@@ -1,6 +1,6 @@
 # Sound2Text — Architecture Reference
 
-> Version: v1.5.2 (updated 2026-06-16)
+> Version: v1.5.2 (updated 2026-06-17)
 > Update this file before each session-limit approaches, by reading only the files affected by recent changes.
 
 ---
@@ -68,6 +68,28 @@ transcribe worker  : pops a segment FILE PATH from the queue → Whisper →
 MP3 thread(s)      : WAV → MP3 (libmp3lame) in background at session end
 ```
 
+### VAD = Silero v6 via `AccumulatingVAD`
+
+`AccumulatingVAD` (system and mic each own one) decides end-of-speech and emits a
+segment when either: (A) `silence_sec` of silence follows ≥ `min_accum_sec` of
+speech, or (B) the window exceeds `max_sec` (force flush).
+
+The speech/silence decision comes from **Silero v6**, loaded via faster-whisper's
+`get_vad_model()` (the path-based constructor — `SileroVADModel()` with no args
+raises) and called with `num_samples=512`. Two traps the current code guards
+against — **do not regress these**:
+
+- **512-sample framing.** Silero processes audio in fixed 512-sample frames. A
+  capture read resampled 48k→16k is often *smaller* than one frame (~341 samples),
+  so a naive per-chunk call never runs. `_is_speech` accumulates chunks in
+  `_vad_buf` until ≥ 512 samples are available, runs whole frames, and keeps the
+  sub-frame remainder; between frame boundaries it reuses the last decision.
+- **No silent fallback masking a load failure.** If Silero fails to load, the code
+  drops to a crude amplitude check (`|chunk|.mean() ≥ 300`) — which misclassifies
+  *quiet speech as silence*. `has_model()` distinguishes the two: the silence-skip
+  below only fires when the reliable Silero path is active, so a fallback never
+  drops real speech.
+
 ### Segment queue = **disk cache of file paths** (not in-RAM PCM)
 
 Each VAD segment is written to its own small WAV file under
@@ -107,8 +129,15 @@ nothing is lost from the MP3.
 
 `beam_size = 1` on CPU (greedy — several times faster, the difference between
 keeping up with real time and an ever-growing backlog), `5` on CUDA.
-`temperature` is a **list** `[0.0, 0.2, …]`, never scalar 0.0 (scalar disables
-fallback → empty output on hard audio).
+`temperature` is always a **list**, never scalar `0.0`. CPU uses `[0.0]` to avoid
+temperature fallback storms on hard/noisy segments; CUDA keeps
+`[0.0, 0.2, …, 1.0]`.
+
+On CPU, language-specific `[models]` overrides pointing to heavy `large*` models
+are skipped unless the base `[recording] model_size` is also that heavy model.
+This prevents `model_size=medium` + `[models] ja=large-v3` from silently running
+large-v3 on CPU and falling far behind real time. Long repeated-loop
+hallucinations are filtered before they reach the transcript or LLM correction.
 
 ---
 
@@ -117,7 +146,7 @@ fallback → empty output on hard audio).
 ```
 ui_qt.py      View  — PyQt6 display only, no business logic
 presenter.py  Presenter — all business logic, process management
-appconfig.py  Model/Config — ConfigParser wrapper + CUDA detection
+appconfig.py  Model/Config — ConfigParser wrapper + lazy CUDA detection
 ```
 
 **Entry points:**
@@ -136,7 +165,7 @@ appconfig.py  Model/Config — ConfigParser wrapper + CUDA detection
 | `widgets_qt.py` | Custom QPainter widgets: `VUMeterWidget`, seven-segment clock |
 | `presenter.py` | All business logic + subprocess lifecycle. Defines `ViewProtocol`. |
 | `pipeline.py` | **Real-time engine**: loopback + mic capture, VAD, segment disk-cache queue, Whisper, per-segment LLM correction, glossary, raw→WAV→MP3, transcript/corrected files |
-| `appconfig.py` | `AppConfig` (ConfigParser wrapper), `BASE`/`CFG_FILE`/signal path constants, CUDA detection at import time |
+| `appconfig.py` | `AppConfig` (ConfigParser wrapper), `BASE`/`CFG_FILE`/signal path constants, lazy CUDA detection |
 | `glossary.py` | Deterministic 誤→正 replacement (`resolve_glossary_file`/`load_glossary`/`apply_glossary`); works even when the LLM is down |
 | `i18n.py` | Translation dict + `t()` function, `_LANG` global |
 | `summarizer.py` | Child process: LLM correction (legacy step) + meeting notes from the live corrected file |
@@ -148,6 +177,7 @@ appconfig.py  Model/Config — ConfigParser wrapper + CUDA detection
 | `debug_modules.py` | Standalone diagnostic tests |
 | `mic_recorder.py` | Legacy standalone PTT mic recorder (not in the live path) |
 | `config_default.ini` | Template for `config.ini` (user-specific, gitignored) |
+| `CODEX_MEMORY.md` | Compact Codex working notes; `ARCHITECTURE.md` remains the source of truth |
 
 ---
 
@@ -161,6 +191,7 @@ by the presenter unless noted.
 | `.pipeline_session` | presenter → pipeline | Session active. Created on start; **removing it ends the session** (flush → drain queue → finalize). |
 | `.pipeline_stop` | presenter → pipeline | Stop the long-lived pipeline process (app exit). |
 | `.pipeline_session_done` | pipeline → presenter | Session fully finalized (queue drained, audio converted). Presenter waits for this before summarizing. |
+| `.pipeline.lock` | pipeline/presenter | Cross-process singleton lock; prevents GUI/CLI from running multiple `pipeline.py` instances against the same signal files. |
 | `.pipeline_subtitle` | presenter → pipeline | Subtitle mode active. |
 | `.mic_onair` | presenter → pipeline | On Air: feed mic into the VAD. |
 | `.recording_start` | presenter/pipeline | Unix timestamp of recording start. |
@@ -172,6 +203,11 @@ by the presenter unless noted.
 `.last_transcript`, `.last_language`, `.mic_onair`, `.last_corrected`) before
 writing `.pipeline_session`, so a polling thread can never show last session's
 content. **Add any new session signal to that cleanup list.**
+
+If another Presenter already owns a running `pipeline.py` (for example GUI is
+open and CLI is started), the new Presenter reuses that external pipeline and
+does **not** write `.pipeline_stop` on exit. Only the Presenter that spawned the
+pipeline should stop it.
 
 ---
 
@@ -218,6 +254,37 @@ content. **Add any new session signal to that cleanup list.**
 
 ---
 
+## Dashboard (live timers)
+
+`DashboardWidget` (`widgets_qt.py`) shows three seven-segment clocks during a
+session:
+
+| Timer | Color | Source |
+|-------|-------|--------|
+| **Elapsed** | cyan | wall-clock since `dashboard_start()`, driven by an internal 1 s `QTimer` |
+| **Audio Rec** | green | total segment audio whose WAV cache file has been fully written and queued |
+| **Transcribed** | amber | total segment audio that has been transcribed, corrected/glossaried, and appended to the corrected file |
+
+The two content timers are **not** pushed by the pipeline directly (it's a
+separate process). Instead `presenter._pipe` tails the pipeline's stdout and
+parses its INFO log lines with regexes, calling `dashboard_add_audio` /
+`dashboard_add_trans`:
+
+| Pipeline log line | Counter |
+|-------------------|---------|
+| `seg cached+queued: … dur=<N>s …` | Audio Rec (`add_audio`) |
+| `Segment finalized: <N>s … transcribed+corrected` | Transcribed (`add_trans`) |
+
+This means **Elapsed** is wall-clock time from Start, **Audio Rec** advances only
+after a segment file has actually been persisted, and **Transcribed** advances
+only after the text for that segment has been transcribed, corrected, and written
+to the corrected transcript. Silence/music windows that are skipped before
+segment caching do not advance Audio Rec. **The regexes in `presenter.py` must
+stay in sync with the exact log strings in `pipeline.py`** — a format drift
+silently freezes a counter at 0.
+
+---
+
 ## Thread Safety
 
 The presenter runs background threads (VU meter, polling, stop/shutdown). UI
@@ -248,10 +315,17 @@ own locks.
 | `show_ptt_button()` / `hide_ptt_button()` | Show / hide the VU bar |
 | `show_transcript(p)` / `show_corrected(p)` / `show_minutes(p)` | Load a file into a tab |
 | `clear_results()` | Clear the 3 result tabs on start |
+| `dashboard_start()` / `dashboard_stop()` / `dashboard_reset()` | Start/freeze/clear the live timers |
+| `dashboard_add_audio(s)` / `dashboard_add_trans(s)` | Advance the Audio Rec / Transcribed timers (called from log parsing) |
 | `schedule(fn)` | Run `fn` on the UI thread via `_call_signal` |
 | `put_log(msg)` | Append to the log panel via `_log_signal` |
 
 When the presenter calls a new view method, add a stub to `ViewProtocol`.
+
+The Transcript and Corrected tabs intentionally show plain text and keep their
+live-scroll behavior. The Minutes tab renders the generated Markdown with
+`QTextBrowser.setMarkdown(...)` so headings, lists, and emphasis can be checked
+in the UI; it falls back to plain text if Markdown rendering is unavailable.
 
 ---
 
@@ -271,11 +345,23 @@ Gitignored; `config_default.ini` is the committed template. Sections in use:
 
 ---
 
+## Documentation Maintenance
+
+Keep the Markdown files in sync with each functional change. Update
+`ARCHITECTURE.md` when a change affects process boundaries, IPC signal files,
+threading, pipeline flow, config keys, output files, or important invariants.
+Update README files when user-facing setup, usage, supported platforms, defaults,
+or troubleshooting steps change. Keep `CODEX_MEMORY.md` as a compact working
+summary after notable architecture or workflow changes.
+
+---
+
 ## Tuning the real-time pipeline
 
 | Symptom | Knob |
 |---------|------|
 | Backlog grows / long wait after stop | lower `model_size` (medium→small/base), use CUDA, raise `[subtitle] min_speech_sec` to drop more silence |
+| CPU unexpectedly uses a huge language model | check `[models]`; `large*` language overrides are skipped on CPU unless base `model_size` is also large |
 | Quiet speech dropped as "silence" | lower `[subtitle] min_speech_sec` |
 | Choppy / over-segmented | raise `silence_sec` / `max_sec` |
 | Wrong language locked | set `[recording] language` explicitly (not `auto`) |
@@ -284,10 +370,11 @@ Gitignored; `config_default.ini` is the committed template. Sections in use:
 
 ## CUDA Compatibility
 
-`appconfig.py` runs CUDA detection at import. `pipeline.py` pre-loads the nvidia
-pip CUDA DLLs (`cudart64_12` / `cublas64_12` / `cublasLt64_12`) by full path
-**before** importing ctranslate2. On a CUDA error mid-run the worker falls back to
-CPU (`int8`) and rebuilds decode kwargs (`beam_size=1`).
+`appconfig.py` exposes lazy CUDA detection via `cuda_status()`; callers can warm
+the cache after startup so UI import stays fast. `pipeline.py` pre-loads the
+nvidia pip CUDA DLLs (`cudart64_12` / `cublas64_12` / `cublasLt64_12`) by full
+path **before** importing ctranslate2. On a CUDA error mid-run the worker falls
+back to CPU (`int8`) and rebuilds decode kwargs (`beam_size=1`).
 
 ---
 
@@ -314,7 +401,7 @@ config.ini          # user settings (contains API key)
 run.bat             # generated by setup.bat
 *.log
 *.wav  *.mp3  *.raw
-.pipeline_session / .pipeline_stop / .pipeline_session_done / .pipeline_subtitle
+.pipeline_session / .pipeline_stop / .pipeline_session_done / .pipeline_subtitle / .pipeline.lock
 .mic_onair / .recording_start
 .last_transcript / .last_corrected / .last_language
 .seg_cache_*/       # transient per-session segment cache
