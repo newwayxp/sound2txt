@@ -19,6 +19,7 @@ config.ini
 .pipeline.lock
 .last_transcript
 .last_corrected
+.last_final_corrected
 .last_language
 .stop_signal
 .recording_start

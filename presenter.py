@@ -811,8 +811,14 @@ class Presenter:
         # (state_pointer_file, view_method, last_path, last_mtime)
         watches = [
             [STATE_FILE,   "show_transcript", None, 0.0],
-            [_corr_state,  "show_corrected",  None, 0.0],
         ]
+        # With online refinement enabled, correction happens once at stop (a single
+        # combined full-correction + industry-term pass → final_corrected). There is
+        # no per-segment LLM correction during the session, so streaming the live
+        # corrected file (glossary-only raw) into the Corrected tab would be
+        # misleading — fill that tab once at stop instead.
+        if not self._config.getboolean("summary", "enable_online_refine", fallback=False):
+            watches.append([_corr_state, "show_corrected", None, 0.0])
         POLL_INTERVAL = 0.5  # check every 500ms instead of 3s for faster responsiveness
         while self._running and self._session_id == _sid:
             for w in watches:
@@ -1050,10 +1056,12 @@ class Presenter:
             if self._view and hasattr(self._view, "show_transcript"):
                 _p = transcript_path
                 _schedule_if_current(lambda p=_p: self._view.show_transcript(p))
-            # Corrected text → its own Corrected tab.
+            # Corrected text → its own Corrected tab. Skip when online refinement is
+            # on: the Corrected tab is filled once below with final_corrected.
             _corrected_state = os.path.join(BASE, ".last_corrected")
+            _online = self._config.getboolean("summary", "enable_online_refine", fallback=False)
             try:
-                if os.path.exists(_corrected_state):
+                if not _online and os.path.exists(_corrected_state):
                     with open(_corrected_state, encoding="utf-8") as _f:
                         _cp = _f.read().strip()
                     if _cp and os.path.exists(_cp) and self._view \
@@ -1069,28 +1077,33 @@ class Presenter:
                 _schedule_if_current(lambda: self._view.set_sum_status("generating", "#ddaa00"))
             from i18n import t
 
-            # Minutes are generated directly from the real-time corrected file
-            # produced per-segment during the session (pipeline.py). No second,
-            # full re-correction pass — that would create a duplicate corrected
-            # file and make the displayed text diverge from the minutes input.
-            # Fall back to the raw transcript only if no corrected file exists
-            # (e.g. correction disabled or the API was unavailable).
-            _corrected_state = os.path.join(BASE, ".last_corrected")
-            minutes_input = transcript_path
-            try:
-                if os.path.exists(_corrected_state):
-                    with open(_corrected_state, encoding="utf-8") as f:
-                        cp = f.read().strip()
-                    if cp and os.path.exists(cp):
-                        minutes_input = cp
-                        self._view and self._view.put_log(f"[UI] Using corrected text for minutes: {cp}")
-            except Exception:
-                pass
+            # Step selection depends on whether online refinement is enabled:
+            #  • online ON  → one combined full-correction + industry-term pass on the
+            #    RAW transcript (per-segment correction was skipped during the session),
+            #    producing final_corrected, then minutes. (`--step online`)
+            #  • online OFF → minutes directly from the real-time per-segment corrected
+            #    file (no second re-correction pass). (`--step summary`)
+            _online = self._config.getboolean("summary", "enable_online_refine", fallback=False)
+            if _online:
+                _step, _step_input = "online", transcript_path
+            else:
+                _step = "summary"
+                _step_input = transcript_path
+                _corrected_state = os.path.join(BASE, ".last_corrected")
+                try:
+                    if os.path.exists(_corrected_state):
+                        with open(_corrected_state, encoding="utf-8") as f:
+                            cp = f.read().strip()
+                        if cp and os.path.exists(cp):
+                            _step_input = cp
+                            self._view and self._view.put_log(f"[UI] Using corrected text for minutes: {cp}")
+                except Exception:
+                    pass
 
             self._view and self._view.put_log("[UI] Generating meeting minutes...")
             sum_proc2 = subprocess.Popen(
                 [sys.executable, "-X", "utf8", os.path.join(BASE, "summarizer.py"),
-                 "--step", "summary", minutes_input],
+                 "--step", _step, _step_input],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", env=self._env,
             )

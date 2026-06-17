@@ -152,6 +152,37 @@ Locations) before working on these areas — the notes below are only a pointer.
   transcribed) and the sub-chunk in the hardware buffer at the exact stop instant
   (deliberately not recovered — stop means stop).
 
+## Change Log — 2026-06-17 (part 2: correction strategy & API resilience)
+
+- **Per-segment correction is skipped when `enable_online_refine=true`**
+  (`pipeline.py` `_correct_segment`): avoids dozens of API calls per session (the
+  HTTP 429 trigger). Glossary still applies live in the correction worker.
+- **New `summarizer.py --step online`**: ONE combined full-correction +
+  industry-term pass on the RAW transcript → `final_corrected_*`, then minutes.
+  Used by the presenter when online refine is on; `--step summary` (minutes from
+  the live per-segment corrected file) is used when it's off. Three-level
+  fallback (combined → plain correction → raw+glossary) so a session always
+  yields usable text even if every LLM call fails.
+- **Presenter routes by `enable_online_refine`** (`presenter.py`): online on →
+  Corrected tab is NOT streamed during recording (it shows glossary-only raw);
+  it is filled once at stop with `final_corrected`, and the summarize step is
+  `online` on the raw transcript. Online off → unchanged (live per-segment).
+- **Bounded API retry** (`summarizer.py` `_call_openai`): retries 429/5xx up to
+  `_RETRY_ATTEMPTS` times, waiting ≤ `_RETRY_MAX_WAIT`s (honors a short
+  Retry-After). On exhaustion it raises and callers fall back to the
+  pre-correction text — never write partial/garbage downstream. 404 etc. are not
+  retried.
+- **Language guard hoisted to module-level `_LANG_GUARDS`** and applied to the
+  combined-pass prompt too (was missing there). Needed because Chinese-centric
+  local models (qwen) translate JA/EN → Chinese; guard is prepended to system AND
+  appended to the user prompt.
+- **LLM backend note**: app is OpenAI-compatible (`mode=openai`, swap
+  `api_base`/`api_key`/`model`) or local `mode=ollama`. Groq free tier is tight
+  (~100K tokens/day, 12K TPM → long meetings 429). Verify a provider's model id
+  via `GET <api_base>/models` before setting `model` (a wrong id returns 404, not
+  401). Cerebras free currently serves `gpt-oss-120b` / `zai-glm-4.7` (NOT
+  llama-3.3-70b); `gpt-oss-120b` also avoids the qwen JA→ZH translation problem.
+
 ## Useful Checks
 
 - Syntax smoke test: `python -m py_compile <changed files>`

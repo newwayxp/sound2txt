@@ -351,8 +351,16 @@ def _mic_label(lang: str | None) -> str:
 # ── per-segment LLM correction ───────────────────────────────────────────────
 def _correct_segment(text: str, lang: str | None,
                      cfg: configparser.ConfigParser) -> str:
-    """Call LLM to correct one transcribed segment. Falls back to original."""
-    if not cfg.getboolean("summary", "enable_correction", fallback=True):
+    """Call LLM to correct one transcribed segment. Falls back to original.
+
+    Skipped entirely when post-session online refinement is enabled: that path
+    does ONE combined full-correction + industry-term pass at stop, so per-segment
+    LLM correction here would be redundant work and — more importantly — dozens of
+    API calls per session, which is what trips the provider's rate limit (HTTP
+    429). The deterministic glossary still runs in the correction worker, so live
+    output stays glossary-corrected even while LLM correction is deferred."""
+    if not cfg.getboolean("summary", "enable_correction", fallback=True) \
+       or cfg.getboolean("summary", "enable_online_refine", fallback=False):
         return text
     mode = cfg.get("summary", "mode", fallback="openai").strip().lower()
 

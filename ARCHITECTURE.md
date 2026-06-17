@@ -85,24 +85,37 @@ queue, force-flushes VAD, then waits for both transcription and correction queue
 After that, `summarizer.py --step summary` may run the optional online industry
 term refinement before generating minutes.
 
-### Optional online industry-term refinement
+### Correction strategy: live per-segment vs. one combined pass
 
-Controlled by `[summary] enable_online_refine` (default `false`). When enabled,
-the post-session summary step:
+Whether ASR text is corrected during or after the session depends on
+`[summary] enable_online_refine`:
 
-1. Reads the real-time `corrected_<ts>.txt` file.
-2. Uses the configured LLM backend to infer the meeting domain and 3-8 search
-   keywords.
-3. Downloads terminology candidates from the white-listed Wikipedia OpenSearch
-   API and caches the raw API responses under `[summary] term_cache_dir`
-   (default `~/Documents/Sound2Text/term_cache`).
-4. Runs a conservative full-transcript refinement using those terms.
-5. Writes `final_corrected_<ts>.txt` and records it in `.last_final_corrected`.
-6. Generates `summary_<ts>.md` from the final corrected file.
+- **`enable_online_refine=false`** — per-segment LLM correction runs **live**
+  during the session (`pipeline.py _correct_segment`), the Corrected tab streams
+  it as it grows, and the post-session step is `summarizer.py --step summary`
+  (minutes from the live `corrected_<ts>.txt`; no re-correction pass).
+- **`enable_online_refine=true`** — per-segment LLM correction is **skipped**
+  (only the deterministic glossary applies live, so the Corrected tab is not
+  streamed during recording). At stop the presenter runs
+  `summarizer.py --step online`: **one combined full-correction + industry-term
+  pass on the raw transcript**, written to `final_corrected_<ts>.txt`, then
+  minutes from it. The Corrected tab is filled **once** with that final text.
 
-The original `transcript_<ts>.txt` and real-time `corrected_<ts>.txt` are never
-overwritten. If the online lookup or final refinement fails, the system falls
-back to the existing corrected file and still generates minutes.
+Deferring correction to one pass is also what keeps API usage low — dozens of
+per-segment calls are what trip a provider's rate limit (HTTP 429).
+
+`--step online` flow: infer domain + 3-8 keywords → download Wikipedia
+OpenSearch terms into `[summary] term_cache_dir` (default
+`~/Documents/Sound2Text/term_cache`) → single combined LLM pass → write
+`final_corrected_<ts>.txt` + `.last_final_corrected` → `summary_<ts>.md`. It has
+a three-level fallback (combined → plain full correction → raw+glossary) so a
+session always yields usable text.
+
+The original `transcript_<ts>.txt` and any live `corrected_<ts>.txt` are never
+overwritten. **API resilience:** `_call_openai` retries 429/5xx a few times with
+a short capped backoff (honors `Retry-After`); on exhaustion it raises and the
+caller falls back to the pre-correction text rather than writing partial output.
+A wrong `model` id returns 404 (not 401) — verify via `GET <api_base>/models`.
 
 ### VAD = Silero v6 via `AccumulatingVAD`
 

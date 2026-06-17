@@ -8,10 +8,19 @@
 import os
 import sys
 import json
+import time
 import configparser
 import requests
 import urllib3
 from datetime import datetime
+
+# Bounded retry for transient API errors (HTTP 429 / 5xx). Kept deliberately
+# SHORT: if the limit/outage does not clear in a few seconds it usually won't
+# clear soon, so we give up rather than block the user — callers then fall back
+# to the pre-correction text and never write partial/garbage output downstream.
+_RETRY_STATUS   = {429, 500, 502, 503, 529}
+_RETRY_ATTEMPTS = 3      # total attempts (1 initial + 2 retries)
+_RETRY_MAX_WAIT = 8.0    # cap per-wait seconds; ignore longer Retry-After hints
 
 STATE_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_transcript")
 LANG_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_language")
@@ -118,6 +127,32 @@ Output only the corrected text, no explanations or annotations.
 --- Original transcript ---
 {transcript}
 """
+
+# ── 言語ガード（翻訳禁止）─────────────────────────────────────────────────────
+# Chinese-centric local models (qwen) tend to translate JA/EN transcripts into
+# Chinese despite English instructions. These guards are written in Chinese AND
+# the target language and are placed at BOTH the start of the system prompt and
+# the END of the user prompt (models weight the most recent instruction highly).
+_LANG_GUARDS = {
+    "zh": (
+        "【绝对要求】输出语言：简体中文。\n"
+        "RULE: Output ONLY in Simplified Chinese. NEVER translate to other languages."
+    ),
+    "ja": (
+        "【絶対禁止】日本語のテキストを中国語や英語に翻訳してはなりません。\n"
+        "【絶対条件】出力は必ず日本語のみ。中国語への翻訳は厳禁。\n"
+        "RULE: Output ONLY in Japanese. Do NOT translate to Chinese or any other language."
+    ),
+    "en": (
+        "ABSOLUTE RULE: Output ONLY in English. Do NOT translate to Chinese or Japanese.\n"
+        "【禁止】中国語・日本語への翻訳禁止。英語のみで出力すること。"
+    ),
+}
+
+
+def _lang_guard(language: str) -> str:
+    return _LANG_GUARDS.get(language, "")
+
 
 # ── 纪要テンプレート（言語別） ───────────────────────────────────────────────
 
@@ -239,31 +274,63 @@ def _call_openai(
     timeout_sec = min(600, max(120, estimated_tokens // 100))  # 1s per 100 tokens, capped at 10min
     print(f"[Summarizer] API call: {estimated_tokens} tokens, timeout={timeout_sec}s")
 
-    resp = requests.post(
-        url,
-        headers=headers,
-        json=payload,
-        stream=True,
-        timeout=timeout_sec,
-        **request_kwargs,
-    )
-    resp.raise_for_status()
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+        try:
+            resp = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                stream=True,
+                timeout=timeout_sec,
+                **request_kwargs,
+            )
+            resp.raise_for_status()
 
-    parts = []
-    for raw in resp.iter_lines():
-        if not raw:
-            continue
-        line = bytes(raw).decode("utf-8", errors="replace") if isinstance(raw, (bytes, memoryview)) else str(raw)
-        if not line.startswith("data: "):
-            continue
-        data = line[6:]
-        if data.strip() == "[DONE]":
-            break
-        chunk = json.loads(data)
-        text  = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-        if text:
-            parts.append(text)
-    return "".join(parts)
+            parts = []
+            for raw in resp.iter_lines():
+                if not raw:
+                    continue
+                line = bytes(raw).decode("utf-8", errors="replace") if isinstance(raw, (bytes, memoryview)) else str(raw)
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data.strip() == "[DONE]":
+                    break
+                chunk = json.loads(data)
+                text  = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                if text:
+                    parts.append(text)
+            return "".join(parts)
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            if status in _RETRY_STATUS and attempt < _RETRY_ATTEMPTS:
+                wait = _retry_wait(e.response, attempt)
+                print(f"[Summarizer] API {status} (attempt {attempt}/{_RETRY_ATTEMPTS}) "
+                      f"— retrying in {wait:.0f}s")
+                time.sleep(wait)
+                continue
+            raise  # non-retryable, or out of attempts → caller falls back to pre-correction text
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if attempt < _RETRY_ATTEMPTS:
+                wait = min(_RETRY_MAX_WAIT, 2.0 * attempt)
+                print(f"[Summarizer] API network error ({type(e).__name__}) "
+                      f"(attempt {attempt}/{_RETRY_ATTEMPTS}) — retrying in {wait:.0f}s")
+                time.sleep(wait)
+                continue
+            raise
+
+
+def _retry_wait(resp, attempt: int) -> float:
+    """Seconds to wait before the next retry: honor a short Retry-After header,
+    else exponential backoff, both capped at _RETRY_MAX_WAIT so a long limit
+    window never blocks the user."""
+    try:
+        ra = resp.headers.get("Retry-After") if resp is not None else None
+        if ra is not None:
+            return min(_RETRY_MAX_WAIT, float(ra))
+    except (TypeError, ValueError):
+        pass
+    return min(_RETRY_MAX_WAIT, 2.0 ** attempt)
 
 
 def _call_ollama(system: str, user: str, model: str, base_url: str = "http://localhost:11434") -> str:
@@ -502,6 +569,112 @@ Downloaded terminology candidates:
     return final_text, path
 
 
+def _combined_correct_prompts(language: str, raw: str, terms: list[str]):
+    """system + user for a SINGLE pass that both corrects ASR errors and applies
+    the downloaded industry terminology. Mirrors the per-step correction rules."""
+    _guard = _lang_guard(language)
+    system = ((_guard + "\n\n") if _guard else "") + CORRECT_SYSTEM
+    term_block = ""
+    if terms:
+        term_list = "\n".join(f"  - {t}" for t in terms)
+        term_block = ("\n9. Prefer this downloaded domain/industry terminology when the "
+                      "audio plausibly refers to it (use it conservatively, only when the "
+                      "context clearly supports the term):\n" + term_list + "\n")
+    user = f"""\
+Correct the ASR transcript below and apply domain terminology in a single pass.
+
+[Step 1 — Read and understand]
+Read the whole text first: context, topics, proper nouns, and domain terms.
+
+[Step 2 — Correct]
+1. Fix homophone errors and mis-recognized words (only when you are confident)
+2. Add appropriate punctuation
+3. Insert blank lines at topic changes or speaker turns
+4. Preserve colloquial expressions, filler words, and meaningful repetitions
+5. Keep the original language(s) unchanged — do NOT translate any part
+6. Keep original timestamps (e.g. [22:27:15])
+7. If the input is Simplified Chinese (简体字), output MUST stay Simplified Chinese
+8. REMOVE Whisper hallucination lines (unrelated promotional/repetitive phrases){term_block}
+[Output]
+Output only the corrected text, no explanations or annotations.
+
+--- Original transcript ---
+{raw}
+"""
+    if _guard:
+        user += f"\n\n[REMINDER] {_guard}"
+    return system, user
+
+
+def online_full_correct(raw: str, corrected_dir: str, ts: str,
+                        cfg: configparser.ConfigParser,
+                        language: str = "") -> tuple[str, str]:
+    """One-pass full correction + industry-term refinement on the RAW transcript.
+
+    Used when per-segment real-time correction is skipped (online refine enabled):
+    infer the domain, download terminology, then run a SINGLE LLM call that both
+    corrects ASR errors and applies the domain terms, writing final_corrected_*.
+    Falls back to a plain full correction (then glossary-only raw) on failure so a
+    session always yields usable text + minutes."""
+    if not raw.strip():
+        return raw, ""
+
+    import time
+    t_start = time.time()
+    print("[Summarizer] online full-correct: started")
+
+    # 1) domain + terms (best effort; correction still runs without them)
+    terms: list[str] = []
+    try:
+        domain, keywords = _infer_industry_context(raw, language, cfg)
+        if not keywords and domain:
+            keywords = [domain]
+        if keywords:
+            cache_dir = os.path.expanduser(
+                cfg.get("summary", "term_cache_dir",
+                        fallback=os.path.join(corrected_dir, "term_cache")))
+            terms = _download_industry_terms(keywords, language, cache_dir, cfg)
+    except Exception as e:
+        print(f"[Summarizer] online full-correct: term lookup failed ({e}); correcting without terms")
+
+    # 2) single combined correction + term pass
+    system, user = _combined_correct_prompts(language, raw, terms)
+    try:
+        final_text = _call(system, user, cfg).strip()
+    except Exception as e:
+        print(f"[Summarizer] online full-correct: combined pass failed ({e}); falling back")
+        final_text = ""
+
+    # 3) fallbacks: plain full correction, then raw
+    if len(final_text) < max(20, len(raw) * 0.4):
+        try:
+            final_text = correct_transcript(raw, corrected_dir, ts, cfg, language)
+            print("[Summarizer] online full-correct: used plain correction fallback")
+        except Exception as e:
+            print(f"[Summarizer] online full-correct: plain correction failed ({e}); using raw")
+            final_text = raw
+
+    # deterministic glossary always applied (offline, even if LLM was skipped)
+    try:
+        from glossary import resolve_glossary_file, load_glossary, apply_glossary
+        final_text = apply_glossary(final_text, load_glossary(resolve_glossary_file(cfg)))
+    except Exception:
+        pass
+
+    final_dir = os.path.expanduser(
+        cfg.get("summary", "final_corrected_dir", fallback=corrected_dir))
+    os.makedirs(final_dir, exist_ok=True)
+    path = os.path.join(final_dir, f"final_corrected_{ts}.txt")
+    with open(path, "w", encoding="utf-8-sig") as f:
+        f.write(final_text)
+    with open(FINAL_CORRECTED_FILE, "w", encoding="utf-8") as f:
+        f.write(path)
+
+    print(f"[Summarizer] online full-correct done -> {path} "
+          f"({time.time()-t_start:.1f}s, {len(terms)} terms)")
+    return final_text, path
+
+
 def correct_transcript(raw: str, corrected_dir: str, ts: str,
                         cfg: configparser.ConfigParser, language: str = "") -> str:
     import time
@@ -510,28 +683,11 @@ def correct_transcript(raw: str, corrected_dir: str, ts: str,
     raw_lines = len(raw.splitlines())
     print(f"[Summarizer] Step1: correcting transcript ({raw_len} chars, {raw_lines} lines)...")
 
-    # Build a language-specific ABSOLUTE instruction prepended in the target language
-    # so local models (Ollama/qwen) respect it even when the rest of the prompt is English.
-    # Language guard — written in Chinese AND target language so qwen (a Chinese-centric
-    # model) reliably respects it. Also added to the END of the user prompt for extra weight.
-    _lang_guards = {
-        "zh": (
-            "【绝对要求】输出语言：简体中文。\n"
-            "RULE: Output ONLY in Simplified Chinese. NEVER translate to other languages."
-        ),
-        "ja": (
-            "【絶対禁止】日本語のテキストを中国語や英語に翻訳してはなりません。\n"
-            "【絶対条件】出力は必ず日本語のみ。中国語への翻訳は厳禁。\n"
-            "RULE: Output ONLY in Japanese. Do NOT translate to Chinese or any other language."
-        ),
-        "en": (
-            "ABSOLUTE RULE: Output ONLY in English. Do NOT translate to Chinese or Japanese.\n"
-            "【禁止】中国語・日本語への翻訳禁止。英語のみで出力すること。"
-        ),
-    }
-    _lang_guard = _lang_guards.get(language, "")
+    # Language guard (see _LANG_GUARDS): prepended to system AND appended to the
+    # user prompt so qwen reliably keeps the original language.
+    _guard = _lang_guard(language)
 
-    system = ((_lang_guard + "\n\n") if _lang_guard else "") + CORRECT_SYSTEM
+    system = ((_guard + "\n\n") if _guard else "") + CORRECT_SYSTEM
 
     vocab_file = _resolve_vocab_file(cfg)
     vocab = _load_vocabulary(vocab_file)
@@ -550,8 +706,8 @@ def correct_transcript(raw: str, corrected_dir: str, ts: str,
 
     prompt = CORRECT_PROMPT.format(transcript=raw) + vocab_section + glossary_section
     # Repeat the language guard at the END of the user prompt — models weight recent instructions highly
-    if _lang_guard:
-        prompt += f"\n\n[REMINDER] {_lang_guard}"
+    if _guard:
+        prompt += f"\n\n[REMINDER] {_guard}"
 
     t_api_start = time.time()
     print(f"[Summarizer] calling correction API...")
@@ -687,6 +843,9 @@ def run_step(step: str, transcript_path: str, cfg: configparser.ConfigParser,
     step = "correct"  → correction only (Step 1)
     step = "summary"  → meeting minutes only, uses latest corrected file (Step 2)
     step = "all"      → both steps (default, backward compatible)
+    step = "online"   → ONE combined full-correction + industry-term pass on the
+                        RAW transcript, then minutes. Used when per-segment
+                        correction was skipped (online refine enabled).
     """
     corrected_dir = os.path.expanduser(cfg.get("summary", "corrected_dir", fallback=r"C:\code\data\corrected"))
     summary_dir   = os.path.expanduser(cfg.get("summary", "summary_dir",   fallback=r"C:\code\data\memo"))
@@ -721,6 +880,16 @@ def run_step(step: str, transcript_path: str, cfg: configparser.ConfigParser,
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     try:
+        if step == "online":
+            # Combined full-correction + industry-term pass on the RAW transcript,
+            # then minutes. Used when per-segment correction was skipped during the
+            # session (online refine enabled), so this is the only correction pass.
+            final_text, final_path = online_full_correct(raw, corrected_dir, ts, cfg, language)
+            if final_path:
+                print(f"[Summarizer] using final corrected file for summary: {final_path}")
+            make_summary(final_text, language, summary_dir, ts, cfg)
+            return True
+
         if step in ("correct", "all"):
             corrected = correct_transcript(raw, corrected_dir, ts, cfg, language)
             corrected_path = ""
@@ -790,7 +959,7 @@ def main():
                 language = f.read().strip()
         print(f"[Summarizer] reading from state: {transcript_path}  lang={language}")
     else:
-        print("[Summarizer] usage: python summarizer.py [--step correct|summary|all] <transcript.txt> [lang]")
+        print("[Summarizer] usage: python summarizer.py [--step correct|summary|all|online] <transcript.txt> [lang]")
         sys.exit(1)
 
     sys.exit(0 if run_step(step, transcript_path, cfg, language) else 1)
