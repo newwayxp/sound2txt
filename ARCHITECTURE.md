@@ -56,17 +56,53 @@ rather than by restarting the process.
 A single long-lived process containing several threads:
 
 ```
-main thread        : WASAPI loopback capture → resample 16k mono → AccumulatingVAD
-                     • writes every chunk to .tmp_audio_<ts>.raw (full session audio)
-                     • on VAD flush → _enqueue(seg)
+main thread        : session lifecycle via signal files; start/stop/drain/finalize
+system-capture    : WASAPI loopback capture → write .tmp_audio_<ts>.raw
+                     → resample 16k mono chunks → system audio queue
+system-vad        : consumes system audio queue → AEC reference update
+                     → AccumulatingVAD → on VAD flush → _enqueue(seg, "system")
 mic thread         : microphone capture (On Air / .mic_onair) → independent VAD
                      • AEC echo suppression vs. recent system audio
                      • on flush → _enqueue(seg, "mic")
 transcribe worker  : pops a segment FILE PATH from the queue → Whisper →
-                     hallucination/low-conf filter → per-segment LLM correction →
-                     glossary fix → append transcript + corrected, delete seg file
+                     hallucination/low-conf filter → append raw transcript →
+                     enqueue text correction, delete seg file
+correct worker     : consumes text correction queue → per-segment LLM correction →
+                     glossary fix → append corrected transcript
+post-session refine: optional online industry-term refinement in summarizer.py;
+                     writes final_corrected_<ts>.txt without overwriting corrected
 MP3 thread(s)      : WAV → MP3 (libmp3lame) in background at session end
 ```
+
+The system-audio path intentionally separates recording from boundary detection:
+capture keeps reading the device and writing the full session raw file, while
+`system-vad` decides sentence/segment boundaries and queues only completed
+segments for transcription. Whisper transcription and LLM correction are also
+separate workers: raw transcript text appears as soon as Whisper completes, and
+the correction worker updates the corrected file later without blocking the next
+Whisper segment. Session stop first disables capture, drains the system audio
+queue, force-flushes VAD, then waits for both transcription and correction queues.
+After that, `summarizer.py --step summary` may run the optional online industry
+term refinement before generating minutes.
+
+### Optional online industry-term refinement
+
+Controlled by `[summary] enable_online_refine` (default `false`). When enabled,
+the post-session summary step:
+
+1. Reads the real-time `corrected_<ts>.txt` file.
+2. Uses the configured LLM backend to infer the meeting domain and 3-8 search
+   keywords.
+3. Downloads terminology candidates from the white-listed Wikipedia OpenSearch
+   API and caches the raw API responses under `[summary] term_cache_dir`
+   (default `~/Documents/Sound2Text/term_cache`).
+4. Runs a conservative full-transcript refinement using those terms.
+5. Writes `final_corrected_<ts>.txt` and records it in `.last_final_corrected`.
+6. Generates `summary_<ts>.md` from the final corrected file.
+
+The original `transcript_<ts>.txt` and real-time `corrected_<ts>.txt` are never
+overwritten. If the online lookup or final refinement fails, the system falls
+back to the existing corrected file and still generates minutes.
 
 ### VAD = Silero v6 via `AccumulatingVAD`
 
@@ -111,11 +147,14 @@ converted to WAV/MP3 only at session end, after the queue is drained.
 
 ### Timestamps
 
-Line prefix `[HH:MM:SS]` is the **emit time** (when the audio was spoken),
-computed in the capture thread at enqueue as `now - segment_duration`. It is
-shared by both the raw transcript and the corrected line, so a 100-second
+Line prefix `[HH:MM:SS]` is the **segment end time** (when the speech finished),
+captured in the capture thread at enqueue as the flush wall-clock (`time.time()`).
+It is shared by both the raw transcript and the corrected line, so a 100-second
 transcription lag does **not** shift the displayed time — stop time and the last
-transcript timestamp stay consistent.
+transcript timestamp stay consistent. (It was previously the segment *start*
+(`now - segment_duration`), which lagged the visible text by up to one full
+`max_sec` window — e.g. 8 s when speech is continuous and every segment is a
+force-flush.)
 
 ### Silence skip (throughput)
 
@@ -197,6 +236,7 @@ by the presenter unless noted.
 | `.recording_start` | presenter/pipeline | Unix timestamp of recording start. |
 | `.last_transcript` | pipeline → presenter | Path to the live raw transcript `.txt` (polled for the Transcript tab). |
 | `.last_corrected` | pipeline → presenter | Path to the live corrected `.txt` (polled for the Corrected tab; also the minutes input). |
+| `.last_final_corrected` | summarizer → presenter | Path to the optional post-session `final_corrected_<ts>.txt`. |
 | `.last_language` | pipeline | Detected/locked language code (reused next session). |
 
 `presenter.start()` deletes stale session signals (`.pipeline_stop`,
@@ -298,9 +338,11 @@ _call_signal = pyqtSignal(object) # schedule(fn) — safe from any thread
 `QTimer.singleShot(0, fn)` does **not** work from non-main threads in Qt6.
 All cross-thread UI updates must use `_call_signal.emit(fn)` (`view.schedule`).
 
-Inside `pipeline.py`, the segment counter is guarded by `_seg_seq_lock` (system
-and mic threads both enqueue), and the AEC reference buffer / mic VAD have their
-own locks.
+Inside `pipeline.py`, system capture and system VAD are separate threads joined
+by `_system_audio_queue`. `raw_lock` protects the session raw file while capture
+writes and finalization closes/converts it. The segment counter is guarded by
+`_seg_seq_lock` (system and mic threads both enqueue), and the AEC reference
+buffer / mic VAD have their own locks.
 
 ---
 
@@ -337,7 +379,7 @@ Gitignored; `config_default.ini` is the committed template. Sections in use:
 |---------|-----------------|
 | `[recording]` | `device` (auto/cuda/cpu), `model_size`, `language`, `enable_mic`, `mic_gain`, `aec_threshold`, `audio_format`, `mp3_quality`, `initial_prompt_max_terms` |
 | `[paths]` | `audio_dir`, `transcript_dir`, `vocab_file`, `glossary_file` |
-| `[summary]` | `mode` (openai/ollama), `api_base`/`api_key`/`model` or `ollama_url`/`ollama_model`, `enable_correction`, `corrected_dir`, `summary_dir` |
+| `[summary]` | `mode` (openai/ollama), `api_base`/`api_key`/`model` or `ollama_url`/`ollama_model`, `enable_correction`, `enable_online_refine`, `online_refine_terms`, `corrected_dir`, `summary_dir`, `final_corrected_dir`, `term_cache_dir` |
 | `[models]` | per-language model override: `ja` / `zh` / `en` |
 | `[subtitle]` | VAD tuning: `silence_sec`, `min_accum_sec`, `max_sec`, `min_speech_sec` |
 | `[network]` | `https_proxy`, `http_proxy`, `ssl_verify` |
@@ -387,6 +429,8 @@ them at `audio_dir` / `transcript_dir` / `[summary] corrected_dir` / `summary_di
 |--------|------|
 | Raw transcript | `transcript_<ts>.txt` |
 | Corrected text | `corrected_<ts>.txt` |
+| Final corrected text | `final_corrected_<ts>.txt` in `[summary] final_corrected_dir` (default = `corrected_dir`; only when online refinement succeeds) |
+| Downloaded term cache | `term_cache_dir/*.json` (default `~/Documents/Sound2Text/term_cache`) |
 | Meeting notes | `summary_<ts>.md` |
 | Session audio | `audio_<ts>.mp3` (WAV intermediate deleted) |
 | Segment cache (transient) | `.seg_cache_<ts>/seg_*.wav` (deleted as consumed; dir removed at session end) |

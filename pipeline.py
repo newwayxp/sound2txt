@@ -292,10 +292,25 @@ class AccumulatingVAD:
         return seg
 
     def force_flush(self) -> bytes | None:
-        if self._accum and self._speech_dur >= self._min_sec:
-            return self._flush("stop")
-        self._reset()
-        return None
+        """Flush whatever audio remains at session stop.
+
+        Unlike a mid-session turn flush this must NOT apply the ``min_accum_sec``
+        gate: the tail here is usually a sub-``min_accum_sec`` remnant left over
+        after the previous force-flush, and dropping it would silently lose the
+        last thing the user said. Only skip when the reliable Silero VAD is active
+        AND the remnant has essentially no speech (``speech_dur < min_speech_sec``)
+        — that is pure trailing silence/noise, which Whisper would merely burn
+        time hallucinating over. With the amplitude fallback ``speech_dur`` is
+        unreliable, so always flush rather than risk dropping real speech."""
+        if not self._accum:
+            self._reset()
+            return None
+        if self._model is not None and self._speech_dur < self._min_speech:
+            tr_debug(f"force_flush: dropping silent tail "
+                     f"(speech={self._speech_dur:.1f}s < {self._min_speech:.1f}s)")
+            self._reset()
+            return None
+        return self._flush("stop")
 
 
 def _is_echo_segment(mic_pcm: bytes,
@@ -633,11 +648,12 @@ def run():
         "onair_offset": None, # float | None — session-relative offset in seconds when On Air started
     }
     _conv_threads: list[threading.Thread] = []  # non-daemon MP3 conversion threads to join
-    # System audio sample counter — single-writer (main thread), read by mic thread via GIL.
+    # System audio sample counter — single-writer (system-capture), read by mic thread via GIL.
     # Counts frames at original sample_rate since session start → used for precise mic offset.
     _sys_frames = [0]
+    _recording_active = threading.Event()
 
-    # ── AEC: system audio reference buffer (main thread writes, mic thread reads) ──
+    # ── AEC: system audio reference buffer (system-vad writes, mic thread reads) ──
     _aec_buf:  collections.deque = collections.deque()  # list of np.ndarray chunks at SAMPLE_RATE
     _aec_lock: threading.Lock    = threading.Lock()
     _AEC_BUF_SEC  = 2.0
@@ -648,6 +664,7 @@ def run():
     corrected_file:   str | None = None
     raw_file_path:    str | None = None
     raw_fh = None
+    raw_lock = threading.Lock()
     session_ts: str | None = None
     # Per-segment audio cache: each VAD segment is written to a small WAV file in
     # this directory and only its *path* is queued, so the in-memory queue never
@@ -677,7 +694,8 @@ def run():
         transcript_file = os.path.join(transcript_dir, f"transcript_{session_ts}.txt")
         corrected_file  = os.path.join(corrected_dir,  f"corrected_{session_ts}.txt")
         raw_file_path   = os.path.join(audio_dir, f".tmp_audio_{session_ts}.raw")
-        raw_fh = open(raw_file_path, "wb")
+        with raw_lock:
+            raw_fh = open(raw_file_path, "wb")
         seg_cache_dir = os.path.join(audio_dir, f".seg_cache_{session_ts}")
         # Sweep orphaned caches left by a previously crashed session (single
         # pipeline process → no concurrent session can own them).
@@ -726,9 +744,10 @@ def run():
                  if seg_cache_dir and os.path.isdir(seg_cache_dir) else 0)
         sys_info(f"finalize: queue drained, seg_cache files left={_left} "
                  f"(expected 0); converting raw → wav/mp3")
-        if raw_fh:
-            raw_fh.close()
-            raw_fh = None
+        with raw_lock:
+            if raw_fh:
+                raw_fh.close()
+                raw_fh = None
         if raw_file_path and os.path.exists(raw_file_path):
             wav_path = os.path.join(os.path.dirname(raw_file_path),
                                     f"audio_{session_ts}.wav")
@@ -864,17 +883,24 @@ def run():
     # audio is dropped even when transcription falls far behind. Disk usage is
     # bounded by session length and the files are deleted as they are consumed.
     _seg_queue: queue.Queue = queue.Queue()
+    # Text correction is separated from Whisper inference. The transcribe worker
+    # appends raw text quickly, then queues LLM/glossary correction here so the
+    # next audio segment can start Whisper immediately.
+    _corr_queue: queue.Queue = queue.Queue()
 
     def _enqueue(seg: bytes, source: str) -> None:
         """Persist an audio segment to the on-disk cache and queue its path.
 
-        ``emit_ts`` is the wall-clock time the speech was actually emitted,
-        computed here in the capture thread as ``now - segment_duration`` so the
-        displayed timestamp reflects when the sound occurred, not when (much
-        later) transcription/correction finished. Both system and mic segments
-        are 16 kHz mono int16. Writing the segment to disk (instead of queuing
-        the bytes) keeps the in-memory queue tiny regardless of backlog."""
-        emit_ts = time.time() - len(seg) / 2 / SAMPLE_RATE
+        ``emit_ts`` is the wall-clock time the segment's audio *ended* — i.e.
+        when this speech finished — captured here at flush time. With dynamic VAD
+        segments (often a full ``max_sec`` window when speech is continuous), the
+        old segment-*start* timestamp lagged the visible text by up to one whole
+        window (e.g. 8 s with ``max_sec=8``). Using the audio end time keeps the
+        displayed ``[HH:MM:SS]`` aligned with when the words were actually spoken,
+        and stays independent of any (much later) transcription backlog. Both
+        system and mic segments are 16 kHz mono int16. Writing the segment to disk
+        (instead of queuing the bytes) keeps the in-memory queue tiny."""
+        emit_ts = time.time()
         cache = seg_cache_dir or tempfile.gettempdir()
         with _seg_seq_lock:
             _seg_seq[0] += 1
@@ -901,6 +927,36 @@ def run():
                 f"depth={_seg_queue.qsize()}")
 
     _lang_detect_attempts = [0]   # segments tried while session_lang is still None
+
+    def _correction_loop():
+        """Background thread: corrects transcribed text and appends corrected output."""
+        while True:
+            item = _corr_queue.get()
+            if item is None:
+                _corr_queue.task_done()
+                break
+
+            try:
+                (original, lang, corrected_path, seg_ts, src_label,
+                 seg_dur, seg_source) = item
+
+                corrected_text = _correct_segment(original, lang, cfg)
+                if corrected_text != original:
+                    tr_info(f"[pipeline] corrected: {corrected_text}")
+                else:
+                    corrected_text = original  # no correction or API unavailable
+
+                # Deterministic glossary fix (applies even if the LLM step was skipped)
+                corrected_text = apply_glossary(corrected_text, _glossary)
+
+                if corrected_path:
+                    _append_corrected(src_label + corrected_text, corrected_path, seg_ts)
+                    tr_info(f"Segment finalized: {seg_dur:.1f}s {seg_source} audio "
+                            f"transcribed+corrected")
+            except Exception as e:
+                tr_error(f"correction worker error (segment kept raw only): {e}")
+            finally:
+                _corr_queue.task_done()
 
     def _transcribe_loop():
         """Background thread: transcribes audio segments in order."""
@@ -1042,29 +1098,17 @@ def run():
                     continue
 
                 tr_info(f"[pipeline] {'[mic] ' if _seg_source == 'mic' else ''}original: {original}")
-                # Timestamp = when the sound was actually emitted (captured at enqueue
-                # time as now - segment_duration). Shared by both the raw transcript and
+                # Timestamp = when the segment's audio ended (captured at enqueue
+                # time as the flush wall-clock). Shared by both the raw transcript and
                 # the corrected line so they match exactly and reflect real audio time,
                 # not the (later) time transcription/correction finished.
                 from datetime import datetime
                 _seg_ts = datetime.fromtimestamp(_emit_ts).strftime("%H:%M:%S")
                 _append_transcript(_src_label + original, _seg_ts)
 
-                # Per-segment correction: call LLM immediately after transcription
-                corrected_text = _correct_segment(original, session_lang, cfg)
-                if corrected_text != original:
-                    tr_info(f"[pipeline] corrected: {corrected_text}")
-                else:
-                    corrected_text = original  # no correction or API unavailable
-
-                # Deterministic glossary fix (applies even if the LLM step was skipped)
-                corrected_text = apply_glossary(corrected_text, _glossary)
-
-                # Append to corrected file and update signal for UI polling
-                if corrected_file:
-                    _append_corrected(_src_label + corrected_text, corrected_file, _seg_ts)
-                    tr_info(f"Segment finalized: {seg_dur:.1f}s {_seg_source} audio "
-                            f"transcribed+corrected")
+                _corr_queue.put((original, session_lang, corrected_file, _seg_ts,
+                                 _src_label, seg_dur, _seg_source))
+                tr_debug(f"correction queued depth={_corr_queue.qsize()}")
 
             except Exception as e:
                 # Last-resort guard: never let an unexpected error kill the worker
@@ -1073,6 +1117,8 @@ def run():
             finally:
                 _seg_queue.task_done()
 
+    _corr_worker = threading.Thread(target=_correction_loop, daemon=True, name="correct")
+    _corr_worker.start()
     _worker = threading.Thread(target=_transcribe_loop, daemon=True, name="transcribe")
     _worker.start()
 
@@ -1114,12 +1160,89 @@ def run():
             arr = _ss.resample_poly(arr, SAMPLE_RATE, sample_rate).astype(np.int16)
         return arr
 
+    enable_mic = cfg.getboolean("recording", "enable_mic", fallback=True)
+
+    # ── System audio capture and boundary detection threads ───────────────────
+    # Capture owns device reads + session raw writes. VAD owns sentence/segment
+    # boundary decisions. Transcription remains the existing _seg_queue worker.
+    _system_audio_queue: queue.Queue = queue.Queue()
+    _system_capture_stop = threading.Event()
+
+    def _system_capture_loop():
+        while not _system_capture_stop.is_set():
+            try:
+                raw = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+            except Exception as e:
+                tr_warn(f"System audio read error: {e}")
+                time.sleep(0.05)
+                continue
+
+            if not _recording_active.is_set():
+                continue
+
+            try:
+                chunk = _to_mono16k(raw)
+            except Exception as e:
+                tr_warn(f"System audio resample error: {e}")
+                continue
+
+            with raw_lock:
+                if raw_fh:
+                    try:
+                        raw_fh.write(raw)
+                        _sys_frames[0] += CHUNK_SIZE  # frames at original sample_rate
+                    except Exception:
+                        pass
+
+            _system_audio_queue.put(chunk)
+
+        sys_info("System capture thread stopped")
+
+    def _system_vad_loop():
+        while True:
+            chunk = _system_audio_queue.get()
+            if chunk is None:
+                _system_audio_queue.task_done()
+                break
+
+            try:
+                # Update AEC reference buffer from the same audio that feeds VAD.
+                if enable_mic:
+                    _now_t = time.monotonic()
+                    with _aec_lock:
+                        _aec_buf.append((_now_t, chunk))
+                        while _aec_buf and _now_t - _aec_buf[0][0] > _AEC_BUF_SEC:
+                            _aec_buf.popleft()
+
+                seg = vad.feed(chunk)
+                if seg:
+                    _enqueue(seg, "system")
+            except Exception as e:
+                tr_warn(f"System VAD error: {e}")
+            finally:
+                _system_audio_queue.task_done()
+
+        sys_info("System VAD thread stopped")
+
+    _system_capture_thread = threading.Thread(
+        target=_system_capture_loop, daemon=True, name="system-capture")
+    _system_vad_thread = threading.Thread(
+        target=_system_vad_loop, daemon=True, name="system-vad")
+    _system_capture_thread.start()
+    _system_vad_thread.start()
+    sys_info("System audio threads started: capture + vad")
+
+    def _drain_system_audio_queue():
+        # Give an in-flight stream.read() one chunk window to publish its chunk
+        # before we flush VAD. Otherwise stop can race just before queue.put().
+        time.sleep(max(0.05, CHUNK_SIZE / float(sample_rate) * 2))
+        _system_audio_queue.join()
+
     # ── Mic pipeline (independent VAD → shared transcription queue) ──────────
     # Mic audio is NOT mixed into system audio; each source is transcribed
     # separately and appended to the same corrected file by timestamp.
     # Mixing happens at text level. On Air button (MIC_ONAIR signal) controls
     # whether mic feeds into the VAD.
-    enable_mic    = cfg.getboolean("recording", "enable_mic", fallback=True)
     _mic_vad      = AccumulatingVAD(silence_sec=silence_s, min_accum_sec=min_s, max_sec=max_s,
                                     min_speech_sec=min_speech_s)
     _mic_vad_lock = threading.Lock()
@@ -1309,25 +1432,8 @@ def run():
                         except Exception as _me:
                             sys_error(f"Model reload failed: {_me}")
 
-                # Drain stale audio buffered by the device while the session was
-                # stopped. The main loop does not read the stream during idle, so
-                # the OS/WASAPI buffer fills up; without draining, the restart would
-                # process seconds of old audio first — a long stretch with sample
-                # frames counted in the log but no live transcription appearing.
-                try:
-                    _drained = 0
-                    while stream.get_read_available() >= CHUNK_SIZE:
-                        stream.read(CHUNK_SIZE, exception_on_overflow=False)
-                        _drained += CHUNK_SIZE
-                        if _drained > sample_rate * 60:   # safety cap: 60s
-                            break
-                    if _drained:
-                        sys_info(f"Drained {_drained / sample_rate:.1f}s of stale "
-                                 f"buffered audio at session start")
-                except Exception as _de:
-                    tr_warn(f"stream drain error: {_de}")
-
                 _open_session()
+                _recording_active.set()
                 session_was_active = True
                 with open(os.path.join(_BASE, ".recording_start"), "w") as f:
                     f.write(str(time.time()))
@@ -1337,11 +1443,11 @@ def run():
                 from datetime import datetime as _dt
                 sys_info(f"STOP detected at {_dt.now().strftime('%H:%M:%S')} — "
                          f"draining {_seg_queue.qsize()} queued segment(s) before finalize")
+                _recording_active.clear()
+                _drain_system_audio_queue()
                 # Flush remaining audio from system VAD buffer
                 seg = vad.force_flush()
                 if seg:
-                    if raw_fh:
-                        raw_fh.write(seg)
                     _enqueue(seg, "system")
 
                 # Flush remaining audio from mic VAD buffer + save on-air recording
@@ -1361,41 +1467,30 @@ def run():
                     if mic_seg:
                         _enqueue(mic_seg, "mic")
 
-                # Wait for all pending transcriptions before closing session
+                # Wait for all pending transcription/correction before closing session
                 sys_info("Waiting for transcriptions to complete...")
                 _seg_queue.join()
+                sys_info("Waiting for corrections to complete...")
+                _corr_queue.join()
 
                 _close_session(channels, sample_size, sample_rate)
                 session_was_active = False
                 continue
 
-            raw = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-            chunk = _to_mono16k(raw)
-
-            # Write raw audio for session recording; count frames for precise mic offset
-            if session_active and raw_fh:
-                try:
-                    raw_fh.write(raw)
-                    _sys_frames[0] += CHUNK_SIZE  # frames at original sample_rate
-                except Exception:
-                    pass
-
-            # Update AEC reference buffer
-            if enable_mic:
-                _now_t = time.monotonic()
-                with _aec_lock:
-                    _aec_buf.append((_now_t, chunk))
-                    while _aec_buf and _now_t - _aec_buf[0][0] > _AEC_BUF_SEC:
-                        _aec_buf.popleft()
-
-            # Feed to VAD
-            seg = vad.feed(chunk)
-            if seg:
-                _enqueue(seg, "system")
+            time.sleep(0.05)
 
     except KeyboardInterrupt:
         pass
     finally:
+        _recording_active.clear()
+        _system_capture_stop.set()
+        try:
+            stream.stop_stream()
+        except Exception:
+            pass
+        _system_capture_thread.join(timeout=3)
+        _drain_system_audio_queue()
+
         # Flush remaining audio from system VAD
         seg = vad.force_flush()
         if seg:
@@ -1417,12 +1512,20 @@ def run():
         if _mic_thread is not None:
             _mic_thread.join(timeout=3)
 
+        _system_audio_queue.put(None)
+        _system_audio_queue.join()
+        _system_vad_thread.join(timeout=3)
+
         # Stop background thread
         _seg_queue.put(None)
         _seg_queue.join()
         _worker.join(timeout=60)
+        _corr_queue.put(None)
+        _corr_queue.join()
+        _corr_worker.join(timeout=60)
 
         if session_was_active:
+            _corr_queue.join()
             _close_session(channels, sample_size, sample_rate)
 
         # Wait for any in-progress MP3 conversions to finish
@@ -1432,7 +1535,10 @@ def run():
                 _ct.join(timeout=120)
 
         if stream is not None:
-            stream.stop_stream()
+            try:
+                stream.stop_stream()
+            except Exception:
+                pass
             stream.close()
         pa.terminate()
         sys_info("pipeline stopped")

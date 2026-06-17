@@ -683,7 +683,9 @@ class App(QMainWindow):
         grid.setContentsMargins(16, 12, 16, 12)
         grid.setVerticalSpacing(8)
         grid.setHorizontalSpacing(10)
-        grid.setColumnStretch(1, 1)   # col 0=label, col 1=input, col 2=browse
+        # Two settings per row: cols 0-2 = label/input/browse, cols 3-5 = same again
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(4, 1)
 
         cfg = self._presenter._config
         # (row_type, icon, label_key, section, config_key, default_path)
@@ -693,11 +695,15 @@ class App(QMainWindow):
             ("dir",  "📝", "tr_dir",       "paths",   "transcript_dir", r"C:\Users\Public\Sound2Text\transcript"),
             ("dir",  "✏️", "corr_dir",     "summary", "corrected_dir",  r"C:\Users\Public\Sound2Text\corrected"),
             ("dir",  "📋", "sum_dir",      "summary", "summary_dir",    r"C:\Users\Public\Sound2Text\memo"),
+            ("dir",  "🌐", "final_dir",    "summary", "final_corrected_dir", r"C:\Users\Public\Sound2Text\corrected"),
+            ("dir",  "🏷️", "term_dir",     "summary", "term_cache_dir", r"C:\Users\Public\Sound2Text\term_cache"),
             ("file", "📖", "vocab_file",   "paths",   "vocab_file",     ""),
             ("file", "📖", "glossary_file","paths",   "glossary_file",  ""),
         ]
         entries: dict = {}
-        for row, (rtype, icon, lbl_key, sec, key, default) in enumerate(rows_def):
+        for idx, (rtype, icon, lbl_key, sec, key, default) in enumerate(rows_def):
+            row   = idx // 2            # two settings per grid row
+            cbase = (idx % 2) * 3       # col offset: 0 for left, 3 for right
             # Icon + label in one widget, left-aligned, fixed width
             label_w = QWidget()
             label_h = QHBoxLayout(label_w)
@@ -715,12 +721,12 @@ class App(QMainWindow):
             label_h.addWidget(icon_lbl)
             label_h.addWidget(text_lbl)
             label_h.addStretch()
-            label_w.setFixedWidth(170)
-            grid.addWidget(label_w, row, 0)
+            label_w.setFixedWidth(150)
+            grid.addWidget(label_w, row, cbase + 0)
 
             # Path input
             le = QLineEdit(cfg.get(sec, key, fallback=default))
-            grid.addWidget(le, row, 1)
+            grid.addWidget(le, row, cbase + 1)
             entries[(sec, key)] = le
 
             # Browse button
@@ -731,7 +737,7 @@ class App(QMainWindow):
                 btn.clicked.connect(lambda _, v=le: self._browse_file(v))
             else:
                 btn.clicked.connect(lambda _, v=le: self._browse_dir(v))
-            grid.addWidget(btn, row, 2)
+            grid.addWidget(btn, row, cbase + 2)
 
         save_btn = QPushButton(t("save"))
         save_btn.setObjectName("btnSave")
@@ -741,7 +747,8 @@ class App(QMainWindow):
             self._presenter.save_config(updates)
 
         save_btn.clicked.connect(_save)
-        grid.addWidget(save_btn, len(rows_def), 0, 1, 3, Qt.AlignmentFlag.AlignHCenter)
+        save_row = (len(rows_def) + 1) // 2   # row after the last pair
+        grid.addWidget(save_btn, save_row, 0, 1, 6, Qt.AlignmentFlag.AlignHCenter)
 
         return w
 
@@ -950,6 +957,19 @@ class App(QMainWindow):
         inner_tabs.setCurrentIndex(1 if current_mode == "ollama" else 0)
         self._inner_api_tabs = inner_tabs
 
+        self._online_refine = QCheckBox(t("online_refine"))
+        self._online_refine.setChecked(
+            cfg.getboolean("summary", "enable_online_refine", fallback=False)
+        )
+        self._online_refine.setToolTip(t("online_refine_hint"))
+        # Persist immediately on toggle so the flag can never be lost by saving a
+        # different settings tab (the checkbox lives on this tab only).
+        self._online_refine.toggled.connect(
+            lambda checked: self._presenter.save_config(
+                {("summary", "enable_online_refine"): "true" if checked else "false"})
+        )
+        vbox.addWidget(self._online_refine)
+
         # Save button
         save_btn = QPushButton(t("save"))
         save_btn.setObjectName("btnSave")
@@ -963,6 +983,8 @@ class App(QMainWindow):
                 ("summary", "model"):        self._api_model.text(),
                 ("summary", "ollama_url"):   self._ollama_url.text(),
                 ("summary", "ollama_model"): self._ollama_model.text(),
+                ("summary", "enable_online_refine"):
+                    "true" if self._online_refine.isChecked() else "false",
             }
             self._presenter.save_config(updates)
             if mode == "ollama":
@@ -1087,10 +1109,19 @@ class App(QMainWindow):
                 font-family: 'Hiragino Sans', 'PingFang SC', 'Meiryo UI', 'Microsoft YaHei';
                 font-size: 14px;
                 line-height: 1.65;
+                color: #2b2f36;
             }
-            h1 { font-size: 22px; margin-top: 12px; margin-bottom: 8px; }
-            h2 { font-size: 18px; margin-top: 12px; margin-bottom: 6px; }
-            h3 { font-size: 15px; margin-top: 10px; margin-bottom: 4px; }
+            h1 {
+                font-size: 23px; color: #1a4b8c;
+                margin-top: 14px; margin-bottom: 10px;
+                border-bottom: 2px solid #1a4b8c; padding-bottom: 4px;
+            }
+            h2 {
+                font-size: 18px; color: #245a9e;
+                margin-top: 16px; margin-bottom: 6px;
+                border-bottom: 1px solid #d0d7e2; padding-bottom: 3px;
+            }
+            h3 { font-size: 15px; color: #245a9e; margin-top: 10px; margin-bottom: 4px; }
             ul, ol { margin-left: 18px; }
             li { margin-top: 3px; margin-bottom: 3px; }
             p { margin-top: 6px; margin-bottom: 6px; }

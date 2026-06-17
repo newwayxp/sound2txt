@@ -16,6 +16,7 @@ from datetime import datetime
 STATE_FILE     = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_transcript")
 LANG_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_language")
 CORRECTED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_corrected")
+FINAL_CORRECTED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_final_corrected")
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 _VOCAB_DEFAULT = os.path.join(_BASE_DIR, "vocabulary.txt")
 
@@ -122,52 +123,100 @@ Output only the corrected text, no explanations or annotations.
 
 _SUMMARY_TEMPLATES = {
     "zh": {
-        "system": "你是一名专业的会议纪要撰写专家，擅长将口语化的会议记录整理成简洁清晰的书面纪要。",
-        "header": "# 会议纪要",
-        "date_label": "**会议时间：**",
-        "sections": ["## 主要讨论内容", "## 重要决议与结论", "## 待跟进事项"],
-        "hints":    ["（列出会议中讨论的主要话题）", "（决定事项或重要结论，如无则写「无」）", "（需要后续跟进的行动项，如无则写「无」）"],
+        "system": "你是一名专业的会议纪要撰写专家，擅长将口语化的会议记录整理成结构清晰、专业美观的书面纪要。",
+        "body": """\
+# 会议纪要
+
+**日期：** {date}
+
+**主题：** （用一句话概括本次会议主题）
+
+**摘要：** （用 1–2 句话概括会议的核心内容与主要结论）
+
+## 主要议题
+（按话题分条，每条格式为「**话题**：要点说明」；要点较多时用子项展开）
+
+## 决定事项
+（编号列出明确的决定或结论；如无则写「无」）
+
+## 行动项
+（逐条列出，格式为「事项 — 负责人 — 期限」；如无则写「无」）
+
+## 下一步
+（后续安排或下次会议计划；如无则写「无」）""",
     },
     "ja": {
-        "system": "あなたはプロの議事録作成専門家です。口語的な会議の文字起こしを、簡潔でわかりやすい書面の議事録にまとめる専門家です。",
-        "header": "# 議事録",
-        "date_label": "**日時：**",
-        "sections": ["## 主な議題", "## 決定事項・結論", "## フォローアップ事項"],
-        "hints":    ["（議論された主なトピックを箇条書き）", "（決定事項・重要な結論。なければ「なし」）", "（フォローアップが必要な行動項目。なければ「なし」）"],
+        "system": "あなたはプロの議事録作成専門家です。口語的な会議の文字起こしを、構成が明確で見やすいプロフェッショナルな議事録にまとめます。",
+        "body": """\
+# 議事録
+
+**日時：** {date}
+
+**テーマ：** （会議の主題を一言で）
+
+**要約：** （会議の核心と主な結論を1〜2文で）
+
+## 主な議題
+（トピックごとに「**トピック**：要点」の形式で箇条書き。要点が多い場合は小項目で展開）
+
+## 決定事項
+（明確な決定・結論を番号付きで。なければ「なし」）
+
+## アクションアイテム
+（1行ずつ「項目 — 担当者 — 期限」の形式で記入。なければ「なし」）
+
+## 次のステップ
+（今後の予定・次回会議。なければ「なし」）""",
     },
     "en": {
-        "system": "You are a professional meeting minutes writer, skilled at turning informal spoken transcripts into clear, concise written records.",
-        "header": "# Meeting Minutes",
-        "date_label": "**Date:**",
-        "sections": ["## Main Discussion Topics", "## Key Decisions and Conclusions", "## Action Items"],
-        "hints":    ["(List the main topics discussed)", "(Key decisions or conclusions. Write 'None' if none.)", "(Follow-up action items. Write 'None' if none.)"],
+        "system": "You are a professional meeting minutes writer, skilled at turning informal spoken transcripts into clear, well-structured, professional written records.",
+        "body": """\
+# Meeting Minutes
+
+**Date:** {date}
+
+**Topic:** (Summarize the meeting topic in one line)
+
+**Summary:** (1–2 sentences capturing the core content and key conclusions)
+
+## Main Discussion Topics
+(Bullet each topic as "**Topic**: key points"; expand with sub-items when needed)
+
+## Key Decisions
+(Numbered list of explicit decisions or conclusions. Write "None" if none.)
+
+## Action Items
+(One per line as "Task — Owner — Due". Write "None" if none.)
+
+## Next Steps
+(Follow-up plans or next meeting. Write "None" if none.)""",
     },
 }
 
 def _summary_prompts(language: str, date: str, transcript: str):
     """言語に合った system + user プロンプトを返す。"""
     tmpl = _SUMMARY_TEMPLATES.get(language, _SUMMARY_TEMPLATES["en"])
-
-    system = tmpl["system"]
-
-    sections = "\n\n".join(
-        f"{sec}\n{hint}" for sec, hint in zip(tmpl["sections"], tmpl["hints"])
-    )
+    body = tmpl["body"].replace("{date}", date)
 
     user = f"""\
-Generate meeting minutes using the format below.
-Output language MUST be the same as the transcript — do NOT translate.
+Fill in the meeting-minutes template below from the transcript.
 
-{tmpl['header']}
+Rules:
+- Output language MUST be the same as the transcript — do NOT translate.
+- Keep the exact Markdown structure: the headings and the bold field labels.
+- Replace each parenthesized instruction （…） with real content, and remove the
+  guidance text and the parentheses themselves.
+- Use plain text and simple bullet/numbered lists only — no tables.
+- Be concise and factual; never invent content not supported by the transcript.
+- Output only the finished Markdown, with no extra commentary or code fences.
 
-{tmpl['date_label']} {date}
-
-{sections}
+--- Template ---
+{body}
 
 --- Corrected transcript ---
 {transcript}
 """
-    return system, user
+    return tmpl["system"], user
 
 
 # ── バックエンド呼び出し ─────────────────────────────────────────────────────
@@ -255,6 +304,203 @@ def _call(system: str, user: str, cfg: configparser.ConfigParser) -> str:
 
 
 # ── Step 1: 纠错 ─────────────────────────────────────────────────────────────
+
+def _json_from_text(text: str) -> dict:
+    """Extract a small JSON object from an LLM response."""
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except Exception:
+            pass
+    return {}
+
+
+def _infer_industry_context(text: str, language: str,
+                            cfg: configparser.ConfigParser) -> tuple[str, list[str]]:
+    sample = text[:8000]
+    system = (
+        "You classify meeting transcripts for terminology correction. "
+        "Return compact JSON only."
+    )
+    user = f"""\
+Analyze the transcript and infer its industry/domain and search keywords for terminology lookup.
+Return JSON only, with this schema:
+{{"domain":"short industry/domain name","keywords":["keyword1","keyword2"]}}
+
+Rules:
+- Use the same language as the transcript where possible.
+- Keep 3 to 8 specific keywords.
+- Prefer proper nouns, technical terms, products, laws, markets, places, and organizations.
+
+language={language or "auto"}
+
+--- Transcript sample ---
+{sample}
+"""
+    try:
+        data = _json_from_text(_call(system, user, cfg).strip())
+    except Exception as e:
+        print(f"[Summarizer] online refine: domain inference failed: {e}")
+        return "", []
+
+    domain = str(data.get("domain", "")).strip()
+    raw_keywords = data.get("keywords", [])
+    keywords = []
+    if isinstance(raw_keywords, list):
+        for k in raw_keywords:
+            s = str(k).strip()
+            if s and s not in keywords:
+                keywords.append(s)
+            if len(keywords) >= 8:
+                break
+    print(f"[Summarizer] online refine: domain={domain or '-'} keywords={keywords}")
+    return domain, keywords
+
+
+def _wiki_lang(language: str) -> str:
+    return language if language in {"ja", "zh", "en"} else "en"
+
+
+def _download_industry_terms(keywords: list[str], language: str,
+                             cache_dir: str, cfg: configparser.ConfigParser) -> list[str]:
+    """Download terminology candidates from Wikipedia OpenSearch and cache them."""
+    os.makedirs(cache_dir, exist_ok=True)
+    terms: list[str] = []
+    wiki = _wiki_lang(language)
+    limit = cfg.getint("summary", "online_refine_terms", fallback=80)
+    request_kwargs = _network_kwargs(cfg)
+
+    for keyword in keywords:
+        safe_name = "".join(ch if ch.isalnum() else "_" for ch in keyword)[:80] or "keyword"
+        cache_path = os.path.join(cache_dir, f"{wiki}_{safe_name}.json")
+        data = None
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = None
+        if data is None:
+            url = f"https://{wiki}.wikipedia.org/w/api.php"
+            params = {
+                "action": "opensearch",
+                "namespace": "0",
+                "search": keyword,
+                "limit": "10",
+                "format": "json",
+            }
+            try:
+                headers = {"User-Agent": "Sound2Text/1.0 (industry term refinement)"}
+                resp = requests.get(url, params=params, headers=headers,
+                                    timeout=15, **request_kwargs)
+                resp.raise_for_status()
+                data = resp.json()
+                with open(cache_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                print(f"[Summarizer] online refine: term download failed for {keyword}: {e}")
+                continue
+
+        titles = data[1] if isinstance(data, list) and len(data) > 1 else []
+        for title in titles:
+            term = str(title).strip()
+            if term and term not in terms:
+                terms.append(term)
+            if len(terms) >= limit:
+                break
+        if len(terms) >= limit:
+            break
+
+    print(f"[Summarizer] online refine: downloaded/cached {len(terms)} term(s)")
+    return terms
+
+
+def online_refine_transcript(corrected: str, corrected_dir: str, ts: str,
+                             cfg: configparser.ConfigParser, language: str = "",
+                             source_path: str = "") -> tuple[str, str]:
+    """Post-session final correction using inferred industry terms.
+
+    The real-time corrected_*.txt remains untouched; a successful pass writes a
+    separate final_corrected_*.txt and stores its path in .last_final_corrected.
+    """
+    if not cfg.getboolean("summary", "enable_online_refine", fallback=False):
+        print("[Summarizer] online refine disabled")
+        return corrected, source_path
+    if not corrected.strip():
+        return corrected, source_path
+
+    import time
+    t_start = time.time()
+    print("[Summarizer] online refine: started")
+
+    domain, keywords = _infer_industry_context(corrected, language, cfg)
+    if not keywords and domain:
+        keywords = [domain]
+    if not keywords:
+        print("[Summarizer] online refine: no keywords, skipped")
+        return corrected, source_path
+
+    cache_dir = os.path.expanduser(
+        cfg.get("summary", "term_cache_dir",
+                fallback=os.path.join(corrected_dir, "term_cache")))
+    terms = _download_industry_terms(keywords, language, cache_dir, cfg)
+    if not terms:
+        print("[Summarizer] online refine: no downloaded terms, skipped")
+        return corrected, source_path
+
+    term_text = "\n".join(f"- {t}" for t in terms)
+    system = (
+        "You are a senior ASR transcript editor. Use industry terminology "
+        "conservatively. Output only the final corrected transcript."
+    )
+    user = f"""\
+Refine the corrected transcript using the downloaded industry/domain terminology.
+
+Rules:
+1. Preserve all timestamps exactly.
+2. Preserve the transcript language; do not translate.
+3. Only fix terms when context strongly supports the change.
+4. Do not rewrite style unnecessarily.
+5. Do not remove content except obvious ASR hallucinations.
+6. Output only the final corrected transcript.
+
+Inferred domain: {domain or "-"}
+
+Downloaded terminology candidates:
+{term_text}
+
+--- Corrected transcript ---
+{corrected}
+"""
+    try:
+        final_text = _call(system, user, cfg).strip()
+    except Exception as e:
+        print(f"[Summarizer] online refine: final correction failed: {e}")
+        return corrected, source_path
+
+    if len(final_text) < max(20, len(corrected) * 0.4):
+        print("[Summarizer] online refine: output too short, keeping corrected file")
+        return corrected, source_path
+
+    final_dir = os.path.expanduser(
+        cfg.get("summary", "final_corrected_dir", fallback=corrected_dir))
+    os.makedirs(final_dir, exist_ok=True)
+    path = os.path.join(final_dir, f"final_corrected_{ts}.txt")
+    with open(path, "w", encoding="utf-8-sig") as f:
+        f.write(final_text)
+    with open(FINAL_CORRECTED_FILE, "w", encoding="utf-8") as f:
+        f.write(path)
+
+    elapsed = time.time() - t_start
+    print(f"[Summarizer] online refine done -> {path} ({elapsed:.1f}s total)")
+    return final_text, path
+
 
 def correct_transcript(raw: str, corrected_dir: str, ts: str,
                         cfg: configparser.ConfigParser, language: str = "") -> str:
@@ -412,6 +658,14 @@ def run(transcript_path: str, cfg: configparser.ConfigParser, language: str = ""
 
     try:
         corrected = correct_transcript(raw, corrected_dir, ts, cfg)
+        corrected_path = ""
+        if os.path.exists(CORRECTED_FILE):
+            with open(CORRECTED_FILE, "r", encoding="utf-8") as f:
+                corrected_path = f.read().strip()
+        corrected, final_path = online_refine_transcript(
+            corrected, corrected_dir, ts, cfg, language, corrected_path)
+        if final_path and final_path != corrected_path:
+            print(f"[Summarizer] using final corrected file for summary: {final_path}")
         make_summary(corrected, language, summary_dir, ts, cfg)
     except requests.exceptions.HTTPError as e:
         print(f"[ERROR] [Summarizer] API error: {e}")
@@ -469,6 +723,10 @@ def run_step(step: str, transcript_path: str, cfg: configparser.ConfigParser,
     try:
         if step in ("correct", "all"):
             corrected = correct_transcript(raw, corrected_dir, ts, cfg, language)
+            corrected_path = ""
+            if os.path.exists(CORRECTED_FILE):
+                with open(CORRECTED_FILE, "r", encoding="utf-8") as f:
+                    corrected_path = f.read().strip()
         else:
             # For summary-only step, load the corrected file recorded by the correct step
             corrected_path = ""
@@ -488,6 +746,10 @@ def run_step(step: str, transcript_path: str, cfg: configparser.ConfigParser,
                 print(f"[Summarizer] warning: .last_corrected missing, using latest file")
 
         if step in ("summary", "all"):
+            corrected, final_path = online_refine_transcript(
+                corrected, corrected_dir, ts, cfg, language, corrected_path)
+            if final_path and final_path != corrected_path:
+                print(f"[Summarizer] using final corrected file for summary: {final_path}")
             make_summary(corrected, language, summary_dir, ts, cfg)
 
     except requests.exceptions.HTTPError as e:

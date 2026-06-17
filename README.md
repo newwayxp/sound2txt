@@ -294,3 +294,9 @@ setup.bat           # 新机器一键安装脚本
 | requests | LLM API 调用 |
 | numpy | 音频数据处理 |
 | ffmpeg | MP3 转换 + 麦克风混合（adelay/amix）|
+
+## 在线行业术语精修
+
+在 **纪要/API** 设置页可以打开“停止后在线行业术语精修”。开启后，停止录音时程序会先保留实时生成的 `corrected_*.txt`，再判断会议领域、下载术语候选并生成独立的 `final_corrected_*.txt`，会议纪要会优先基于这个最终校正版生成。
+
+该功能默认关闭。联网或精修失败时不会覆盖原文件，会自动回退到已有的 `corrected_*.txt` 继续生成会议纪要。最终校正版 `final_corrected_*.txt` 保存到 `[summary] final_corrected_dir`（默认 `~/Documents/Sound2Text/corrected`），术语下载结果缓存到 `[summary] term_cache_dir`（默认 `~/Documents/Sound2Text/term_cache`）。

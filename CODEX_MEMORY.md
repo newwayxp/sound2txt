@@ -25,9 +25,10 @@ Core flow:
   a plain-text fallback.
 - `presenter.py`: Presenter/business logic, subprocess lifecycle, signal-file
   IPC, UI status updates, log parsing for dashboard timers.
-- `pipeline.py`: Long-lived real-time engine. Owns audio capture, Silero VAD,
-  disk-backed segment queue, Whisper transcription, per-segment correction,
-  glossary application, raw/WAV/MP3 finalization.
+- `pipeline.py`: Long-lived real-time engine. System audio uses separate
+  `system-capture` and `system-vad` threads before the disk-backed segment queue;
+  Whisper transcription and LLM/glossary correction are separate workers, followed
+  by raw/WAV/MP3 finalization.
 - `appconfig.py`: ConfigParser wrapper and lazy CUDA detection helpers.
 - `summarizer.py`: LLM transcript correction legacy path plus meeting minutes.
 - `transcriber.py`: On-demand file transcription path, not the live pipeline.
@@ -47,6 +48,8 @@ Signal files live in the project directory:
 - `.mic_onair`: toggles microphone feed into the live pipeline.
 - `.last_transcript`: current raw transcript path.
 - `.last_corrected`: current corrected transcript path.
+- `.last_final_corrected`: optional post-session final corrected transcript path
+  from online industry-term refinement.
 - `.last_language`: detected or locked session language.
 - `.recording_start`: session start timestamp.
 
@@ -62,6 +65,18 @@ an external locked pipeline must not write `.pipeline_stop` when it exits.
   flows unless explicitly requested.
 - The segment queue stores file paths, not in-memory PCM. This prevents memory
   blow-ups and avoids blocking capture when transcription falls behind.
+- System audio recording, boundary detection, and transcription are separate
+  stages: capture writes the full raw session and feeds `_system_audio_queue`,
+  VAD flushes completed segments, and the transcribe worker consumes segment
+  file paths.
+- LLM/glossary correction is downstream of Whisper via `_corr_queue`; the raw
+  transcript can update before corrected text, but stop/finalize must wait for
+  both `_seg_queue` and `_corr_queue`.
+- Optional `[summary] enable_online_refine=true` runs after stop in
+  `summarizer.py --step summary`: infer domain, fetch Wikipedia OpenSearch term
+  candidates into `corrected_dir/term_cache/`, write `final_corrected_*.txt`,
+  then generate minutes from that final file. Original transcript/corrected files
+  are retained.
 - Segment files must be fully written and closed before queueing.
 - Session raw audio is converted only after the queue is drained at session end.
 - Stop waits for `.pipeline_session_done`; avoid short fixed timeouts that can
@@ -96,6 +111,46 @@ an external locked pipeline must not write `.pipeline_stop` when it exits.
   overwrite it casually.
 - Existing user changes may be present in `ARCHITECTURE.md`, `i18n.py`,
   `pipeline.py`, `presenter.py`, and `ui_qt.py`; inspect diffs before editing.
+
+## Change Log — 2026-06-17 (read ARCHITECTURE.md for the authoritative details)
+
+This batch touched online-refine config, the minutes template, and pipeline
+timing. **Re-read `ARCHITECTURE.md` (Timestamps, Configuration, Output File
+Locations) before working on these areas — the notes below are only a pointer.**
+
+- **Online refine output dirs are now configurable** (`summarizer.py`,
+  `config_default.ini`): `[summary] term_cache_dir` (downloaded Wikipedia terms)
+  and `[summary] final_corrected_dir` (`final_corrected_*.txt`). Both resolve via
+  `cfg.get + expanduser` with backward-compatible fallbacks (`corrected_dir/term_cache`
+  and `corrected_dir`). Same pattern as `corrected_dir`/`summary_dir`.
+- **`enable_online_refine` checkbox now persists on toggle** (`ui_qt.py`): the
+  online-refine checkbox lives only on the API/minutes tab; saving a different
+  settings tab used to lose the flag. It now writes immediately on `toggled`.
+  Symptom of the old bug: `term_cache`/`final_corrected` dirs stay empty and the
+  log prints `[Summarizer] online refine disabled`.
+- **Minutes template = plain text** (`summarizer.py` `_SUMMARY_TEMPLATES` +
+  `_summary_prompts`): per-language `body` skeleton, no tables, no emoji; info
+  fields (date/topic/summary) are separate bold paragraphs (blank-line separated
+  so QTextBrowser does not soft-merge them). `ui_qt.py` Minutes-tab CSS styles
+  headings only (table/blockquote CSS removed).
+- **Live timestamp = segment END time** (`pipeline.py` `_enqueue`): `emit_ts =
+  time.time()` (was `time.time() - seg_dur`, the segment *start*). With continuous
+  speech every segment is a full `max_sec` force-flush, so the old start-stamp
+  lagged the visible text by a whole window (e.g. 8 s). End-time keeps `[HH:MM:SS]`
+  aligned with when speech finished and makes the `lag=` log pure transcription lag.
+- **`force_flush` no longer drops the tail** (`pipeline.py` `AccumulatingVAD`):
+  session-stop flush used to require `speech_dur >= min_accum_sec` (1 s) and
+  silently dropped shorter remnants. Now it flushes the remnant and only skips
+  when reliable Silero VAD reports near-zero speech (`< min_speech_sec`); under the
+  amplitude fallback it always flushes (speech_dur unreliable).
+- **Verified completeness of the stop→drain path**: capture (`system-capture`) is
+  gated by `_recording_active`; raw-write and queue-put are atomic per chunk, so
+  MP3 audio and transcription input never diverge. Stop drains
+  `_system_audio_queue` via `queue.join()` (chunks are fed through VAD, not
+  discarded), force-flushes VAD, then joins `_seg_queue`+`_corr_queue` before
+  converting raw→MP3. Only intentional gaps: silence-skip windows (in MP3, not
+  transcribed) and the sub-chunk in the hardware buffer at the exact stop instant
+  (deliberately not recovered — stop means stop).
 
 ## Useful Checks
 

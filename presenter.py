@@ -667,7 +667,8 @@ class Presenter:
         # stop/close or crash) can never make the reused pipeline exit on start.
         for path in (STOP_SIGNAL, STATE_FILE, LANG_FILE,
                      _MIC_ONAIR, self._PIPELINE_STOP,
-                     os.path.join(BASE, ".last_corrected")):
+                     os.path.join(BASE, ".last_corrected"),
+                     os.path.join(BASE, ".last_final_corrected")):
             try:
                 os.remove(path)
             except FileNotFoundError:
@@ -1096,6 +1097,17 @@ class Presenter:
             threading.Thread(target=self._pipe, args=(sum_proc2, "[Sum]"), daemon=True).start()
             try:
                 self._wait_process(sum_proc2, "summarizer.py (summary)", timeout_sec=600)
+
+                final_corrected = ""
+                _final_state = os.path.join(BASE, ".last_final_corrected")
+                if os.path.exists(_final_state):
+                    with open(_final_state, encoding="utf-8") as f:
+                        final_corrected = f.read().strip()
+                if final_corrected and os.path.exists(final_corrected):
+                    self._view and self._view.put_log(f"[UI] Final corrected file: {final_corrected}")
+                    if self._view and hasattr(self._view, "show_corrected"):
+                        _fp = final_corrected
+                        _schedule_if_current(lambda p=_fp: self._view.show_corrected(p))
 
                 summary = self._latest_file(
                     self._config.get("summary", "summary_dir", fallback=""), "summary_*.md")
