@@ -667,6 +667,7 @@ class Presenter:
         # stop/close or crash) can never make the reused pipeline exit on start.
         for path in (STOP_SIGNAL, STATE_FILE, LANG_FILE,
                      _MIC_ONAIR, self._PIPELINE_STOP,
+                     os.path.join(BASE, ".pipeline_session_done"),
                      os.path.join(BASE, ".last_corrected"),
                      os.path.join(BASE, ".last_final_corrected")):
             try:

@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QRadioButton, QSlider, QSizePolicy,
-    QSpacerItem, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+    QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from appconfig import BASE, AppConfig
@@ -33,26 +33,42 @@ if TYPE_CHECKING:
 
 # ── Global stylesheet ─────────────────────────────────────────────────────────
 
+#
+# Refined dark theme. Palette (GitHub-dark inspired, cohesive with the
+# custom-painted dark widgets in widgets_qt.py which use #0D1117):
+#   WINDOW  #13161C   app canvas (slightly lifted so sunken panels read recessed)
+#   SURFACE #1B1F27   bars, tab panes, headers
+#   SUNKEN  #0D1117   text views / log / inputs — matches the painted widgets
+#   BORDER  #2A2F3A   hairline dividers and control outlines
+#   HOVER   #242A35   hover/elevated fill
+#   TEXT    #E6EDF3   primary text
+#   SUB     #9AA3B2   secondary text
+#   MUTE    #6B7480   muted / hint text
+#   ACCENT  #4AA8FF   single sky-blue accent (focus, selected tab, links)
+#   SEL_BG  #16324A   selection background
+#   GREEN   #2EA043 (start)   RED #DA3633 (stop)
+#
 _STYLESHEET = """
 /* ── Base ── */
 QWidget {
     font-family: __FONT_FAMILY__;
     font-size: 13px;
+    color: #E6EDF3;
 }
 
-/* ── Main window / central widget — pure white background ── */
-QMainWindow, QWidget#centralWidget {
-    background-color: #FFFFFF;
+/* ── Main window / central widget ── */
+QMainWindow, QWidget#centralWidget, QWidget#innerContent {
+    background-color: #13161C;
 }
 
-/* ── Control bar — blends with window, subtle bottom border ── */
+/* ── Control bar — sits above the canvas, hairline bottom border ── */
 QFrame#controlBar {
-    background-color: #FFFFFF;
+    background-color: #1B1F27;
     border: none;
-    border-bottom: 1px solid #E0E0E0;
+    border-bottom: 1px solid #2A2F3A;
 }
 
-/* ── Start/Stop toggle button ── */
+/* ── Start/Stop toggle button (colors set inline per state) ── */
 QPushButton#btnToggle {
     color: white;
     border: none;
@@ -64,10 +80,11 @@ QPushButton#btnToggle {
     min-height: 34px;
 }
 
-/* ── Save button — blue, centered ── */
+/* ── Save button — accent, soft vertical gradient for depth ── */
 QPushButton#btnSave {
-    background-color: #1976D2;
-    color: white;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #2F71CE, stop:1 #2256A8);
+    color: #FFFFFF;
     border: none;
     border-radius: 8px;
     padding: 6px 18px;
@@ -75,39 +92,57 @@ QPushButton#btnSave {
     min-width: 160px;
     min-height: 36px;
 }
-QPushButton#btnSave:hover { background-color: #1565C0; }
-
+QPushButton#btnSave:hover {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #3D84E2, stop:1 #2A63BC);
+}
+QPushButton#btnSave:pressed {
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #1F559E, stop:1 #1A4986);
+}
 
 /* ── Browse folder button — small, subtle ── */
 QPushButton#btnBrowse {
-    background-color: #F0F0F0;
-    color: #424242;
-    border: 1px solid #D0D0D0;
+    background-color: #21262D;
+    color: #C9D1D9;
+    border: 1px solid #2A2F3A;
     border-radius: 5px;
     padding: 4px 8px;
     min-height: 26px;
 }
-QPushButton#btnBrowse:hover { background-color: #E0E0E0; }
+QPushButton#btnBrowse:hover { background-color: #2A313B; border-color: #3A4250; }
 
 /* ── Preset buttons ── */
 QPushButton#btnPreset {
-    background-color: #F0F0F0;
-    color: #424242;
-    border: 1px solid #D0D0D0;
+    background-color: #21262D;
+    color: #C9D1D9;
+    border: 1px solid #2A2F3A;
     border-radius: 5px;
     padding: 4px 10px;
     min-height: 26px;
 }
-QPushButton#btnPreset:hover { background-color: #E0E0E0; }
+QPushButton#btnPreset:hover { background-color: #2A313B; border-color: #3A4250; }
 
-/* ── Tab widget — flat style, blue underline for selected ── */
+/* ── Generic push buttons (e.g. Clear log) ── */
+QPushButton {
+    background-color: #21262D;
+    color: #C9D1D9;
+    border: 1px solid #2A2F3A;
+    border-radius: 5px;
+    padding: 4px 10px;
+}
+QPushButton:hover { background-color: #2A313B; border-color: #3A4250; }
+QPushButton:pressed { background-color: #1A1E25; }
+
+/* ── Tab widget — flat, accent underline for selected ── */
 QTabWidget::pane {
     border: none;
-    border-top: 1px solid #E0E0E0;
-    background-color: #FFFFFF;
+    border-top: 1px solid #2A2F3A;
+    background-color: #13161C;
 }
+QTabBar { background: transparent; }
 QTabBar::tab {
-    color: #616161;
+    color: #9AA3B2;
     padding: 8px 16px;
     margin-right: 4px;
     border: none;
@@ -115,90 +150,151 @@ QTabBar::tab {
     background: transparent;
 }
 QTabBar::tab:selected {
-    color: #1565C0;
+    color: #E6EDF3;
     font-weight: bold;
-    border-bottom: 2px solid #1565C0;
+    border-bottom: 2px solid #4AA8FF;
 }
 QTabBar::tab:hover:!selected {
-    color: #1976D2;
-    border-bottom: 2px solid #BBDEFB;
+    color: #C9D1D9;
+    border-bottom: 2px solid #2C4A66;
 }
+QTabBar::tab:disabled { color: #3A4250; }
 
 /* ── Line edit ── */
 QLineEdit {
-    border: 1px solid #BDBDBD;
+    border: 1px solid #2A2F3A;
     border-radius: 5px;
     padding: 4px 8px;
     min-height: 28px;
-    background-color: #FFFFFF;
-    color: #212121;
+    background-color: #0D1117;
+    color: #E6EDF3;
+    selection-background-color: #16324A;
+    selection-color: #E6EDF3;
 }
-QLineEdit:focus { border-color: #1976D2; }
+QLineEdit:focus { border-color: #4AA8FF; }
+QLineEdit:disabled { color: #6B7480; background-color: #161A21; }
 
 /* ── Combo box ── */
 QComboBox {
-    border: 1px solid #BDBDBD;
+    border: 1px solid #2A2F3A;
     border-radius: 5px;
     padding: 3px 8px;
     min-height: 28px;
-    background-color: #FFFFFF;
-    color: #212121;
+    background-color: #0D1117;
+    color: #E6EDF3;
 }
-QComboBox:focus { border-color: #1976D2; }
+QComboBox:hover { border-color: #3A4250; }
+QComboBox:focus { border-color: #4AA8FF; }
 QComboBox::drop-down {
     border: none;
     width: 20px;
 }
 QComboBox QAbstractItemView {
-    background-color: #FFFFFF;
-    color: #212121;
-    selection-background-color: #E3F2FD;
-    selection-color: #212121;
-    border: 1px solid #BDBDBD;
+    background-color: #161B22;
+    color: #E6EDF3;
+    selection-background-color: #16324A;
+    selection-color: #E6EDF3;
+    border: 1px solid #2A2F3A;
     outline: none;
 }
 
 /* ── Slider ── */
 QSlider::groove:horizontal {
     height: 4px;
-    background: #E0E0E0;
+    background: #2A2F3A;
     border-radius: 2px;
 }
 QSlider::handle:horizontal {
-    background: #1976D2;
+    background: #4AA8FF;
     width: 14px;
     height: 14px;
     margin: -5px 0;
     border-radius: 7px;
 }
 QSlider::sub-page:horizontal {
-    background: #1976D2;
+    background: #4AA8FF;
     border-radius: 2px;
+}
+
+/* ── Text views (transcript / corrected / minutes) ── */
+QTextEdit, QTextBrowser {
+    background-color: #0D1117;
+    color: #E6EDF3;
+    border: 1px solid #2A2F3A;
+    border-radius: 6px;
+    selection-background-color: #16324A;
+    selection-color: #E6EDF3;
 }
 
 /* ── Text edit (log) ── */
 QTextEdit#logBox {
-    border: 1px solid #E0E0E0;
+    border: 1px solid #2A2F3A;
     border-radius: 5px;
-    background-color: #FAFAFA;
-    color: #212121;
+    background-color: #0D1117;
+    color: #C9D1D9;
     font-family: "Consolas", "Courier New", monospace;
     font-size: 12px;
 }
 
 /* ── Vertical separator lines ── */
 QFrame[frameShape="5"] {
-    color: #E0E0E0;
+    color: #2A2F3A;
 }
 
-/* ── Labels — clean dark text ── */
-QLabel {
-    color: #424242;
-}
+/* ── Labels ── */
+QLabel { color: #C9D1D9; background: transparent; }
 
 /* ── Checkboxes and radio buttons ── */
-QCheckBox, QRadioButton {
-    color: #424242;
+QCheckBox, QRadioButton { color: #C9D1D9; spacing: 6px; }
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 16px; height: 16px;
+    border: 1px solid #3A4250;
+    background-color: #0D1117;
+}
+QCheckBox::indicator { border-radius: 4px; }
+QRadioButton::indicator { border-radius: 8px; }
+QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #4AA8FF; }
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    background-color: #4AA8FF;
+    border-color: #4AA8FF;
+}
+
+/* ── Scrollbars — thin, unobtrusive ── */
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 2px;
+}
+QScrollBar::handle:vertical {
+    background: #2E3540;
+    border-radius: 5px;
+    min-height: 28px;
+}
+QScrollBar::handle:vertical:hover { background: #3C4550; }
+QScrollBar:horizontal {
+    background: transparent;
+    height: 10px;
+    margin: 2px;
+}
+QScrollBar::handle:horizontal {
+    background: #2E3540;
+    border-radius: 5px;
+    min-width: 28px;
+}
+QScrollBar::handle:horizontal:hover { background: #3C4550; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+
+/* ── Message boxes ── */
+QMessageBox { background-color: #1B1F27; }
+QMessageBox QLabel { color: #E6EDF3; }
+
+/* ── Tooltips ── */
+QToolTip {
+    background-color: #21262D;
+    color: #E6EDF3;
+    border: 1px solid #2A2F3A;
+    padding: 4px 6px;
 }
 """
 
@@ -598,22 +694,28 @@ class App(QMainWindow):
 
         hbox.addWidget(_vsep(bar))
 
-        # ON AIR + VU meter — pill-shaped box, hidden until recording starts
+        # ON AIR + VU meter — wide rectangular panel that fills the bar between
+        # the Start button and the language selector. Hidden until recording.
         self._vumeter_bar = QFrame(bar)
         self._vumeter_bar.setObjectName("vuContainer")
         self._vumeter_bar.setFixedHeight(46)
         self._vumeter_bar.setMinimumWidth(200)
-        self._vumeter_bar.setMaximumWidth(260)
+        # Reserve the panel's (expanding) space even while it is hidden before
+        # recording, so the bar layout stays put — the language selector keeps its
+        # place on the right and this slot acts as the placeholder.
+        _vu_sp = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        _vu_sp.setRetainSizeWhenHidden(True)
+        self._vumeter_bar.setSizePolicy(_vu_sp)
         self._vumeter_bar.setStyleSheet(
             "QFrame#vuContainer {"
             "  background-color: #0d1b2a;"
             "  border: 1.5px solid #2c3e50;"
-            "  border-radius: 23px;"
+            "  border-radius: 10px;"
             "}"
         )
         self._vumeter_bar.setVisible(False)
         vum_hbox = QHBoxLayout(self._vumeter_bar)
-        vum_hbox.setContentsMargins(12, 0, 12, 0)
+        vum_hbox.setContentsMargins(14, 0, 14, 0)
         vum_hbox.setSpacing(10)
 
         # ON AIR LED — circular, blue=idle / red=recording
@@ -626,21 +728,20 @@ class App(QMainWindow):
         )
         vum_hbox.addWidget(self._onair_dot, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        # VU meter — click to toggle mic
+        # VU meter — click to toggle mic; fills the rest of the panel
         self._vu_meter = VUMeterWidget()
         self._vu_meter.clicked.connect(self._on_vumeter_click)
-        vum_hbox.addWidget(self._vu_meter)
+        vum_hbox.addWidget(self._vu_meter, 1)
 
-        hbox.addWidget(self._vumeter_bar)
-
-        # Expanding spacer
-        hbox.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
+        # stretch=1 → the VU panel fills all slack between Start and the language
+        # selector (replaces the former fixed-width box + expanding spacer).
+        hbox.addWidget(self._vumeter_bar, 1)
 
         hbox.addWidget(_vsep(bar))
 
         # Language quick selector
         lang_label = QLabel(t("lang_label"), bar)
-        lang_label.setStyleSheet("color: #757575; font-size: 11px;")
+        lang_label.setStyleSheet("color: #8B949E; font-size: 11px; background: transparent;")
         hbox.addWidget(lang_label)
 
         self._quick_lang_combo = QComboBox(bar)
@@ -917,6 +1018,7 @@ class App(QMainWindow):
 
         for name, base, model in [
             ("Groq",     "https://api.groq.com/openai/v1",                    "llama-3.3-70b-versatile"),
+            ("Cerebras", "https://api.cerebras.ai/v1",                        "llama-3.3-70b"),
             ("DeepSeek", "https://api.deepseek.com/v1",                       "deepseek-chat"),
             ("Aliyun",   "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-turbo"),
         ]:
@@ -1109,22 +1211,26 @@ class App(QMainWindow):
                 font-family: 'Hiragino Sans', 'PingFang SC', 'Meiryo UI', 'Microsoft YaHei';
                 font-size: 14px;
                 line-height: 1.65;
-                color: #2b2f36;
+                color: #C9D1D9;
             }
             h1 {
-                font-size: 23px; color: #1a4b8c;
+                font-size: 23px; color: #79C0FF;
                 margin-top: 14px; margin-bottom: 10px;
-                border-bottom: 2px solid #1a4b8c; padding-bottom: 4px;
+                border-bottom: 2px solid #2A2F3A; padding-bottom: 4px;
             }
             h2 {
-                font-size: 18px; color: #245a9e;
+                font-size: 18px; color: #6CB6FF;
                 margin-top: 16px; margin-bottom: 6px;
-                border-bottom: 1px solid #d0d7e2; padding-bottom: 3px;
+                border-bottom: 1px solid #2A2F3A; padding-bottom: 3px;
             }
-            h3 { font-size: 15px; color: #245a9e; margin-top: 10px; margin-bottom: 4px; }
+            h3 { font-size: 15px; color: #6CB6FF; margin-top: 10px; margin-bottom: 4px; }
             ul, ol { margin-left: 18px; }
             li { margin-top: 3px; margin-bottom: 3px; }
             p { margin-top: 6px; margin-bottom: 6px; }
+            a { color: #4AA8FF; }
+            code { background-color: #161B22; color: #E6EDF3; padding: 1px 4px; border-radius: 4px; }
+            strong { color: #E6EDF3; }
+            blockquote { color: #9AA3B2; border-left: 3px solid #2A2F3A; padding-left: 10px; }
             """
         )
         self._minutes_view.setStyleSheet(
@@ -1190,14 +1296,24 @@ class App(QMainWindow):
 
     def _apply_toggle_style(self, enabled: bool) -> None:
         """Apply green (start) or red (stop) style to the toggle button."""
-        rec  = self._btn_toggle_recording
-        bg   = "#dc3545" if rec else "#28a745"
-        bg_h = "#c82333" if rec else "#218838"
-        bg_d = "#e88a93" if rec else "#7cb990"
+        rec = self._btn_toggle_recording
+        if rec:   # Stop — red
+            top,  bot   = "#F85149", "#D32F2C"
+            top_h, bot_h = "#FF6A60", "#E5403B"
+            bg_d         = "#4A2422"
+        else:     # Start — green
+            top,  bot   = "#34B14E", "#218A3A"
+            top_h, bot_h = "#46C763", "#2A9D45"
+            bg_d         = "#1F3D2A"
+
+        def _grad(a: str, b: str) -> str:
+            return (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+                    f"stop:0 {a}, stop:1 {b})")
+
         self._btn_toggle.setStyleSheet(
-            f"QPushButton#btnToggle           {{ background-color: {bg};   }}"
-            f"QPushButton#btnToggle:hover     {{ background-color: {bg_h}; }}"
-            f"QPushButton#btnToggle:disabled  {{ background-color: {bg_d}; color: #e0e0e0; }}"
+            f"QPushButton#btnToggle           {{ background-color: {_grad(top, bot)};   }}"
+            f"QPushButton#btnToggle:hover     {{ background-color: {_grad(top_h, bot_h)}; }}"
+            f"QPushButton#btnToggle:disabled  {{ background-color: {bg_d}; color: #6B7480; }}"
         )
         self._btn_toggle.setEnabled(enabled)
 

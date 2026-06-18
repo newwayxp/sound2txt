@@ -507,6 +507,16 @@ def run():
     cfg = configparser.ConfigParser()
     cfg.read(os.path.join(_BASE, "config.ini"), encoding="utf-8")
 
+    # Startup-race guard: capture whether a recording session was already pending
+    # the instant this process started, BEFORE the slow CUDA/model init below. The
+    # presenter writes .pipeline_session and then spawns us, so a quick start→stop
+    # can create *and remove* the session entirely while we are still loading the
+    # model (large-v3 on CUDA ≈ 9 s). If that happens, the main loop would start
+    # with the session already gone, never observe it, and never write
+    # .pipeline_session_done — hanging the presenter's stop forever. We reconcile
+    # this right after the loop starts (see "pipeline loop start").
+    _session_at_startup = os.path.exists(SIGNAL_SESSION)
+
     # ── Pre-load CUDA DLLs from nvidia pip packages BEFORE importing ctranslate2
     if sys.platform == "win32":
         try:
@@ -883,7 +893,7 @@ def run():
 
         with open(SIGNAL_SESS_DONE, "w") as f:
             f.write("done")
-        sys_info("Session complete signal written")
+        tr_info("finalize: session complete signal written — stop finished")
 
     # ── Async transcription thread ────────────────────────────────────────────
     # The queue carries only segment *file paths* (see _enqueue), never PCM, so it
@@ -1240,11 +1250,47 @@ def run():
     _system_vad_thread.start()
     sys_info("System audio threads started: capture + vad")
 
-    def _drain_system_audio_queue():
+    def _drain_system_audio_queue(timeout: float = 5.0):
         # Give an in-flight stream.read() one chunk window to publish its chunk
         # before we flush VAD. Otherwise stop can race just before queue.put().
         time.sleep(max(0.05, CHUNK_SIZE / float(sample_rate) * 2))
-        _system_audio_queue.join()
+        # Bounded drain. When nothing is playing, WASAPI loopback delivers no
+        # frames, so the capture thread is parked inside stream.read() and this
+        # queue stays empty — but a plain queue.join() here has no timeout, so any
+        # task-accounting hiccup would hang the *entire* stop path forever (the
+        # session can never finalize → .pipeline_session_done never written). Wait
+        # only until the queue is actually drained or the deadline passes; the VAD
+        # buffer is force-flushed right after regardless.
+        deadline = time.time() + timeout
+        while getattr(_system_audio_queue, "unfinished_tasks", 0) > 0 \
+                and time.time() < deadline:
+            time.sleep(0.02)
+        _pending = getattr(_system_audio_queue, "unfinished_tasks", 0)
+        if _pending > 0:
+            # tr_info (not sys_info): SYS is excluded from the UI's default
+            # ui_show filter, so finalize diagnostics must use a visible category.
+            tr_info(f"WARN: system audio queue not drained within {timeout:.0f}s "
+                    f"(qsize={_system_audio_queue.qsize()}, pending={_pending}); "
+                    f"continuing finalize anyway")
+
+    def _join_with_progress(q: "queue.Queue", name: str, every: float = 5.0) -> None:
+        """Block until ``q`` is fully processed, logging depth periodically.
+
+        Intentionally **unbounded** — a real transcription backlog after stop can
+        legitimately take many minutes on weak hardware, and cutting it off would
+        drop the tail of the recording. The periodic log just makes a long (or
+        stuck) wait observable in the log file instead of a silent black hole, so
+        the exact stalling stage is always visible."""
+        last = time.time()
+        while getattr(q, "unfinished_tasks", 0) > 0:
+            time.sleep(0.1)
+            now = time.time()
+            if now - last >= every:
+                last = now
+                # tr_info so the stalling stage is visible in the UI (SYS is
+                # filtered out of the default ui_show).
+                tr_info(f"finalize: still waiting on {name} "
+                        f"(qsize={q.qsize()}, pending={q.unfinished_tasks})")
 
     # ── Mic pipeline (independent VAD → shared transcription queue) ──────────
     # Mic audio is NOT mixed into system audio; each source is transcribed
@@ -1370,6 +1416,22 @@ def run():
     sys_info("pipeline loop start")
     session_was_active = False
 
+    # Reconcile the startup race (see _session_at_startup above): a session was
+    # pending when we launched but is already gone now → it was started and
+    # stopped during our model load, before we could observe it. Nothing was
+    # captured, but the presenter is blocked waiting for the finalize signal, so
+    # acknowledge completion immediately. (If the session is still active here,
+    # the loop handles it normally.)
+    if _session_at_startup and not os.path.exists(SIGNAL_SESSION):
+        sys_info("session was started and stopped during pipeline startup "
+                 "(model load) — nothing recorded; writing done signal so stop "
+                 "can finish")
+        try:
+            with open(SIGNAL_SESS_DONE, "w") as f:
+                f.write("done")
+        except Exception as _e:
+            sys_error(f"failed to write startup-race done signal: {_e}")
+
     try:
         while not os.path.exists(SIGNAL_STOP):
             session_active = os.path.exists(SIGNAL_SESSION)
@@ -1449,8 +1511,8 @@ def run():
             # Session end
             if not session_active and session_was_active:
                 from datetime import datetime as _dt
-                sys_info(f"STOP detected at {_dt.now().strftime('%H:%M:%S')} — "
-                         f"draining {_seg_queue.qsize()} queued segment(s) before finalize")
+                tr_info(f"STOP detected at {_dt.now().strftime('%H:%M:%S')} — "
+                        f"draining {_seg_queue.qsize()} queued segment(s) before finalize")
                 _recording_active.clear()
                 _drain_system_audio_queue()
                 # Flush remaining audio from system VAD buffer
@@ -1477,10 +1539,12 @@ def run():
 
                 # Wait for all pending transcription/correction before closing session
                 sys_info("Waiting for transcriptions to complete...")
-                _seg_queue.join()
+                _join_with_progress(_seg_queue, "transcription queue")
                 sys_info("Waiting for corrections to complete...")
-                _corr_queue.join()
+                _join_with_progress(_corr_queue, "correction queue")
 
+                tr_info("finalize: queues drained → closing session "
+                        "(converting audio, writing done signal)")
                 _close_session(channels, sample_size, sample_rate)
                 session_was_active = False
                 continue

@@ -5,9 +5,12 @@ No customtkinter / tkinter imports.
 from __future__ import annotations
 
 import time
+from collections import deque
 
-from PyQt6.QtCore import QTimer, Qt, QRect, QPoint, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QFont, QLinearGradient
+from PyQt6.QtCore import QTimer, Qt, QRect, QPoint, QPointF, pyqtSignal
+from PyQt6.QtGui import (
+    QColor, QPainter, QPainterPath, QFont, QLinearGradient, QPen,
+)
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy
 
 from i18n import _LANG
@@ -33,21 +36,26 @@ def _dim_color(hex_color: str, factor: int = 9) -> QColor:
 
 class VUMeterWidget(QWidget):
     """
-    Pill-shaped horizontal VU meter.
-    Blocks light up left→right: white → blue → yellow → red zones.
-    Each lit block has a multi-layer glow: outer haze + inner bloom + bright core.
-    Emits clicked() — used as PTT-stop trigger.
+    Pill-shaped, scrolling **waveform-envelope** mic meter.
+
+    Each frame the current (smoothed) level is pushed into a ring buffer; the
+    buffer is drawn as a symmetric filled envelope that scrolls right→left, the
+    newest sample at the right edge (like a podcast / recorder app). The fill
+    tint reacts to the live level (cyan → green → amber → red) and the leading
+    edge carries a soft glow. Emits clicked() — used as the PTT-stop trigger.
     """
     clicked = pyqtSignal()
-    FPS    = 33
-    N_BARS = 14
+    FPS     = 33
+    HISTORY = 400   # ring-buffer length (≥ widest pixel width we expect)
 
-    # Zone boundaries (normalized bar position) and base RGB colors
-    _ZONES = [
-        (0.28, (210, 235, 255)),   # white/ice
-        (0.55, ( 30, 120, 255)),   # blue
-        (0.78, (255, 195,  20)),   # yellow
-        (1.01, (255,  45,  30)),   # red
+    # Level → base RGB ramp (quiet cyan → loud red). Boundaries are normalized
+    # level, not bar position, so the whole envelope shifts hue with volume.
+    _RAMP = [
+        (0.0,  ( 41, 182, 246)),   # cyan
+        (0.45, ( 80, 210, 190)),   # teal
+        (0.65, (102, 187, 106)),   # green
+        (0.82, (255, 193,  60)),   # amber
+        (1.01, (248,  81,  73)),   # red
     ]
 
     def __init__(self, parent=None):
@@ -58,7 +66,9 @@ class VUMeterWidget(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._level    = 0.0
         self._smoothed = 0.0
+        self._peak     = 0.0
         self._active   = False
+        self._hist: deque[float] = deque([0.0] * self.HISTORY, maxlen=self.HISTORY)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -73,80 +83,122 @@ class VUMeterWidget(QWidget):
 
     def hide(self) -> None:  # type: ignore[override]
         self._active = False
+        self._level = 0.0
         self.setVisible(False)
 
     def _tick(self) -> None:
         target = self._level if self._active else 0.0
-        self._smoothed += (target - self._smoothed) * 0.35
+        # Asymmetric smoothing: snap up fast, fall slowly — reads like a real meter.
+        k = 0.55 if target > self._smoothed else 0.20
+        self._smoothed += (target - self._smoothed) * k
+        self._hist.append(self._smoothed)
+        # Peak indicator decays gently toward the current level.
+        self._peak = max(self._smoothed, self._peak - 0.012)
         self.update()
 
-    @staticmethod
-    def _zone_color(frac: float) -> tuple[int, int, int]:
-        for boundary, rgb in VUMeterWidget._ZONES:
-            if frac < boundary:
-                return rgb
-        return VUMeterWidget._ZONES[-1][1]
+    @classmethod
+    def _ramp_color(cls, v: float) -> tuple[int, int, int]:
+        """Interpolate the RGB ramp at level v ∈ [0, 1]."""
+        v = max(0.0, min(v, 1.0))
+        ramp = cls._RAMP
+        for i in range(1, len(ramp)):
+            b0, c0 = ramp[i - 1]
+            b1, c1 = ramp[i]
+            if v < b1:
+                t = 0.0 if b1 == b0 else (v - b0) / (b1 - b0)
+                return tuple(int(c0[j] + (c1[j] - c0[j]) * t) for j in range(3))
+        return ramp[-1][1]
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
         w, h = self.width(), self.height()
-        radius = h / 2.0
+        cy = h / 2.0
+        corner = 7.0   # squarer corners to match the rectangular VU panel
 
-        # ── Pill clip ─────────────────────────────────────────────
+        # ── Rounded-rect clip ─────────────────────────────────────
         clip = QPainterPath()
-        clip.addRoundedRect(0.0, 0.0, float(w), float(h), radius, radius)
+        clip.addRoundedRect(0.0, 0.0, float(w), float(h), corner, corner)
         p.setClipPath(clip)
 
-        # ── Background ────────────────────────────────────────────
-        p.fillRect(0, 0, w, h, QColor("#0d1117"))
+        # ── Background — subtle vertical depth ────────────────────
+        bg = QLinearGradient(0.0, 0.0, 0.0, float(h))
+        bg.setColorAt(0.0, QColor("#0b0f15"))
+        bg.setColorAt(0.5, QColor("#0d1320"))
+        bg.setColorAt(1.0, QColor("#0b0f15"))
+        p.fillRect(0, 0, w, h, bg)
 
-        # ── Bars ──────────────────────────────────────────────────
-        pad   = int(radius)
-        avail = max(1, w - 2 * pad)
-        step  = avail / self.N_BARS
-        bar_w = max(3, int(step * 0.52))
-        bar_h = int(h * 0.55)
-        bar_y = (h - bar_h) // 2
-        lv    = self._smoothed
+        # ── Sample window: newest sample at the right edge ────────
+        pad   = max(6, int(h * 0.18))
+        avail = max(2, w - 2 * pad)
+        cols  = min(avail, len(self._hist))
+        hist  = list(self._hist)[-cols:]
+        amp   = h * 0.40
+        floor = 0.035   # so silence still draws a faint baseline thread
 
-        for i in range(self.N_BARS):
-            frac  = (i + 0.5) / self.N_BARS
-            bar_x = int(pad + i * step + (step - bar_w) / 2)
-            lit   = frac < lv
+        def x_at(i: int) -> float:
+            return pad + (i / max(1, cols - 1)) * avail
 
-            if lit:
-                rc, gc, bc = self._zone_color(frac)
+        def lvl_at(i: int) -> float:
+            return max(floor, hist[i])
 
-                # Layer 1 — wide outer haze (full bar height, very transparent)
-                haze = max(bar_w, 4)
-                p.fillRect(bar_x - haze, 0,
-                           bar_w + haze * 2, h,
-                           QColor(rc, gc, bc, 20))
+        # Envelope tint follows the live (newest) level.
+        rc, gc, bc = self._ramp_color(self._smoothed)
 
-                # Layer 2 — inner bloom just around the bar
-                p.fillRect(bar_x - 2, bar_y - 2,
-                           bar_w + 4, bar_h + 4,
-                           QColor(rc, gc, bc, 65))
+        # ── Filled symmetric envelope ─────────────────────────────
+        path = QPainterPath()
+        path.moveTo(x_at(0), cy - lvl_at(0) * amp)
+        for i in range(1, cols):
+            path.lineTo(x_at(i), cy - lvl_at(i) * amp)
+        for i in range(cols - 1, -1, -1):
+            path.lineTo(x_at(i), cy + lvl_at(i) * amp)
+        path.closeSubpath()
 
-                # Layer 3 — core bar: vertical gradient (dim edge → bright center → dim edge)
-                core = QLinearGradient(0.0, float(bar_y),
-                                       0.0, float(bar_y + bar_h))
-                core.setColorAt(0.0,  QColor(rc, gc, bc, 140))
-                core.setColorAt(0.35, QColor(min(rc + 55, 255),
-                                             min(gc + 55, 255),
-                                             min(bc + 55, 255), 230))
-                core.setColorAt(0.5,  QColor(255, 255, 255, 210))   # bright spine
-                core.setColorAt(0.65, QColor(min(rc + 55, 255),
-                                             min(gc + 55, 255),
-                                             min(bc + 55, 255), 230))
-                core.setColorAt(1.0,  QColor(rc, gc, bc, 140))
-                p.fillRect(bar_x, bar_y, bar_w, bar_h, core)
+        fill = QLinearGradient(0.0, cy - amp, 0.0, cy + amp)
+        fill.setColorAt(0.0,  QColor(rc, gc, bc, 60))
+        fill.setColorAt(0.45, QColor(min(rc + 40, 255), min(gc + 40, 255), min(bc + 40, 255), 210))
+        fill.setColorAt(0.5,  QColor(235, 248, 255, 235))   # bright spine
+        fill.setColorAt(0.55, QColor(min(rc + 40, 255), min(gc + 40, 255), min(bc + 40, 255), 210))
+        fill.setColorAt(1.0,  QColor(rc, gc, bc, 60))
+        p.fillPath(path, fill)
 
-            else:
-                # Unlit — barely visible dark block
-                p.fillRect(bar_x, bar_y, bar_w, bar_h, QColor(255, 255, 255, 16))
+        # ── Top contour stroke for a crisp edge ───────────────────
+        edge = QPainterPath()
+        edge.moveTo(x_at(0), cy - lvl_at(0) * amp)
+        for i in range(1, cols):
+            edge.lineTo(x_at(i), cy - lvl_at(i) * amp)
+        pen = QPen(QColor(min(rc + 60, 255), min(gc + 60, 255), min(bc + 60, 255), 200))
+        pen.setWidthF(1.4)
+        p.setPen(pen)
+        p.drawPath(edge)
+        # Mirror the contour on the bottom.
+        edge_b = QPainterPath()
+        edge_b.moveTo(x_at(0), cy + lvl_at(0) * amp)
+        for i in range(1, cols):
+            edge_b.lineTo(x_at(i), cy + lvl_at(i) * amp)
+        p.drawPath(edge_b)
+
+        # ── Leading-edge glow (newest sample, right side) ─────────
+        lead_x = x_at(cols - 1)
+        lead_v = lvl_at(cols - 1)
+        glow = QColor(min(rc + 70, 255), min(gc + 70, 255), min(bc + 70, 255))
+        for r, a in ((6.0, 28), (3.5, 70), (1.8, 200)):
+            glow.setAlpha(a)
+            p.setBrush(glow)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(lead_x, cy - lead_v * amp), r, r)
+            p.drawEllipse(QPointF(lead_x, cy + lead_v * amp), r, r)
+
+        # ── Peak-hold ticks ───────────────────────────────────────
+        if self._peak > floor:
+            pc = self._ramp_color(self._peak)
+            pen = QPen(QColor(pc[0], pc[1], pc[2], 150))
+            pen.setWidthF(1.0)
+            p.setPen(pen)
+            py = self._peak * amp
+            p.drawLine(QPointF(pad, cy - py), QPointF(pad + avail, cy - py))
+            p.drawLine(QPointF(pad, cy + py), QPointF(pad + avail, cy + py))
 
         p.end()
 
@@ -177,7 +229,9 @@ class SevenSegClock(QWidget):
 
     def __init__(self, parent=None, on_color: str = "#29b6f6"):
         super().__init__(parent)
-        cw = self.PX * 2 + 4 * self.DW + self.CW + 5 * self.GS + 12
+        # Five digit slots: three for minutes (so the colon never shifts once a
+        # session passes 100 min) + two for seconds, plus the colon.
+        cw = self.PX * 2 + 5 * self.DW + self.CW + 6 * self.GS + 12
         ch = self.DH + self.PY * 2
         self.setFixedSize(cw, ch)
         self._on_color  = QColor(on_color)
@@ -204,19 +258,25 @@ class SevenSegClock(QWidget):
 
         s       = int(self._secs)
         mm, ss  = s // 60, s % 60
-        chars   = f"{mm:02d}{ss:02d}"
+        # Minutes occupy three slots; below 100 min the leading slot is a blank
+        # (space → not drawn), so it reads " 02:05" rather than "002:05" yet the
+        # colon position stays fixed when minutes grow to three digits.
+        mm_str  = f"{mm:03d}" if mm >= 100 else f" {mm:02d}"
+        chars   = f"{mm_str}{ss:02d}"
         x, y    = self.PX, self.PY
 
         for i, ch in enumerate(chars):
             self._draw_digit(painter, x, y, ch)
             x += self.DW + self.GS
-            if i == 1:
+            if i == 2:
                 self._draw_colon(painter, x, y)
                 x += self.CW + self.GS
 
         painter.end()
 
     def _draw_digit(self, painter: QPainter, ox: int, oy: int, ch: str) -> None:
+        if ch == " ":
+            return   # blank slot — draw nothing (not even ghost segments)
         mask = _SEG7.get(ch, 0)
         W, H, T, G = self.DW, self.DH, self.DT, self.GS
 
