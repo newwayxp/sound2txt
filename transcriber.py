@@ -383,6 +383,20 @@ def main():
     whisper = WhisperModel(model_size, device=device, compute_type=compute_type,
                            cpu_threads=cpu_threads)
     tr_info(f"model loaded on {device}")
+
+    # Warm up the model: the first real transcribe pays CTranslate2's lazy
+    # init (kernel/graph setup, weight prefetch) which can add several seconds.
+    # Run one throwaway pass on a short silent buffer so the first actual chunk
+    # transcribes at full speed → less time to first text.
+    try:
+        import numpy as _np
+        _silence = _np.zeros(16000, dtype=_np.float32)  # 1s @ 16kHz
+        _segs, _ = whisper.transcribe(_silence, beam_size=beam_size,
+                                      condition_on_previous_text=False)
+        list(_segs)  # force evaluation
+        tr_info("model warmup done")
+    except Exception as e:
+        tr_debug(f"model warmup skipped: {e}")
     tr_info("ready (output file will be created on first audio)")
     if language:
         tr_info(f"言語固定: {language}（config.ini）")
