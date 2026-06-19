@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  @keyframes vu{0%,100%{transform:scaleY(.32)}50%{transform:scaleY(1)}}
+  @keyframes onair{0%,100%{box-shadow:0 0 0 0 rgba(255,72,72,.55)}70%{box-shadow:0 0 0 7px rgba(255,72,72,0)}}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+  @keyframes caret{0%,100%{opacity:1}50%{opacity:0}}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#2a323e;border-radius:5px;border:2px solid #0e1218}
+  ::-webkit-scrollbar-track{background:transparent}
+</style>
+</helmet>
+
+<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:32px;background:#c7cace;font-family:'Noto Sans JP','Segoe UI',system-ui,sans-serif">
+  <div style="width:1000px;height:712px;background:#0e1218;border-radius:8px;overflow:hidden;box-shadow:0 30px 70px rgba(0,0,0,.4),0 6px 16px rgba(0,0,0,.25);display:flex;flex-direction:column;color:#dde3ea;border:1px solid #000">
+
+    <!-- titlebar -->
+    <div style="height:32px;flex:none;background:#0a0d12;display:flex;align-items:center;padding:0 12px;border-bottom:1px solid #1a212b">
+      <div style="display:flex;align-items:flex-end;gap:2px;width:14px;height:13px;margin-right:9px">
+        <span style="width:3px;height:6px;background:#3b9eff;border-radius:1px"></span><span style="width:3px;height:13px;background:#3b9eff;border-radius:1px"></span><span style="width:3px;height:9px;background:#3b9eff;border-radius:1px"></span>
+      </div>
+      <span style="font:600 12px/1 'Segoe UI','Noto Sans JP',sans-serif;color:#aeb6c0">Sound2Text</span>
+      <div style="margin-left:auto;display:flex;gap:18px;color:#7e8a99;font-size:13px"><span>&#9472;</span><span>&#9633;</span><span style="color:#c9ccd2">&#10005;</span></div>
+    </div>
+
+    <!-- operation bar 66px -->
+    <div style="height:66px;flex:none;background:#141a22;border-bottom:1px solid #232b36;display:flex;align-items:center;padding:0 18px;gap:20px">
+      <button onClick="{{ toggleRec }}" style="{{ startStyle }}">
+        <span style="{{ startIconStyle }}"></span>
+        <span style="display:flex;flex-direction:column;align-items:flex-start;line-height:1"><span style="font:700 15px/1 'Noto Sans JP',sans-serif">{{ startMain }}</span><span style="font:500 10px/1 'Segoe UI';letter-spacing:1px;opacity:.85;margin-top:2px">{{ startSub }}</span></span>
+      </button>
+      <div style="flex:1;font:500 12.5px/1.5 'Noto Sans JP',sans-serif;color:#7e8a99;padding-left:6px">{{ statusText }}</div>
+      <div style="flex:none;display:flex;gap:4px;padding:4px;background:#0e1218;border:1px solid #232b36;border-radius:7px">
+        <span onClick="{{ setAuto }}" style="{{ lpAuto }}">Auto</span>
+        <span onClick="{{ setZh }}" style="{{ lpZh }}">中文</span>
+        <span onClick="{{ setJa }}" style="{{ lpJa }}">日本語</span>
+        <span onClick="{{ setEn }}" style="{{ lpEn }}">English</span>
+      </div>
+    </div>
+
+    <!-- body: left rail + main -->
+    <div style="flex:1;min-height:0;display:flex">
+
+      <!-- left rail (always-visible state) -->
+      <div style="width:212px;flex:none;background:#0f141b;border-right:1px solid #232b36;padding:16px;display:flex;flex-direction:column;gap:15px">
+        <div style="{{ lampStyle }}">
+          <span style="{{ lampText }}">{{ lampLabel }}</span>
+          <span style="{{ lampDot }}"></span>
+        </div>
+
+        <div onClick="{{ toggleMic }}" title="クリックでマイク ON/OFF" style="display:flex;gap:12px;align-items:flex-end;padding:12px;border:1px solid #232b36;border-radius:7px;background:#0e1218;cursor:pointer">
+          <div style="display:flex;flex-direction:column-reverse;gap:3px;flex:1;{{ vuStyle }}">
+            <span style="height:7px;border-radius:1px;background:#3ddc84"></span><span style="height:7px;border-radius:1px;background:#3ddc84"></span><span style="height:7px;border-radius:1px;background:#3ddc84"></span><span style="height:7px;border-radius:1px;background:#3ddc84"></span><span style="height:7px;border-radius:1px;background:#3ddc84"></span><span style="height:7px;border-radius:1px;background:#3ddc84"></span><span style="height:7px;border-radius:1px;background:#ffb454;{{ vuPulseA }}"></span><span style="height:7px;border-radius:1px;background:#ffb454;opacity:.25"></span><span style="height:7px;border-radius:1px;background:#ff5a52;opacity:.2"></span><span style="height:7px;border-radius:1px;background:#ff5a52;opacity:.2"></span>
+          </div>
+          <div style="display:flex;flex-direction:column-reverse;gap:3px;flex:1;{{ vuStyle }}">
+            <span style="height:7px;border-radius:1px;background:#3ddc84"></span><span style="height:7px;border-radius:1px;background:#3ddc84"></span><span style="height:7px;border-radius:1px;background:#3ddc84"></span><span style="height:7px;border-radius:1px;background:#3ddc84"></span><span style="height:7px;border-radius:1px;background:#3ddc84;{{ vuPulseB }}"></span><span style="height:7px;border-radius:1px;background:#3ddc84;opacity:.25"></span><span style="height:7px;border-radius:1px;background:#ffb454;opacity:.25"></span><span style="height:7px;border-radius:1px;background:#ffb454;opacity:.2"></span><span style="height:7px;border-radius:1px;background:#ff5a52;opacity:.2"></span><span style="height:7px;border-radius:1px;background:#ff5a52;opacity:.2"></span>
+          </div>
+          <div style="font:600 9px/1.4 'Segoe UI';color:#5b6675;writing-mode:vertical-rl;letter-spacing:1px">MIC&nbsp;LEVEL</div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:13px;margin-top:2px">
+          <div>
+            <div style="font:600 9px/1 'Segoe UI';letter-spacing:1.5px;color:#7e8a99;margin-bottom:5px">ELAPSED</div>
+            <div style="position:relative;font-family:'Share Tech Mono',monospace;font-size:22px;line-height:1;letter-spacing:2px;color:#2fd6e0"><span style="position:absolute;inset:0;opacity:.1">88:88:88</span><span style="position:relative;text-shadow:0 0 10px rgba(47,214,224,.5)">{{ elapsed }}</span></div>
+          </div>
+          <div>
+            <div style="font:600 9px/1 'Segoe UI';letter-spacing:1.5px;color:#7e8a99;margin-bottom:5px">AUDIO REC</div>
+            <div style="position:relative;font-family:'Share Tech Mono',monospace;font-size:22px;line-height:1;letter-spacing:2px;color:#3ddc84"><span style="position:absolute;inset:0;opacity:.1">88:88:88</span><span style="position:relative;text-shadow:0 0 10px rgba(61,220,132,.45)">{{ audioRec }}</span></div>
+          </div>
+          <div>
+            <div style="font:600 9px/1 'Segoe UI';letter-spacing:1.5px;color:#7e8a99;margin-bottom:5px">TRANSCRIBED</div>
+            <div style="position:relative;font-family:'Share Tech Mono',monospace;font-size:22px;line-height:1;letter-spacing:2px;color:#ffb454"><span style="position:absolute;inset:0;opacity:.1">88:88:88</span><span style="position:relative;text-shadow:0 0 10px rgba(255,180,84,.45)">{{ transcribed }}</span></div>
+          </div>
+        </div>
+
+        <div style="margin-top:auto;display:flex;align-items:center;gap:7px;color:#7e8a99;font:500 10.5px/1.4 'Segoe UI','Noto Sans JP',sans-serif">{{ delayNode }}</div>
+      </div>
+
+      <!-- main -->
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+
+        <!-- tab bar -->
+        <div style="height:38px;flex:none;background:#0f141b;border-bottom:1px solid #232b36;display:flex;align-items:stretch;padding:0 14px;overflow:hidden">
+          <div style="display:flex;align-items:stretch;gap:2px">
+            <span onClick="{{ goT }}" style="{{ tT }}">Transcript</span>
+            <span onClick="{{ goC }}" style="{{ tC }}">Corrected</span>
+            <span onClick="{{ goM }}" style="{{ tM }}">Minutes</span>
+          </div>
+          <div style="width:1px;height:20px;align-self:center;background:#2a323e;margin:0 12px"></div>
+          <div style="display:flex;align-items:stretch;gap:2px">
+            <span onClick="{{ goP }}" style="{{ tP }}">Paths</span>
+            <span onClick="{{ goR }}" style="{{ tR }}">Recording</span>
+            <span onClick="{{ goA }}" style="{{ tA }}">API / Summary</span>
+            <span onClick="{{ goN }}" style="{{ tN }}">Network</span>
+          </div>
+        </div>
+
+        <!-- content -->
+        <div style="flex:1;min-height:0;display:flex;background:#0e1218">
+
+          <!-- Transcript -->
+          <sc-if value="{{ showTranscript }}" hint-placeholder-val="{{ true }}">
+            <div style="flex:1;min-height:0;padding:16px 20px;font-family:'JetBrains Mono','Noto Sans JP',monospace;font-size:13px;line-height:1.95;overflow:auto;position:relative">
+              <div style="color:#5b6675"><span style="color:#3b9eff">00:00:03</span>  田中    それでは第14回の定例ミーティングを始めます。</div>
+              <div style="color:#dde3ea"><span style="color:#5b6675">00:00:11</span>  <span style="color:#7fb8e6">田中</span>    今週の進捗を順番に共有してください。まずは開発チームから。</div>
+              <div style="color:#dde3ea"><span style="color:#5b6675">00:00:19</span>  <span style="color:#7fb8e6">佐藤</span>    えーと、認証まわりのリファクタリングが完了しました。</div>
+              <div style="color:#dde3ea"><span style="color:#5b6675">00:00:27</span>  <span style="color:#7fb8e6">佐藤</span>    テストカバレッジは、その、現在78%まで上がっています。</div>
+              <div style="color:#dde3ea"><span style="color:#5b6675">00:00:35</span>  <span style="color:#7fb8e6">鈴木</span>    デザイン側はダッシュボードの改修案を3パターン用意しました。</div>
+              <div style="color:#dde3ea"><span style="color:#5b6675">00:00:44</span>  <span style="color:#7fb8e6">田中</span>    ありがとうございます。では順番に確認していきましょう。</div>
+              <div style="color:#dde3ea"><span style="color:#5b6675">00:00:51</span>  <span style="color:#7fb8e6">鈴木</span>    まず案Bは録音状態を左の縦レールにまとめた構成で<span style="display:inline-block;width:8px;height:15px;background:#3b9eff;vertical-align:-2px;animation:caret 1s step-end infinite"></span></div>
+            </div>
+          </sc-if>
+
+          <!-- Corrected -->
+          <sc-if value="{{ showCorrected }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:1;min-height:0;display:flex;flex-direction:column">
+              <div style="flex:none;margin:14px 20px 0;padding:9px 12px;background:#11161e;border-left:2px solid #2b6fb8;border-radius:0 4px 4px 0;font:400 11.5px/1.5 'Noto Sans JP',sans-serif;color:#8a94a3">オンライン精修が有効です。最終補正文は<b style="color:#9fd0ff">停止後に一度だけ</b>確定表示されます（以下は逐次プレビュー）。</div>
+              <div style="flex:1;min-height:0;padding:14px 20px;font-family:'JetBrains Mono','Noto Sans JP',monospace;font-size:13px;line-height:1.95;overflow:auto">
+                <div style="color:#5b6675"><span style="color:#3b9eff">00:00:03</span>  田中    それでは第14回の定例ミーティングを始めます。</div>
+                <div style="color:#dde3ea"><span style="color:#5b6675">00:00:19</span>  <span style="color:#7fb8e6">佐藤</span>    認証まわりのリファクタリングが完了しました。</div>
+                <div style="color:#dde3ea"><span style="color:#5b6675">00:00:27</span>  <span style="color:#7fb8e6">佐藤</span>    テストカバレッジは現在78%まで上がっています。</div>
+                <div style="color:#dde3ea"><span style="color:#5b6675">00:00:35</span>  <span style="color:#7fb8e6">鈴木</span>    デザイン側はダッシュボードの改修案を3パターン用意しました。</div>
+                <div style="color:#dde3ea"><span style="color:#5b6675">00:00:44</span>  <span style="color:#7fb8e6">田中</span>    では順番に確認していきましょう。</div>
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- Minutes -->
+          <sc-if value="{{ showMinutes }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:1;min-height:0;padding:22px 28px;overflow:auto;font-family:'Noto Sans JP','Segoe UI',sans-serif">
+              <div style="max-width:640px">
+                <div style="font:700 20px/1.4 'Noto Sans JP',sans-serif;color:#eef2f6;border-bottom:1px solid #232b36;padding-bottom:10px">第14回 定例ミーティング 議事録</div>
+                <div style="margin-top:12px;font:400 13px/1.7 'Noto Sans JP',sans-serif;color:#8a94a3"><b style="color:#c9ccd2">日時</b> 2026-06-19 10:30–11:05&nbsp;&nbsp;/&nbsp;&nbsp;<b style="color:#c9ccd2">参加者</b> 田中・佐藤・鈴木</div>
+                <div style="margin-top:22px;font:700 15px/1 'Noto Sans JP',sans-serif;color:#9fd0ff">決定事項</div>
+                <ul style="margin:10px 0 0;padding-left:20px;font:400 13.5px/1.9 'Noto Sans JP',sans-serif;color:#dde3ea">
+                  <li>認証リファクタリングを今週金曜にリリースする。</li>
+                  <li>ダッシュボードは <b style="color:#fff">案B（左レール集約型）</b> を採用。</li>
+                </ul>
+                <div style="margin-top:22px;font:700 15px/1 'Noto Sans JP',sans-serif;color:#9fd0ff">TODO</div>
+                <ul style="margin:10px 0 0;padding-left:8px;list-style:none;font:400 13.5px/1.9 'Noto Sans JP',sans-serif;color:#dde3ea">
+                  <li>☐ テストカバレッジを 85% まで引き上げ（担当: 佐藤）</li>
+                  <li>☐ 改修案のレビュー会を来週設定（担当: 鈴木）</li>
+                </ul>
+                <div style="margin-top:22px;font:700 15px/1 'Noto Sans JP',sans-serif;color:#9fd0ff">参考</div>
+                <div style="margin-top:8px;font:400 13.5px/1.8 'Noto Sans JP',sans-serif;color:#dde3ea">設計メモは <a href="#" style="color:#5cb0ff;text-decoration:none;border-bottom:1px solid #2b6fb8">社内Wiki / dashboard-redesign</a> を参照。</div>
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- Paths -->
+          <sc-if value="{{ showPaths }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:1;min-height:0;padding:18px 22px;overflow:auto">
+              <div style="font:600 13px/1 'Segoe UI','Noto Sans JP';color:#9fd0ff;margin-bottom:14px">保存先パス</div>
+              <div style="display:flex;flex-direction:column;gap:9px;max-width:680px">
+                <div style="display:flex;align-items:center;gap:10px"><span style="width:130px;flex:none;font:500 12px/1.3 'Segoe UI','Noto Sans JP';color:#8a94a3">音声保存先</span><input value="D:/Sound2Text/audio" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"><button style="flex:none;height:31px;padding:0 12px;background:#1a212b;border:1px solid #2a323e;border-radius:5px;color:#aeb6c0;font:500 12px/1 'Segoe UI','Noto Sans JP';cursor:pointer">参照</button></div>
+                <div style="display:flex;align-items:center;gap:10px"><span style="width:130px;flex:none;font:500 12px/1.3 'Segoe UI','Noto Sans JP';color:#8a94a3">文字起こし保存先</span><input value="D:/Sound2Text/transcript" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"><button style="flex:none;height:31px;padding:0 12px;background:#1a212b;border:1px solid #2a323e;border-radius:5px;color:#aeb6c0;font:500 12px/1 'Segoe UI','Noto Sans JP';cursor:pointer">参照</button></div>
+                <div style="display:flex;align-items:center;gap:10px"><span style="width:130px;flex:none;font:500 12px/1.3 'Segoe UI','Noto Sans JP';color:#8a94a3">補正文保存先</span><input value="D:/Sound2Text/corrected" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"><button style="flex:none;height:31px;padding:0 12px;background:#1a212b;border:1px solid #2a323e;border-radius:5px;color:#aeb6c0;font:500 12px/1 'Segoe UI','Noto Sans JP';cursor:pointer">参照</button></div>
+                <div style="display:flex;align-items:center;gap:10px"><span style="width:130px;flex:none;font:500 12px/1.3 'Segoe UI','Noto Sans JP';color:#8a94a3">会議紀要保存先</span><input value="D:/Sound2Text/minutes" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"><button style="flex:none;height:31px;padding:0 12px;background:#1a212b;border:1px solid #2a323e;border-radius:5px;color:#aeb6c0;font:500 12px/1 'Segoe UI','Noto Sans JP';cursor:pointer">参照</button></div>
+                <div style="display:flex;align-items:center;gap:10px"><span style="width:130px;flex:none;font:500 12px/1.3 'Segoe UI','Noto Sans JP';color:#8a94a3">最終補正文保存先</span><input value="D:/Sound2Text/final" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"><button style="flex:none;height:31px;padding:0 12px;background:#1a212b;border:1px solid #2a323e;border-radius:5px;color:#aeb6c0;font:500 12px/1 'Segoe UI','Noto Sans JP';cursor:pointer">参照</button></div>
+                <div style="display:flex;align-items:center;gap:10px"><span style="width:130px;flex:none;font:500 12px/1.3 'Segoe UI','Noto Sans JP';color:#8a94a3">用語キャッシュ保存先</span><input value="D:/Sound2Text/cache/terms.json" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"><button style="flex:none;height:31px;padding:0 12px;background:#1a212b;border:1px solid #2a323e;border-radius:5px;color:#aeb6c0;font:500 12px/1 'Segoe UI','Noto Sans JP';cursor:pointer">参照</button></div>
+              </div>
+              <div style="display:flex;margin-top:18px;max-width:680px"><button style="margin-left:auto;height:33px;padding:0 20px;background:#2b6fb8;border:1px solid #3b9eff;border-radius:5px;color:#fff;font:600 12.5px/1 'Segoe UI','Noto Sans JP';cursor:pointer">保存</button></div>
+            </div>
+          </sc-if>
+
+          <!-- Recording -->
+          <sc-if value="{{ showRecording }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:1;min-height:0;padding:18px 22px;overflow:auto">
+              <div style="max-width:560px;display:flex;flex-direction:column;gap:20px">
+                <div>
+                  <div style="font:600 13px/1 'Segoe UI','Noto Sans JP';color:#9fd0ff;margin-bottom:10px">デバイス選択</div>
+                  <div style="display:flex;gap:8px">
+                    <span onClick="{{ devAuto }}" style="{{ devAutoStyle }}">Auto</span>
+                    <span onClick="{{ devCuda }}" style="{{ devCudaStyle }}">CUDA / GPU</span>
+                    <span onClick="{{ devCpu }}" style="{{ devCpuStyle }}">CPU</span>
+                  </div>
+                  <div style="margin-top:8px;font:400 11px/1.5 'Noto Sans JP';color:#6b7686">CUDA 選択時はオンデマンドで検証し、失敗した場合は自動で CPU に戻します。</div>
+                </div>
+                <div>
+                  <div style="font:600 13px/1 'Segoe UI','Noto Sans JP';color:#9fd0ff;margin-bottom:10px">モデル選択</div>
+                  <div style="display:flex;gap:8px">
+                    <span onClick="{{ mBase }}" style="{{ mBaseStyle }}">base</span>
+                    <span onClick="{{ mSmall }}" style="{{ mSmallStyle }}">small</span>
+                    <span onClick="{{ mMed }}" style="{{ mMedStyle }}">medium</span>
+                    <span onClick="{{ mLarge }}" style="{{ mLargeStyle }}">large-v3</span>
+                  </div>
+                  <div style="margin-top:8px;font:400 11px/1.5 'Noto Sans JP';color:#6b7686">ローカルに存在するモデルのみ選択できます。</div>
+                </div>
+                <div style="display:flex"><button style="height:33px;padding:0 20px;background:#2b6fb8;border:1px solid #3b9eff;border-radius:5px;color:#fff;font:600 12.5px/1 'Segoe UI','Noto Sans JP';cursor:pointer">保存</button></div>
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- API / Summary -->
+          <sc-if value="{{ showApi }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:1;min-height:0;padding:18px 22px;overflow:auto">
+              <div style="max-width:620px">
+                <div style="display:flex;gap:4px;padding:4px;background:#0c1016;border:1px solid #232b36;border-radius:7px;width:max-content;margin-bottom:18px">
+                  <span onClick="{{ goOpenai }}" style="{{ apiOpenaiStyle }}">OpenAI 互換</span>
+                  <span onClick="{{ goOllama }}" style="{{ apiOllamaStyle }}">Ollama</span>
+                </div>
+
+                <sc-if value="{{ showOpenai }}" hint-placeholder-val="{{ true }}">
+                  <div style="display:flex;flex-direction:column;gap:11px">
+                    <div style="display:flex;align-items:center;gap:10px"><span style="width:90px;flex:none;font:500 12px/1 'Segoe UI';color:#8a94a3">API Base</span><input value="https://api.openai.com/v1" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"></div>
+                    <div style="display:flex;align-items:center;gap:10px"><span style="width:90px;flex:none;font:500 12px/1 'Segoe UI';color:#8a94a3">API Key</span><input type="password" value="sk-xxxxxxxxxxxxxxxx" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"></div>
+                    <div style="display:flex;align-items:center;gap:10px"><span style="width:90px;flex:none;font:500 12px/1 'Segoe UI';color:#8a94a3">Model</span><input value="gpt-4o-mini" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"></div>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:2px"><span style="width:90px;flex:none;font:500 11px/1 'Segoe UI';color:#6b7686">プリセット</span><span style="font:500 11.5px/1 'Segoe UI';color:#aeb6c0;background:#1a212b;border:1px solid #2a323e;border-radius:4px;padding:6px 10px;cursor:pointer">OpenAI</span><span style="font:500 11.5px/1 'Segoe UI';color:#aeb6c0;background:#1a212b;border:1px solid #2a323e;border-radius:4px;padding:6px 10px;cursor:pointer">Azure</span><span style="font:500 11.5px/1 'Segoe UI';color:#aeb6c0;background:#1a212b;border:1px solid #2a323e;border-radius:4px;padding:6px 10px;cursor:pointer">DeepSeek</span></div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ showOllama }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-direction:column;gap:11px">
+                    <div style="display:flex;align-items:center;gap:10px"><span style="width:90px;flex:none;font:500 12px/1 'Segoe UI';color:#8a94a3">URL</span><input value="http://localhost:11434" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"></div>
+                    <div style="display:flex;align-items:center;gap:10px"><span style="width:90px;flex:none;font:500 12px/1 'Segoe UI';color:#8a94a3">Model</span><input value="qwen2.5:7b" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"></div>
+                  </div>
+                </sc-if>
+
+                <div onClick="{{ toggleRefine }}" style="display:flex;align-items:center;gap:10px;margin-top:18px;cursor:pointer">
+                  <span style="{{ refineBox }}">{{ refineMark }}</span>
+                  <span style="font:500 12.5px/1 'Noto Sans JP';color:#dde3ea">オンライン精修を有効にする</span>
+                </div>
+                <div style="display:flex;margin-top:18px"><button style="height:33px;padding:0 20px;background:#2b6fb8;border:1px solid #3b9eff;border-radius:5px;color:#fff;font:600 12.5px/1 'Segoe UI','Noto Sans JP';cursor:pointer">保存</button></div>
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- Network -->
+          <sc-if value="{{ showNetwork }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:1;min-height:0;padding:18px 22px;overflow:auto">
+              <div style="max-width:560px;display:flex;flex-direction:column;gap:13px">
+                <div style="display:flex;align-items:center;gap:10px"><span style="width:110px;flex:none;font:500 12px/1 'Segoe UI';color:#8a94a3">HTTPS Proxy</span><input placeholder="http://proxy:8080" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"></div>
+                <div style="display:flex;align-items:center;gap:10px"><span style="width:110px;flex:none;font:500 12px/1 'Segoe UI';color:#8a94a3">HTTP Proxy</span><input placeholder="http://proxy:8080" style="flex:1;height:31px;background:#0c1016;border:1px solid #2a323e;border-radius:5px;color:#dde3ea;font:400 12px/1 'JetBrains Mono',monospace;padding:0 10px;outline:none"></div>
+                <div onClick="{{ toggleSsl }}" style="display:flex;align-items:center;gap:10px;margin-top:4px;cursor:pointer">
+                  <span style="{{ sslBox }}">{{ sslMark }}</span>
+                  <span style="font:500 12.5px/1 'Noto Sans JP';color:#dde3ea">SSL 証明書を検証する</span>
+                </div>
+                <div style="display:flex;margin-top:14px"><button style="height:33px;padding:0 20px;background:#2b6fb8;border:1px solid #3b9eff;border-radius:5px;color:#fff;font:600 12.5px/1 'Segoe UI','Noto Sans JP';cursor:pointer">保存</button></div>
+              </div>
+            </div>
+          </sc-if>
+
+        </div>
+
+        <!-- bottom: Progress / Log toggle -->
+        <div style="height:104px;flex:none;background:#0f141b;border-top:1px solid #232b36;display:flex;flex-direction:column">
+          <div style="height:30px;flex:none;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid #1a212b">
+            <span onClick="{{ goProg }}" style="{{ bpStyle }}">Progress</span>
+            <span onClick="{{ goLog }}" style="{{ blStyle }}">Log</span>
+            <sc-if value="{{ showLog }}" hint-placeholder-val="{{ false }}">
+              <span style="margin-left:auto;font:500 11px/1 'Segoe UI';color:#7e8a99;border:1px solid #2a323e;border-radius:4px;padding:5px 10px;cursor:pointer">Clear Log</span>
+            </sc-if>
+          </div>
+
+          <sc-if value="{{ showProgress }}" hint-placeholder-val="{{ true }}">
+            <div style="flex:1;display:flex;align-items:center;gap:26px;padding:0 20px">
+              <div style="display:flex;align-items:center;gap:8px"><span style="font:600 10px/1 'Segoe UI';letter-spacing:1px;color:#7e8a99">キュー</span><span style="font-family:'Share Tech Mono',monospace;font-size:18px;color:#3b9eff">{{ queueDepth }}</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span style="font:600 10px/1 'Segoe UI';letter-spacing:1px;color:#7e8a99">処理遅延</span><span style="font-family:'Share Tech Mono',monospace;font-size:18px;color:#ffb454">{{ delaySec }}s</span></div>
+              <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;justify-content:space-between;font:500 10px/1 'Segoe UI';color:#7e8a99"><span>文字起こし進捗</span><span>{{ ratioPct }}%</span></div>
+                <div style="height:8px;background:#0c1016;border:1px solid #232b36;border-radius:4px;overflow:hidden"><div style="height:100%;background:linear-gradient(90deg,#2b6fb8,#3b9eff);{{ ratioStyle }}"></div></div>
+              </div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ showLog }}" hint-placeholder-val="{{ false }}">
+            <div style="flex:1;padding:6px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.7;color:#8a94a3;overflow:auto">
+              <div><span style="color:#5b6675">[10:30:02]</span> <span style="color:#3b9eff">INFO</span>  pipeline session started</div>
+              <div><span style="color:#5b6675">[10:30:02]</span> <span style="color:#3b9eff">INFO</span>  audio device = CUDA:0 (RTX 4070)</div>
+              <div><span style="color:#5b6675">[10:30:03]</span> <span style="color:#3b9eff">INFO</span>  model = medium loaded (1.5s)</div>
+              <div><span style="color:#5b6675">[10:30:11]</span> <span style="color:#7e8a99">DEBUG</span> segment#001 queued (3.2s)</div>
+              <div><span style="color:#5b6675">[10:30:14]</span> <span style="color:#3b9eff">INFO</span>  transcribed #001 &rarr; 1 line</div>
+              <div><span style="color:#5b6675">[10:30:22]</span> <span style="color:#ffb454">WARN</span>  online refine latency 1.8s</div>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1064,&quot;height&quot;:776}}">
+class Component extends DCLogic {
+  state = {
+    tab: 'transcript', recording: true, micOn: true, bottom: 'progress',
+    lang: 'ja', apiTab: 'openai', refine: true, ssl: true,
+    device: 'cuda', model: 'medium',
+    secEl: 768, secRec: 760, secTr: 718
+  };
+
+  componentDidMount() {
+    this._iv = setInterval(() => {
+      if (!this.state.recording) return;
+      this.setState(s => {
+        const secEl = s.secEl + 1;
+        const secRec = s.secRec + (s.micOn ? 1 : 0);
+        const secTr = s.secTr + ((secRec - s.secTr) > 6 ? 1 : 0);
+        return { secEl, secRec, secTr };
+      });
+    }, 1000);
+  }
+  componentWillUnmount() { clearInterval(this._iv); }
+
+  fmt(n) {
+    n = Math.max(0, Math.floor(n));
+    const h = String(Math.floor(n / 3600)).padStart(2, '0');
+    const m = String(Math.floor((n % 3600) / 60)).padStart(2, '0');
+    const s = String(n % 60).padStart(2, '0');
+    return h + ':' + m + ':' + s;
+  }
+
+  renderVals() {
+    const st = this.state;
+    const set = (k, v) => this.setState({ [k]: v });
+    const rec = st.recording, mic = st.micOn;
+
+    const tabStyle = (on) => `display:flex;align-items:center;padding:0 14px;font:${on ? 600 : 500} 13px/1 'Segoe UI','Noto Sans JP',sans-serif;color:${on ? '#9fd0ff' : '#7e8a99'};border-bottom:2px solid ${on ? '#3b9eff' : 'transparent'};cursor:pointer;white-space:nowrap`;
+    const setTabStyle = (on) => `display:flex;align-items:center;padding:0 11px;font:${on ? 600 : 500} 12px/1 'Segoe UI','Noto Sans JP',sans-serif;color:${on ? '#9fd0ff' : '#6b7686'};border-bottom:2px solid ${on ? '#3b9eff' : 'transparent'};cursor:pointer;white-space:nowrap`;
+    const botStyle = (on) => `display:flex;align-items:center;padding:0 12px;height:30px;font:${on ? 600 : 500} 12px/1 'Segoe UI';color:${on ? '#9fd0ff' : '#7e8a99'};border-bottom:2px solid ${on ? '#3b9eff' : 'transparent'};cursor:pointer`;
+    const langStyle = (on) => `font:${on ? 600 : 500} 12px/1 'Noto Sans JP','Segoe UI';padding:7px 10px;border-radius:4px;cursor:pointer;color:${on ? '#9fd0ff' : '#7e8a99'};${on ? 'background:#16324d;border:1px solid #2b6fb8' : 'border:1px solid transparent'}`;
+    const pill = (on) => `flex:1;height:36px;display:flex;align-items:center;justify-content:center;border-radius:6px;cursor:pointer;font:${on ? 600 : 500} 12.5px/1 'Segoe UI','Noto Sans JP';color:${on ? '#fff' : '#aeb6c0'};background:${on ? '#16324d' : '#0c1016'};border:1px solid ${on ? '#3b9eff' : '#2a323e'}`;
+    const mpill = (on) => `height:34px;padding:0 18px;display:flex;align-items:center;justify-content:center;border-radius:6px;cursor:pointer;font:${on ? 600 : 500} 12px/1 'JetBrains Mono',monospace;color:${on ? '#fff' : '#aeb6c0'};background:${on ? '#16324d' : '#0c1016'};border:1px solid ${on ? '#3b9eff' : '#2a323e'}`;
+    const apiTabStyle = (on) => `padding:7px 14px;border-radius:5px;cursor:pointer;font:${on ? 600 : 500} 12px/1 'Segoe UI','Noto Sans JP';color:${on ? '#fff' : '#8a94a3'};background:${on ? '#2b6fb8' : 'transparent'}`;
+    const checkBox = (on) => `width:18px;height:18px;flex:none;border-radius:4px;border:1px solid ${on ? '#3b9eff' : '#2a323e'};background:${on ? '#2b6fb8' : '#0c1016'};display:flex;align-items:center;justify-content:center;color:#fff;font:700 11px/1 'Segoe UI'`;
+
+    const delaySec = Math.max(0, st.secRec - st.secTr);
+    const ratioPct = st.secRec > 0 ? Math.min(100, Math.round(st.secTr / st.secRec * 100)) : 0;
+
+    return {
+      recording: rec, micOn: mic,
+
+      // Start/Stop
+      toggleRec: () => this.setState(s => s.recording ? { recording: false } : { recording: true, secEl: 0, secRec: 0, secTr: 0 }),
+      startStyle: `flex:none;height:42px;padding:0 22px;border:none;border-radius:6px;display:flex;align-items:center;gap:10px;cursor:pointer;color:#fff;box-shadow:0 2px 0 rgba(0,0,0,.25),0 0 16px ${rec ? 'rgba(216,66,58,.35)' : 'rgba(46,194,122,.35)'};background:${rec ? 'linear-gradient(#e8554a,#d8423a)' : 'linear-gradient(#34c47e,#22a866)'}`,
+      startIconStyle: rec ? 'width:11px;height:11px;background:#fff;border-radius:2px' : 'width:0;height:0;border-left:13px solid #fff;border-top:8px solid transparent;border-bottom:8px solid transparent',
+      startMain: rec ? '停止' : '開始',
+      startSub: rec ? 'STOP' : 'START',
+      statusText: rec ? `録音中 — セッション #14 / ${st.model} モデル` : '待機中 — Start で録音を開始します',
+
+      // mic / lamp / VU
+      toggleMic: () => set('micOn', !mic),
+      lampStyle: `display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:7px;border:1px solid ${mic ? '#3a2326' : '#1e2a3a'};background:${mic ? '#1a1216' : '#0f1722'}`,
+      lampLabel: mic ? 'ON AIR' : 'MIC OFF',
+      lampText: `font:700 11px/1 'Segoe UI';letter-spacing:1.5px;color:${mic ? '#ff7a72' : '#5cb0ff'}`,
+      lampDot: `width:11px;height:11px;border-radius:50%;background:${mic ? '#ff4848' : '#3b9eff'};${mic ? 'animation:onair 1.6s infinite' : ''}`,
+      vuStyle: `opacity:${mic ? 1 : 0.18}`,
+      vuPulseA: mic ? 'animation:blink 1s infinite' : '',
+      vuPulseB: mic ? 'animation:blink 1.3s infinite' : '',
+
+      // timers
+      elapsed: this.fmt(st.secEl), audioRec: this.fmt(st.secRec), transcribed: this.fmt(st.secTr),
+      delaySec, queueDepth: rec ? Math.max(0, Math.round(delaySec / 3)) : 0, ratioPct,
+      ratioStyle: `width:${ratioPct}%`,
+      delayNode: rec
+        ? React.createElement(React.Fragment, null, React.createElement('span', { style: { width: '7px', height: '7px', borderRadius: '50%', background: '#ffb454', animation: 'blink 1.2s infinite' } }), `処理遅延 ${delaySec}秒`)
+        : React.createElement('span', { style: { color: '#5b6675' } }, '待機中'),
+
+      // language
+      lpAuto: langStyle(st.lang === 'auto'), lpZh: langStyle(st.lang === 'zh'), lpJa: langStyle(st.lang === 'ja'), lpEn: langStyle(st.lang === 'en'),
+      setAuto: () => set('lang', 'auto'), setZh: () => set('lang', 'zh'), setJa: () => set('lang', 'ja'), setEn: () => set('lang', 'en'),
+
+      // tabs
+      showTranscript: st.tab === 'transcript', showCorrected: st.tab === 'corrected', showMinutes: st.tab === 'minutes',
+      showPaths: st.tab === 'paths', showRecording: st.tab === 'recording', showApi: st.tab === 'api', showNetwork: st.tab === 'network',
+      tT: tabStyle(st.tab === 'transcript'), tC: tabStyle(st.tab === 'corrected'), tM: tabStyle(st.tab === 'minutes'),
+      tP: setTabStyle(st.tab === 'paths'), tR: setTabStyle(st.tab === 'recording'), tA: setTabStyle(st.tab === 'api'), tN: setTabStyle(st.tab === 'network'),
+      goT: () => set('tab', 'transcript'), goC: () => set('tab', 'corrected'), goM: () => set('tab', 'minutes'),
+      goP: () => set('tab', 'paths'), goR: () => set('tab', 'recording'), goA: () => set('tab', 'api'), goN: () => set('tab', 'network'),
+
+      // bottom
+      showProgress: st.bottom === 'progress', showLog: st.bottom === 'log',
+      bpStyle: botStyle(st.bottom === 'progress'), blStyle: botStyle(st.bottom === 'log'),
+      goProg: () => set('bottom', 'progress'), goLog: () => set('bottom', 'log'),
+
+      // recording settings
+      device: st.device,
+      devAutoStyle: pill(st.device === 'auto'), devCudaStyle: pill(st.device === 'cuda'), devCpuStyle: pill(st.device === 'cpu'),
+      devAuto: () => set('device', 'auto'), devCuda: () => set('device', 'cuda'), devCpu: () => set('device', 'cpu'),
+      mBaseStyle: mpill(st.model === 'base'), mSmallStyle: mpill(st.model === 'small'), mMedStyle: mpill(st.model === 'medium'), mLargeStyle: mpill(st.model === 'large'),
+      mBase: () => set('model', 'base'), mSmall: () => set('model', 'small'), mMed: () => set('model', 'medium'), mLarge: () => set('model', 'large'),
+
+      // api
+      showOpenai: st.apiTab === 'openai', showOllama: st.apiTab === 'ollama',
+      apiOpenaiStyle: apiTabStyle(st.apiTab === 'openai'), apiOllamaStyle: apiTabStyle(st.apiTab === 'ollama'),
+      goOpenai: () => set('apiTab', 'openai'), goOllama: () => set('apiTab', 'ollama'),
+      toggleRefine: () => set('refine', !st.refine), refineBox: checkBox(st.refine), refineMark: st.refine ? '✓' : '',
+      toggleSsl: () => set('ssl', !st.ssl), sslBox: checkBox(st.ssl), sslMark: st.ssl ? '✓' : ''
+    };
+  }
+}
+</script>
+</body>
+</html>

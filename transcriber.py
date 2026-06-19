@@ -371,8 +371,17 @@ def main():
 
     compute_type = "float16" if device == "cuda" else "int8"
 
-    tr_info(f"loading faster-whisper {model_size} (device={device}, compute={compute_type})")
-    whisper = WhisperModel(model_size, device=device, compute_type=compute_type)
+    # Speed knobs (config-overridable). On CPU a greedy search (beam_size=1) is
+    # ~2–3× faster than the default beam_size=5 with only a small accuracy cost,
+    # which is the single biggest win for medium-on-CPU. cpu_threads=0 lets
+    # CTranslate2 auto-pick (sensible on hybrid P/E-core laptop CPUs).
+    beam_size   = _cfg.getint("recording", "beam_size",   fallback=(5 if device == "cuda" else 1))
+    cpu_threads = _cfg.getint("recording", "cpu_threads", fallback=0)
+
+    tr_info(f"loading faster-whisper {model_size} (device={device}, compute={compute_type}, "
+            f"beam={beam_size}, cpu_threads={cpu_threads or 'auto'})")
+    whisper = WhisperModel(model_size, device=device, compute_type=compute_type,
+                           cpu_threads=cpu_threads)
     tr_info(f"model loaded on {device}")
     tr_info("ready (output file will be created on first audio)")
     if language:
@@ -398,6 +407,8 @@ def main():
             segments, info = whisper.transcribe(
                 wav_path, language=lang,
                 initial_prompt=prompt,
+                beam_size=beam_size,
+                condition_on_previous_text=False,
                 vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 500},
             )
@@ -423,6 +434,8 @@ def main():
             segments, _ = whisper.transcribe(
                 wav_path, language=lang,
                 initial_prompt=prompt,
+                beam_size=beam_size,
+                condition_on_previous_text=False,
                 vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 500},
             )
@@ -439,6 +452,7 @@ def main():
                 print("[Transcriber] Reloaded on CPU. Retrying...")
                 segments, _ = whisper.transcribe(
                     wav_path, language=lang, initial_prompt=prompt,
+                    beam_size=beam_size, condition_on_previous_text=False,
                     vad_filter=True, vad_parameters={"min_silence_duration_ms": 500},
                 )
                 seg_list = list(segments)

@@ -11,7 +11,7 @@ from PyQt6.QtCore import QTimer, Qt, QRect, QPoint, QPointF, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QPainter, QPainterPath, QFont, QLinearGradient, QPen,
 )
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy, QFrame
 
 from i18n import _LANG
 
@@ -30,6 +30,130 @@ def _dim_color(hex_color: str, factor: int = 9) -> QColor:
     g = max(int(hex_color[3:5], 16) // factor, 6)
     b = max(int(hex_color[5:7], 16) // factor, 6)
     return QColor(r, g, b)
+
+
+# ── VUBarMeterWidget ──────────────────────────────────────────────────────────
+
+class VUBarMeterWidget(QWidget):
+    """
+    Design-B style VU meter: two columns of vertical bars stacked bottom-to-top.
+
+    All 10 segments per column are always visible with fixed colors:
+    - Green #3ddc84 (segments 0-5)
+    - Yellow #ffb454 (segments 6-7)
+    - Red #ff5a52 (segments 8-9)
+
+    Overall opacity (brightness) varies with mic level: 0.18 (silent) → 1.0 (loud).
+    Segment 6 (first yellow) blinks when active.
+
+    Emits clicked() when the widget is clicked (PTT stop trigger).
+    """
+    clicked = pyqtSignal()
+    FPS = 33
+    SEGMENTS = 10  # segments per column
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(74)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._level = 0.0
+        self._smoothed = 0.0
+        self._blink_phase = 0  # for segment 6 blink animation
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(self.FPS)
+
+    def set_level(self, v: float) -> None:
+        """Set mic level in range [0.0, 1.0]."""
+        self._level = max(0.0, min(float(v), 1.0))
+
+    def _tick(self) -> None:
+        """Smooth the level, update blink phase, and refresh display."""
+        k = 0.55 if self._level > self._smoothed else 0.20
+        self._smoothed += (self._level - self._smoothed) * k
+        self._blink_phase = (self._blink_phase + 1) % 60  # ~1s blink cycle at 33 FPS
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        """Draw two columns of vertical bars with dynamic opacity based on level."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        w, h = self.width(), self.height()
+
+        # Bar dimensions
+        seg_height = 7
+        seg_gap = 3
+        col_gap = 12
+        label_width = 24
+
+        # Padding
+        h_pad = 8
+        v_pad = 8
+
+        # Available width for two columns
+        avail_width = w - h_pad * 2 - label_width
+        col_width = (avail_width - col_gap) // 2
+        bar_width = max(4, col_width - 4)
+
+        # Starting positions
+        col1_x = h_pad + (col_width - bar_width) // 2
+        col2_x = col1_x + col_width + col_gap
+        label_x = w - label_width + 2
+
+        # Compute overall opacity based on level: 0.18 (silent) → 1.0 (loud)
+        opacity = 0.18 + self._smoothed * (1.0 - 0.18)
+        overall_alpha = int(255 * opacity)
+
+        # Determine if segment 6 should blink (when volume > 0)
+        blink_on = (self._blink_phase < 30) if self._smoothed > 0.05 else True
+
+        # Draw two columns with fixed colors
+        for col in range(2):
+            col_x = col1_x if col == 0 else col2_x
+
+            for seg in range(self.SEGMENTS):
+                y = h - v_pad - (seg + 1) * (seg_height + seg_gap)
+
+                # Fixed color mapping
+                if seg < 6:  # Green zone
+                    color = QColor("#3ddc84")
+                elif seg < 8:  # Yellow zone
+                    color = QColor("#ffb454")
+                else:  # Red zone
+                    color = QColor("#ff5a52")
+
+                # Apply overall brightness + special blink for segment 6
+                if seg == 6 and not blink_on:
+                    # Blink out: darker for this segment
+                    color.setAlpha(int(overall_alpha * 0.3))
+                else:
+                    color.setAlpha(overall_alpha)
+
+                painter.fillRect(col_x, y, bar_width, seg_height, color)
+
+        # Draw "MIC LEVEL" label vertically on the right
+        painter.save()
+        painter.translate(label_x, h // 2)
+        painter.rotate(-90)
+        painter.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        label_color = QColor("#5b6675")
+        label_color.setAlpha(overall_alpha)
+        painter.setPen(label_color)
+        # Center the rotated label on the panel's vertical axis regardless of font.
+        fm = painter.fontMetrics()
+        tw = fm.horizontalAdvance("MIC LEVEL")
+        painter.drawText(-tw // 2, fm.ascent() // 2, "MIC LEVEL")
+        painter.restore()
+
+        painter.end()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 # ── VUMeterWidget ─────────────────────────────────────────────────────────────

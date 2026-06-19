@@ -304,6 +304,20 @@ class Presenter:
         else:
             self.start_mic()
 
+    def toggle_mic_preview(self) -> None:
+        """Preview microphone level before recording; toggle mixing while recording."""
+        if self._running:
+            self.toggle_mic()
+            return
+        if self._meter_active:
+            self._stop_meter()
+            if self._view:
+                self._view.schedule(lambda: self._view.hide_onair())
+            return
+        if self._view:
+            self._view.schedule(lambda: self._view.hide_onair())
+        self._start_meter()
+
     def stop_mic(self) -> None:
         """Deactivate mic mixing in pipeline (On Air OFF)."""
         self._stop_meter()
