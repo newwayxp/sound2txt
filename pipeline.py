@@ -1428,7 +1428,7 @@ def run():
                  "can finish")
         try:
             with open(SIGNAL_SESS_DONE, "w") as f:
-                f.write("done")
+                f.write("startup-race")
         except Exception as _e:
             sys_error(f"failed to write startup-race done signal: {_e}")
 

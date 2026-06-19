@@ -131,6 +131,7 @@ class Presenter:
         self._closing         = False   # graceful shutdown in progress
         self._meter_active    = False
         self._session_id      = 0   # incremented each start(); guards stale async callbacks
+        self._pipeline_session_opened = False
 
         # ── transcriber tracking ─────────────────────────────────────────────
         self._tr_current_file  = ""
@@ -682,6 +683,7 @@ class Presenter:
 
         self._running   = True
         self._stopping  = False
+        self._pipeline_session_opened = False
         self._session_id += 1   # invalidate callbacks from previous session
 
         # Disable start, enable stop
@@ -782,7 +784,10 @@ class Presenter:
 
         # session 完了を待ってから纪要生成
         self._fw_stop.set()
-        threading.Thread(target=self._wait_pipeline_and_summarize, daemon=True).start()
+        if self._pipeline_session_observed():
+            threading.Thread(target=self._wait_pipeline_and_summarize, daemon=True).start()
+        else:
+            self._finish_empty_startup_stop()
 
         # Deactivate mic mixing signal
         try:
@@ -796,9 +801,55 @@ class Presenter:
             self._view.schedule(lambda: self._view.hide_ptt_button())
             self._view.schedule(lambda: self._view.dashboard_stop())
         self._stop_meter()
-        self._view and self._view.put_log("[UI] セッション終了中... pipeline の処理完了を待っています")
+        if self._running:
+            self._view and self._view.put_log("[UI] セッション終了中... pipeline の処理完了を待っています")
 
     # ── on-demand file watcher ────────────────────────────────────────────────
+
+    def _pipeline_session_observed(self) -> bool:
+        """True once pipeline.py has actually opened the recording session.
+
+        Before this point start only requested a session; the child process may
+        still be importing/loading Whisper. No capture thread is active for this
+        session yet, so a quick stop can complete without waiting for pipeline
+        drain/finalize.
+        """
+        if self._pipeline_session_opened:
+            return True
+        deadline = time.monotonic() + 0.5
+        while True:
+            try:
+                if os.path.exists(STATE_FILE):
+                    mtime = os.path.getmtime(STATE_FILE)
+                    if self._start_time <= 0 or mtime >= self._start_time:
+                        return True
+            except Exception:
+                pass
+            if self._pipeline_session_opened or time.monotonic() >= deadline:
+                return self._pipeline_session_opened
+            time.sleep(0.05)
+
+    def _finish_empty_startup_stop(self) -> None:
+        """Complete a start->stop that happened before pipeline opened a session."""
+        self._running = False
+        self._stopping = False
+        self._pipeline_session_opened = False
+        self._view and self._view.put_log(
+            "[UI] Stop completed before pipeline session opened; no audio to finalize"
+        )
+        try:
+            os.remove(os.path.join(BASE, ".pipeline_session_done"))
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+        if self._view:
+            self._view.schedule(lambda: self._view.set_start_enabled(True))
+            self._view.schedule(lambda: self._view.set_stop_enabled(False))
+            self._view.schedule(lambda: self._view.set_rec_status("stopped", "gray60"))
+            self._view.schedule(lambda: self._view.set_tr_status("stopped", "gray60"))
+            self._view.schedule(lambda: self._view.set_sum_status("standby", "gray60"))
+            self._view.schedule(lambda: self._view.dashboard_reset())
 
     def _poll_corrected_file(self) -> None:
         """Poll the live transcript and corrected files during a session and
@@ -861,10 +912,19 @@ class Presenter:
         got_done   = False
         while time.time() < deadline:
             if os.path.exists(_SESS_DONE):
+                _done_kind = ""
+                try:
+                    with open(_SESS_DONE, encoding="utf-8") as _df:
+                        _done_kind = _df.read().strip()
+                except Exception:
+                    pass
                 try:
                     os.remove(_SESS_DONE)
                 except Exception:
                     pass
+                if _done_kind == "startup-race":
+                    _log("SYS", "INFO", "stale startup-race session_done ignored")
+                    continue
                 _log("SYS", "INFO", "session_done シグナル受信")
                 got_done = True
                 break
@@ -1292,6 +1352,8 @@ class Presenter:
                         self._view.schedule(lambda s=secs: self._view.dashboard_add_trans(s))
 
             elif prefix == "[PL]":
+                if "Session started:" in search_text:
+                    self._pipeline_session_opened = True
                 # Segment cache write complete → update audio counter (middle)
                 m = _pl_seg_cached.search(search_text)
                 if m and self._view and self._running:

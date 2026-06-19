@@ -242,7 +242,7 @@ by the presenter unless noted.
 |------|-----------|---------|
 | `.pipeline_session` | presenter → pipeline | Session active. Created on start; **removing it ends the session** (flush → drain queue → finalize). |
 | `.pipeline_stop` | presenter → pipeline | Stop the long-lived pipeline process (app exit). |
-| `.pipeline_session_done` | pipeline → presenter | Session fully finalized (queue drained, audio converted). Presenter waits for this before summarizing. |
+| `.pipeline_session_done` | pipeline → presenter | Session fully finalized (queue drained, audio converted). Presenter waits for this before summarizing, except for an empty startup-stop before the pipeline opens a session. |
 | `.pipeline.lock` | pipeline/presenter | Cross-process singleton lock; prevents GUI/CLI from running multiple `pipeline.py` instances against the same signal files. |
 | `.pipeline_subtitle` | presenter → pipeline | Subtitle mode active. |
 | `.mic_onair` | presenter → pipeline | On Air: feed mic into the VAD. |
@@ -271,9 +271,15 @@ pipeline should stop it.
 2. Write `time.time()` → `.recording_start`.
 3. Write `.pipeline_session`; `_ensure_pipeline_running()` spawns `pipeline.py`
    if not already alive.
-4. Start the `_poll_corrected_file` thread (3 s poll of `.last_transcript` /
+4. Start the `_poll_corrected_file` thread (0.5 s poll of `.last_transcript` /
    `.last_corrected` → Transcript / Corrected tabs).
 5. Mic is **not** auto-started — user clicks the VU meter (`.mic_onair`).
+
+`start()` marks the UI as running immediately, but the pipeline session is not
+considered *opened* until `pipeline.py` writes `.last_transcript` or emits
+`Session started:`. During that gap the child may still be importing CUDA /
+faster-whisper or loading the Whisper model; no capture thread is active for the
+new session yet.
 
 > **Live config reload:** at each session start `pipeline.py` re-reads
 > `language` / `model_size` / `device` from `config.ini` and reloads the Whisper
@@ -281,14 +287,23 @@ pipeline should stop it.
 > app restart.
 
 ### Recording stop (`presenter.stop()` → drain → minutes)
-1. Remove `.pipeline_session`. Pipeline flushes remaining audio, then
+1. Remove `.pipeline_session`.
+2. If the pipeline has **not** opened the session yet (no `Session started:` log
+   and no fresh `.last_transcript`), `presenter.stop()` treats this as an empty
+   startup-stop: no audio exists, no transcript/minutes are generated, controls
+   return to idle immediately, and the long-lived pipeline is allowed to finish
+   initialization in the background for the next start.
+   If `pipeline.py` later writes `.pipeline_session_done` for its startup-race
+   reconciliation, the file contains `startup-race`; a later real stop ignores
+   and removes that stale marker instead of treating it as session completion.
+3. Otherwise pipeline flushes remaining audio, then
    `_seg_queue.join()` **fully drains the transcription backlog** (no timeout),
    converts raw → WAV → MP3, cleans the seg cache, writes `.pipeline_session_done`.
-2. `_wait_pipeline_and_summarize` waits for `.pipeline_session_done` **as long as
+4. `_wait_pipeline_and_summarize` waits for `.pipeline_session_done` **as long as
    the pipeline process is alive** (poll + generous ceiling, ~3600 s), not a short
    fixed timeout. A premature timeout used to touch the still-open `.raw`
    (WinError 32) and summarize an incomplete transcript.
-3. Minutes are generated from the live corrected file (`.last_corrected`), then
+5. Minutes are generated from the live corrected file (`.last_corrected`), then
    `_set_controls_idle()` re-enables Start.
 
 ### Window close (`on_close` → `_graceful_shutdown`)

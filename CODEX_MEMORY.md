@@ -81,6 +81,10 @@ an external locked pipeline must not write `.pipeline_stop` when it exits.
 - Session raw audio is converted only after the queue is drained at session end.
 - Stop waits for `.pipeline_session_done`; avoid short fixed timeouts that can
   summarize incomplete transcripts or touch still-open audio files.
+- Exception: if the user stops before `pipeline.py` has actually opened the
+  session (`Session started:` / fresh `.last_transcript`), no audio exists yet.
+  Presenter returns to idle immediately and lets the long-lived pipeline finish
+  startup in the background.
 - Silero VAD uses 512-sample framing. Preserve buffering of sub-frame chunks.
 - If Silero fails and amplitude fallback is used, do not silence-skip quiet audio
   as if reliable VAD were available.
