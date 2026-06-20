@@ -43,7 +43,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; ── GUI + architecture ─────────────────────────────────────────────────────────
-Source: "ui_qt.py";       DestDir: "{app}"; Flags: ignoreversion
+Source: "run_gui.py";      DestDir: "{app}"; Flags: ignoreversion
+Source: "ui_qt_design.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "font_checker.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "fonts\*";         DestDir: "{app}\fonts"; Flags: ignoreversion recursesubdirs
 Source: "widgets_qt.py";  DestDir: "{app}"; Flags: ignoreversion
 Source: "presenter.py";   DestDir: "{app}"; Flags: ignoreversion
 Source: "appconfig.py";   DestDir: "{app}"; Flags: ignoreversion
@@ -65,9 +68,9 @@ Source: "config_default.ini"; DestDir: "{app}"; DestName: "config.ini"; Flags: i
 Source: "app_icon.ico";       DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#AppName}\{#AppName}";                          Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"; IconFilename: "{app}\app_icon.ico"
+Name: "{autoprograms}\{#AppName}\{#AppName}";                          Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\run_gui.py"""; WorkingDir: "{app}"; IconFilename: "{app}\app_icon.ico"
 Name: "{autoprograms}\{#AppName}\{cm:UninstallProgram,{#AppName}}";    Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}";                                       Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"; Tasks: desktopicon; IconFilename: "{app}\app_icon.ico"
+Name: "{autodesktop}\{#AppName}";                                       Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\run_gui.py"""; WorkingDir: "{app}"; Tasks: desktopicon; IconFilename: "{app}\app_icon.ico"
 
 [Run]
 ; Step 1: Upgrade pip
@@ -98,7 +101,7 @@ Filename: "python"; Parameters: "-c ""import subprocess,sys,os; base=os.getcwd()
 Filename: "python"; Parameters: "-c ""import json,os; mdir=os.path.join(os.getcwd(),'models','kotoba-whisper-v2.0-ct2'); cfg_path=os.path.join(mdir,'preprocessor_config.json'); os.path.exists(mdir) and not os.path.exists(cfg_path) and json.dump({{'chunk_length':30,'feature_extractor_type':'WhisperFeatureExtractor','feature_size':128,'hop_length':160,'n_samples':480000,'nb_max_frames':3000,'padding_side':'right','padding_value':0.0,'processor_class':'WhisperProcessor','return_attention_mask':False,'sampling_rate':16000}},open(cfg_path,'w'),indent=2)"""; WorkingDir: "{app}"; StatusMsg: "Configuring kotoba-whisper feature extractor..."; Flags: postinstall waituntilterminated runascurrentuser
 
 ; Launch app after install (optional)
-Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\ui_qt.py"""; WorkingDir: "{app}"; Description: "Launch {#AppName} now"; Flags: postinstall nowait skipifsilent unchecked
+Filename: "{code:GetPythonW}"; Parameters: "-X utf8 ""{app}\run_gui.py"""; WorkingDir: "{app}"; Description: "Launch {#AppName} now"; Flags: postinstall nowait skipifsilent unchecked
 
 ; ============================================================
 [Code]

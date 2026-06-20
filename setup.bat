@@ -161,7 +161,7 @@ if not "%PROXY_HOST%"=="" (
 (
     echo @echo off
     echo cd /d "%%~dp0"
-    echo python -X utf8 ui_qt.py
+    echo python -X utf8 run_gui.py
     echo if %%errorlevel%% neq 0 pause
 ) > "%SCRIPT_DIR%run.bat"
 echo  OK: run.bat created
@@ -250,7 +250,7 @@ if %ERROR% equ 0 (
     echo  ^|                                        ^|
     echo  ^|  To launch:                            ^|
     echo  ^|    Double-click run.bat                ^|
-    echo  ^|    or: python ui_qt.py                 ^|
+    echo  ^|    or: python run_gui.py               ^|
     echo  ^|                                        ^|
     echo  ^|  Set API Key in the Summary/API tab    ^|
     echo  ^|  before starting recording.            ^|

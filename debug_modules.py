@@ -271,8 +271,8 @@ def test_loopback(probe_sec: float = 3.0):
 # ── test_ui ───────────────────────────────────────────────────────────────────
 
 def test_ui():
-    """Launch ui_qt.py with extra debug logging (closes after 3 seconds)."""
-    section("TEST: ui_qt.py (3-second launch test)")
+    """Launch ui_qt_design.py with extra debug logging (closes after 3 seconds)."""
+    section("TEST: ui_qt_design.py (3-second launch test)")
 
     env = os.environ.copy()
     env["QT_LOGGING_RULES"] = "*.debug=true"
@@ -289,7 +289,7 @@ from PyQt6.QtCore import QTimer
 app = QApplication(sys.argv)
 from appconfig import AppConfig
 from presenter import Presenter
-from ui_qt import App
+from ui_qt_design import App
 config = AppConfig()
 presenter = Presenter(config)
 window = App(presenter)

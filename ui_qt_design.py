@@ -1,7 +1,8 @@
 """
-ui_qt.py – PyQt6 View layer for Sound2Text.
+ui_qt_design.py – PyQt6 View layer for Sound2Text (Design-B, current UI).
 
 Implements ViewProtocol (defined in presenter.py) using PyQt6.
+Launched via run_gui.py. The old ui_qt.py view is deprecated/removed.
 No customtkinter / tkinter imports.
 """
 from __future__ import annotations

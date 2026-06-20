@@ -21,7 +21,7 @@ Inter-process communication is done via **signal files** (not pipes or sockets).
 
 ```
 ┌─────────────────────────────────────┐
-│  ui_qt.py  (main process, PyQt6)    │
+│  ui_qt_design.py (main proc, PyQt6) │
 │  ┌──────────────┐  ┌─────────────┐  │
 │  │  presenter.py│  │ widgets_qt  │  │
 │  │  (Presenter) │  │ (VU,7-seg)  │  │
@@ -196,13 +196,14 @@ hallucinations are filtered before they reach the transcript or LLM correction.
 ## MVP Pattern
 
 ```
-ui_qt.py      View  — PyQt6 display only, no business logic
-presenter.py  Presenter — all business logic, process management
-appconfig.py  Model/Config — ConfigParser wrapper + lazy CUDA detection
+ui_qt_design.py  View  — PyQt6 display only, no business logic (Design-B, current)
+presenter.py     Presenter — all business logic, process management
+appconfig.py     Model/Config — ConfigParser wrapper + lazy CUDA detection
 ```
 
 **Entry points:**
-- `python ui_qt.py` — GUI mode (default)
+- `python run_gui.py` — GUI mode (default). Registers the bundled fonts, then
+  launches the `ui_qt_design.py` view. (The old `ui_qt.py` view is removed.)
 - `python start.py [--model M] [--llm M] [--language L] [--seconds N]` — CLI mode
   (auto-start, no GUI). `--seconds N` auto-stops after N s then waits for
   processing (non-interactive testing); otherwise stop with Ctrl+C.
@@ -213,7 +214,9 @@ appconfig.py  Model/Config — ConfigParser wrapper + lazy CUDA detection
 
 | File | Role |
 |------|------|
-| `ui_qt.py` | PyQt6 main window (View). Implements `ViewProtocol`. |
+| `run_gui.py` | GUI launcher: registers bundled fonts, then starts the `ui_qt_design.py` view. **Default entry point.** |
+| `ui_qt_design.py` | PyQt6 main window (View, Design-B). Implements `ViewProtocol`. |
+| `font_checker.py` | Checks/installs the required fonts before launch (used by `run_gui.py`). |
 | `widgets_qt.py` | Custom QPainter widgets: `VUMeterWidget`, seven-segment clock |
 | `presenter.py` | All business logic + subprocess lifecycle. Defines `ViewProtocol`. |
 | `pipeline.py` | **Real-time engine**: loopback + mic capture, VAD, segment disk-cache queue, Whisper, per-segment LLM correction, glossary, raw→WAV→MP3, transcript/corrected files |
