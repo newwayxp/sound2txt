@@ -1,6 +1,6 @@
 # Sound2Text — Architecture Reference
 
-> Version: v1.5.3 (updated 2026-06-20)
+> Version: v1.5.4 (updated 2026-06-20)
 > Update this file before each session-limit approaches, by reading only the files affected by recent changes.
 
 ---
