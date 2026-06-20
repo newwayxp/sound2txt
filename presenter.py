@@ -190,6 +190,24 @@ class Presenter:
         CUDA is validated on demand when the user picks it in the settings UI."""
         return
 
+    def prewarm_pipeline(self) -> None:
+        """Spawn the long-lived ``pipeline.py`` at app startup so CUDA and the
+        Whisper model load **in the background** (inside the child process) before
+        the user ever clicks Start — making the first recording start instant.
+
+        Non-blocking: ``_ensure_pipeline_running`` only does ``subprocess.Popen``
+        and returns immediately; the model load happens in the child. No session
+        signal is written, so the pipeline simply loads and idles in its loop
+        waiting for ``.pipeline_session``. The device comes from config as-is and
+        the pipeline still falls back to CPU at runtime if a CUDA load fails."""
+        try:
+            self._ensure_pipeline_running()
+            self._view and self._view.put_log(
+                "[UI] pipeline を事前起動（CUDA・モデルをバックグラウンドで読込中）"
+            )
+        except Exception as e:
+            _log("SYS", "WARN", f"pipeline prewarm failed: {e}")
+
     def initialize(self) -> None:
         """Called once after warm_up(), on the Qt main thread. Reflects the saved
         device in the UI as-is — startup must NOT probe CUDA. Whatever the config
@@ -314,8 +332,9 @@ class Presenter:
             if self._view:
                 self._view.schedule(lambda: self._view.hide_onair())
             return
+        # Starting the preview: mic is live, so show ON AIR (not MIC OFF).
         if self._view:
-            self._view.schedule(lambda: self._view.hide_onair())
+            self._view.schedule(lambda: self._view.show_onair())
         self._start_meter()
 
     def stop_mic(self) -> None:

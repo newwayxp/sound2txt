@@ -20,9 +20,10 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QColor, QFont, QPalette
 from PyQt6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog,
-    QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPushButton, QRadioButton, QSlider, QSizePolicy,
-    QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+    QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
+    QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QRadioButton,
+    QSlider, QSizePolicy, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout,
+    QWidget,
 )
 
 from appconfig import BASE, AppConfig
@@ -509,6 +510,14 @@ class App(QMainWindow):
                 self._presenter.warm_up()   # heavy, view-free, result cached
             except Exception as e:
                 self.put_log(f"[ERROR] Startup detection failed: {e}")
+            # Pre-start the heavy pipeline service (CUDA + Whisper model) now, in
+            # the background, so the first Start is instant. Done BEFORE enabling
+            # Start so the process handle exists and Start just reuses it. The
+            # Popen is non-blocking; the model loads inside the child process.
+            try:
+                self._presenter.prewarm_pipeline()
+            except Exception as e:
+                self.put_log(f"[WARN] pipeline prewarm failed: {e}")
             # Finish on the Qt main thread — initialize() touches view widgets.
             self.schedule(self._finish_async_init)
 
@@ -588,34 +597,38 @@ class App(QMainWindow):
         self.put_log(f"[UI-STATE] Stop: {'enabled' if v else 'disabled'}")
 
     def show_onair(self) -> None:
-        """Mic recording active — LED turns red."""
+        """Mic recording active — whole panel glows red, dot lit red."""
         if hasattr(self, "_onair_panel"):
             self._onair_panel.setVisible(True)
             self._onair_panel.setStyleSheet(
-                "QFrame#onairPanel { background-color: #1A1216; border: 1px solid #3A2326; border-radius: 7px; padding: 10px 12px; }"
+                "QFrame#onairPanel { background-color: #2A1418; border: 1px solid #FF4848; border-radius: 7px; padding: 10px 12px; }"
             )
+            self._set_onair_glow(True)
         if hasattr(self, "_vumeter_bar"):
             self._vumeter_bar.setVisible(True)
             self._vu_meter.show()
         if hasattr(self, "_onair_label"):
             self._onair_label.setText(self._mic_state_text(True))
             self._onair_label.setStyleSheet(
-                "color: #FF7A72; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; background: transparent;"
+                "color: #FF8A82; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; background: transparent;"
             )
+        # Dot lit red and visible while ON AIR — circular (pixel radius = size/2).
+        self._onair_dot.setVisible(True)
         self._onair_dot.setStyleSheet(
             "background-color: #FF4848;"
-            "border-radius: 50%;"
+            "border-radius: 6px;"
             "border: none;"
         )
         self.put_log("[UI-STATE] ON AIR: recording (red)")
 
     def hide_onair(self) -> None:
-        """Mic recording stopped — LED turns blue, VU resets to 0."""
+        """Mic off — plain panel (no glow), dot hidden, VU resets to 0."""
         if hasattr(self, "_onair_panel"):
             self._onair_panel.setVisible(True)
             self._onair_panel.setStyleSheet(
                 "QFrame#onairPanel { background-color: #0F1722; border: 1px solid #1E2A3A; border-radius: 7px; padding: 10px 12px; }"
             )
+            self._set_onair_glow(False)
         if hasattr(self, "_vumeter_bar"):
             self._vumeter_bar.setVisible(True)
         if hasattr(self, "_onair_label"):
@@ -623,14 +636,24 @@ class App(QMainWindow):
             self._onair_label.setStyleSheet(
                 "color: #5CB0FF; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; background: transparent;"
             )
-        self._onair_dot.setStyleSheet(
-            "background-color: #3B9EFF;"
-            "border-radius: 50%;"
-            "border: none;"
-        )
+        # MIC OFF: the dot on the right is not shown at all.
+        self._onair_dot.setVisible(False)
         self._vu_meter.set_level(0.0)   # discard any in-flight level update
         self._vu_meter.show()
         self.put_log("[UI-STATE] ON AIR: idle (blue)")
+
+    def _set_onair_glow(self, on: bool) -> None:
+        """Apply (or clear) a red glow around the whole ON AIR panel."""
+        if not hasattr(self, "_onair_panel"):
+            return
+        if on:
+            glow = QGraphicsDropShadowEffect(self._onair_panel)
+            glow.setBlurRadius(26)
+            glow.setOffset(0, 0)
+            glow.setColor(QColor(255, 72, 72, 200))
+            self._onair_panel.setGraphicsEffect(glow)
+        else:
+            self._onair_panel.setGraphicsEffect(None)
 
     def set_onair_level(self, level: float) -> None:
         self._vu_meter.set_level(level)
@@ -1104,7 +1127,8 @@ class App(QMainWindow):
         onair_layout.addStretch()
 
         self._onair_dot = QLabel(self._onair_panel)
-        self._onair_dot.setFixedSize(11, 11)
+        # Even size so a pixel border-radius (= size/2) yields a true circle.
+        self._onair_dot.setFixedSize(12, 12)
         onair_layout.addWidget(self._onair_dot)
         vbox.addWidget(self._onair_panel)
 
@@ -1864,11 +1888,29 @@ class App(QMainWindow):
 
 if __name__ == "__main__":
     import sys
+    from pathlib import Path
     from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtGui import QFontDatabase
     from appconfig import AppConfig
     from presenter import Presenter
 
     app_qt = QApplication(sys.argv)
+
+    # Register bundled fonts so the design styles (Share Tech Mono timers,
+    # JetBrains Mono transcript) resolve. Without this, a direct
+    # `python ui_qt_design.py` launch falls back to a default font; only
+    # run_gui.py used to load them.
+    _fonts_dir = Path(__file__).parent / "fonts"
+    for _font_file in (
+        "ShareTechMono-Regular.ttf",
+        "JetBrainsMono-Regular.ttf",
+        "JetBrainsMono-Bold.ttf",
+        "JetBrainsMono-BoldItalic.ttf",
+    ):
+        _fp = _fonts_dir / _font_file
+        if _fp.exists():
+            QFontDatabase.addApplicationFont(str(_fp))
+
     _font_family = (
         '"SF Pro Text", "Helvetica Neue", "Hiragino Sans", "PingFang SC"'
         if sys.platform == "darwin" else
