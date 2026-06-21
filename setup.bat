@@ -71,6 +71,19 @@ if %errorlevel% neq 0 (
 )
 echo  OK: Packages installed
 
+echo.
+echo  Checking optional Nemotron/NeMo backend...
+python "%SCRIPT_DIR%check_nemo.py"
+if %errorlevel% equ 0 (
+    echo  OK: NeMo ASR found. Nemotron backend can be used.
+) else (
+    echo  INFO: NeMo ASR not found in checked environments.
+    echo  INFO: Nemotron will fall back to faster-whisper until NeMo is installed.
+    echo  INFO: Optional install:
+    echo        pip install Cython packaging
+    echo        pip install "nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main"
+)
+
 rem --------------------------------------------------
 rem Step 3: Patch ctranslate2 + verify faster-whisper
 rem --------------------------------------------------

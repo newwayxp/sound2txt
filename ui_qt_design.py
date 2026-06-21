@@ -527,8 +527,7 @@ class App(QMainWindow):
     def _finish_async_init(self) -> None:
         """Runs on the Qt main thread after warm_up() completes."""
         self._presenter.initialize()
-        self.set_start_enabled(True)
-        self.put_log("[UI] Ready")
+        self.put_log("[UI] Waiting for pipeline/model ready")
 
     # ── ViewProtocol ──────────────────────────────────────────────────────────
 

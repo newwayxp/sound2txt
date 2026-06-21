@@ -202,6 +202,7 @@ class Presenter:
         the pipeline still falls back to CPU at runtime if a CUDA load fails."""
         try:
             self._ensure_pipeline_running()
+            self._wait_pipeline_ready_async()
             self._view and self._view.put_log(
                 "[UI] pipeline を事前起動（CUDA・モデルをバックグラウンドで読込中）"
             )
@@ -527,6 +528,7 @@ class Presenter:
     _PIPELINE_SUBTITLE = os.path.join(BASE, ".pipeline_subtitle")
     _PIPELINE_SESSION  = os.path.join(BASE, ".pipeline_session")
     _PIPELINE_STOP     = os.path.join(BASE, ".pipeline_stop")
+    _PIPELINE_READY    = os.path.join(BASE, ".pipeline_ready")
     _PIPELINE_LOCK     = os.path.join(BASE, ".pipeline.lock")
 
     def _pipeline_lock_held(self) -> bool:
@@ -556,6 +558,31 @@ class Presenter:
         except Exception:
             return False
 
+    def _wait_pipeline_ready_async(self, timeout: float = 300.0) -> None:
+        """Enable Start only after pipeline.py has finished loading ASR/audio."""
+        if self._view is not None:
+            self._view.schedule(lambda: self._view.set_start_enabled(False))
+
+        def _wait() -> None:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if os.path.exists(self._PIPELINE_READY):
+                    if self._view is not None:
+                        self._view.schedule(lambda: self._view.set_start_enabled(True))
+                        self._view.put_log("[UI] Ready")
+                    return
+                if self._pipeline_proc and self._pipeline_proc.poll() is not None:
+                    if self._view is not None:
+                        self._view.put_log(
+                            f"[UI] [ERROR] pipeline exited before ready code={self._pipeline_proc.returncode}"
+                        )
+                    return
+                time.sleep(0.2)
+            if self._view is not None:
+                self._view.put_log("[UI] pipeline is still loading the ASR model; Start remains disabled")
+
+        threading.Thread(target=_wait, daemon=True).start()
+
     def _ensure_pipeline_running(self) -> None:
         """pipeline.py が起動していなければ起動する。"""
         if self._pipeline_proc and self._pipeline_proc.poll() is None:
@@ -563,6 +590,10 @@ class Presenter:
         # stop シグナルをクリア
         try:
             os.remove(self._PIPELINE_STOP)
+        except FileNotFoundError:
+            pass
+        try:
+            os.remove(self._PIPELINE_READY)
         except FileNotFoundError:
             pass
         if self._pipeline_lock_held():
@@ -694,6 +725,11 @@ class Presenter:
         if self._running:
             return
         if self._view is None:
+            return
+        if not os.path.exists(self._PIPELINE_READY):
+            self._ensure_pipeline_running()
+            self._wait_pipeline_ready_async()
+            self._view.put_log("[UI] pipeline/model is still loading; please wait for Ready")
             return
 
         # Clean up signal files from any previous session.
@@ -1355,11 +1391,20 @@ class Presenter:
         _pl_seg_cached = re.compile(r"seg cached\+queued: .* dur=([\d.]+)s,")
         _pl_finalized  = re.compile(r"Segment finalized: ([\d.]+)s (?:system|mic) audio")
 
+        _pl_noise = (
+            "OneLogger:",
+            "No exporters were provided.",
+            "triton not found; flop counting will not work",
+            "Inference prompt set to",
+            "Transcribing: 0it",
+        )
         for line in proc.stdout:
             text = line.rstrip()
             if not text:
                 continue
 
+            if prefix == "[PL]" and any(marker in text for marker in _pl_noise):
+                continue
             # 構造化ログを先に解析し、正規表現は msg 部分に適用する
             parsed = parse_log_line(text)
             search_text = parsed[3] if parsed else text  # msg or raw text
