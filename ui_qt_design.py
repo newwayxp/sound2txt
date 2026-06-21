@@ -1646,11 +1646,44 @@ class App(QMainWindow):
 
     # ── Transcript tab ────────────────────────────────────────────────────────
 
+    _TL_LANGS = [("zh", "tl_zh"), ("ja", "tl_ja"), ("en", "tl_en")]
+
     def _build_tab_transcript(self, parent: QWidget) -> QWidget:
         w = QWidget()
         vbox = QVBoxLayout(w)
         vbox.setContentsMargins(8, 8, 8, 8)
         vbox.setSpacing(4)
+
+        # ── Translation toolbar (Transcript tab only) ─────────────────────────
+        # Toggling this routes the tab to a SEPARATE translated file; it never
+        # affects the Corrected / Minutes tabs or their files.
+        tbar = QHBoxLayout()
+        tbar.setContentsMargins(2, 0, 2, 0)
+        tbar.setSpacing(8)
+
+        self._translate_btn = self._make_pill(t("translate_toggle"))
+        self._translate_btn.clicked.connect(self._on_translate_toggle)
+        tbar.addWidget(self._translate_btn)
+
+        to_lbl = QLabel(t("translate_to"))
+        to_lbl.setStyleSheet("color: #7E8A99; font-size: 11px; background: transparent;")
+        tbar.addWidget(to_lbl)
+
+        self._tl_lang = self._presenter._config.get(
+            "translate", "target_lang", fallback="zh").strip().lower()
+        if self._tl_lang not in ("zh", "ja", "en"):
+            self._tl_lang = "zh"
+        self._tl_bg   = QButtonGroup(w)
+        self._tl_btns: dict[str, QPushButton] = {}
+        for code, key in self._TL_LANGS:
+            b = self._make_pill(t(key))
+            b.clicked.connect(lambda _c=False, c=code: self._on_translate_lang(c))
+            self._tl_bg.addButton(b)
+            self._tl_btns[code] = b
+            tbar.addWidget(b)
+        self._tl_btns[self._tl_lang].setChecked(True)
+        tbar.addStretch()
+        vbox.addLayout(tbar)
 
         self._transcript_view = QTextEdit()
         self._transcript_view.setReadOnly(True)
@@ -1817,6 +1850,22 @@ class App(QMainWindow):
         """Toggle mic mixing on/off via On Air button."""
         target = getattr(self._presenter, "toggle_mic_preview", self._presenter.toggle_mic)
         threading.Thread(target=target, daemon=True).start()
+
+    def _on_translate_toggle(self) -> None:
+        """Enable/disable Transcript-tab live translation."""
+        enabled = self._translate_btn.isChecked()
+        lang    = getattr(self, "_tl_lang", "zh")
+        threading.Thread(
+            target=lambda: self._presenter.set_translate(enabled, lang), daemon=True
+        ).start()
+
+    def _on_translate_lang(self, code: str) -> None:
+        """Change the translation target language (re-translates if ON)."""
+        self._tl_lang = code
+        if self._translate_btn.isChecked():
+            threading.Thread(
+                target=lambda: self._presenter.set_translate(True, code), daemon=True
+            ).start()
 
     def show_ptt_button(self) -> None:
         """Recording session started; show the mic-off control as the click target."""

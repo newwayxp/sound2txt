@@ -33,6 +33,7 @@ Inter-process communication is done via **signal files** (not pipes or sockets).
    │  pipeline.py        long-lived recording  │
    │                     core (see below)      │
    │  summarizer.py      LLM meeting minutes    │
+   │  translator.py      Transcript-tab live xlate │
    │  subtitle_window.py live subtitle overlay  │
    │  transcriber.py     on-demand file → text  │
    └───────────────────────────────────────────┘
@@ -224,6 +225,7 @@ appconfig.py     Model/Config — ConfigParser wrapper + lazy CUDA detection
 | `glossary.py` | Deterministic 誤→正 replacement (`resolve_glossary_file`/`load_glossary`/`apply_glossary`); works even when the LLM is down |
 | `i18n.py` | Translation dict + `t()` function, `_LANG` global |
 | `summarizer.py` | Child process: LLM correction (legacy step) + meeting notes from the live corrected file |
+| `translator.py` | Child process: **Transcript-tab live translation**. Watches the raw transcript, LLM-translates each line into `zh`/`ja`/`en`, writes a separate `translated_<ts>.txt`. Does **not** touch corrected/minutes. |
 | `subtitle_window.py` | Child process: live subtitle overlay window (PyQt6) |
 | `transcriber.py` | On-demand transcription of existing audio files; exports `LANG_ALIAS` |
 | `device_utils.py` | WASAPI device auto-selection (`select_active_device`) |
@@ -254,11 +256,16 @@ by the presenter unless noted.
 | `.last_corrected` | pipeline → presenter | Path to the live corrected `.txt` (polled for the Corrected tab; also the minutes input). |
 | `.last_final_corrected` | summarizer → presenter | Path to the optional post-session `final_corrected_<ts>.txt`. |
 | `.last_language` | pipeline | Detected/locked language code (reused next session). |
+| `.translate_target` | presenter → translator | Presence = Transcript-tab live translation ON; content = target lang `zh`/`ja`/`en`. Removing it ends translation. |
+| `.last_translated` | translator → presenter | Path to the live `translated_<ts>.txt` (polled for the Transcript tab when translation is ON). |
 
 `presenter.start()` deletes stale session signals (`.pipeline_stop`,
-`.last_transcript`, `.last_language`, `.mic_onair`, `.last_corrected`) before
-writing `.pipeline_session`, so a polling thread can never show last session's
-content. **Add any new session signal to that cleanup list.**
+`.last_transcript`, `.last_language`, `.mic_onair`, `.last_corrected`,
+`.last_translated`) before writing `.pipeline_session`, so a polling thread can
+never show last session's content. **Add any new session signal to that cleanup
+list.** (`.translate_target` is intentionally **not** cleared — it is the
+persistent ON/OFF flag; if translation is left on, `start()` re-spawns the
+translator for the new session.)
 
 If another Presenter already owns a running `pipeline.py` (for example GUI is
 open and CLI is started), the new Presenter reuses that external pipeline and
@@ -322,6 +329,26 @@ new session yet.
 - VU click → toggles `.mic_onair`. While on, the mic thread feeds its own VAD;
   segments are transcribed separately and merged into the corrected file by
   timestamp. Mic PCM is also kept for MP3 mixing (`adelay` per On-Air offset).
+
+### Transcript-tab live translation (`translator.py`)
+A toolbar in the **Transcript tab only** (a 翻訳 toggle + a 中文/日本語/English
+selector) calls `presenter.set_translate(enabled, lang)`. This is deliberately
+isolated from correction and minutes:
+
+- `set_translate` writes the target lang to `.translate_target` and spawns
+  `translator.py`; OFF removes the signal and kills the process.
+- `translator.py` watches `.last_transcript`, translates **every complete line**
+  (backlog first, then live) via the `[summary]` LLM (its own self-contained
+  OpenAI/Ollama client — summarizer is untouched), preserving the `[HH:MM:SS]`
+  prefix, and appends to a separate `translated_<ts>.txt`; on LLM failure a line
+  falls back to its original text. It points `.last_translated` at the output.
+- `_poll_corrected_file` routes the Transcript tab to **exactly one** source:
+  `.last_translated` when translation is ON (so only translated text shows), else
+  the raw `.last_transcript`. The **Corrected/Minutes tabs and files are never
+  touched** — translation is per-segment LLM work that runs in parallel and is
+  written to its own directory.
+- Trade-off: ON means an LLM call per segment (on top of correction); it is
+  opt-in, and the call reuses the same retry/backoff that absorbs 429s.
 
 ---
 
@@ -413,6 +440,7 @@ Gitignored; `config_default.ini` is the committed template. Sections in use:
 | `[summary]` | `mode` (openai/ollama), `api_base`/`api_key`/`model` or `ollama_url`/`ollama_model`, `enable_correction`, `enable_online_refine`, `online_refine_terms`, `corrected_dir`, `summary_dir`, `final_corrected_dir`, `term_cache_dir` |
 | `[models]` | per-language model override: `ja` / `zh` / `en` |
 | `[subtitle]` | VAD tuning: `silence_sec`, `min_accum_sec`, `max_sec`, `min_speech_sec` |
+| `[translate]` | Transcript-tab live translation: `translated_dir`, `target_lang` (zh/ja/en). LLM uses the `[summary]` connection settings. |
 | `[network]` | `https_proxy`, `http_proxy`, `ssl_verify` |
 | `[logging]` | `log_file`, `log_level`, `ui_show` |
 
@@ -463,6 +491,7 @@ them at `audio_dir` / `transcript_dir` / `[summary] corrected_dir` / `summary_di
 | Final corrected text | `final_corrected_<ts>.txt` in `[summary] final_corrected_dir` (default = `corrected_dir`; only when online refinement succeeds) |
 | Downloaded term cache | `term_cache_dir/*.json` (default `~/Documents/Sound2Text/term_cache`) |
 | Meeting notes | `summary_<ts>.md` |
+| Translated transcript | `translated_<ts>.txt` in `[translate] translated_dir` (only while translation mode is used; separate from the raw transcript) |
 | Session audio | `audio_<ts>.mp3` (WAV intermediate deleted) |
 | Segment cache (transient) | `.seg_cache_<ts>/seg_*.wav` (deleted as consumed; dir removed at session end) |
 | Raw session buffer (transient) | `.tmp_audio_<ts>.raw` (converted then deleted) |

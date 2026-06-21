@@ -57,6 +57,7 @@ Source: "log_util.py";        DestDir: "{app}"; Flags: ignoreversion
 Source: "mic_recorder.py";    DestDir: "{app}"; Flags: ignoreversion
 Source: "transcriber.py";     DestDir: "{app}"; Flags: ignoreversion
 Source: "summarizer.py";      DestDir: "{app}"; Flags: ignoreversion
+Source: "translator.py";      DestDir: "{app}"; Flags: ignoreversion
 Source: "subtitle_window.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "device_utils.py";    DestDir: "{app}"; Flags: ignoreversion
 ; ── Tools ──────────────────────────────────────────────────────────────────────
