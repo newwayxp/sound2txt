@@ -36,15 +36,17 @@ def _dim_color(hex_color: str, factor: int = 9) -> QColor:
 
 class VUBarMeterWidget(QWidget):
     """
-    Design-B style VU meter: two columns of vertical bars stacked bottom-to-top.
+    Design-B style VU meter: two columns of vertical bars that fill bottom→top.
 
-    All 10 segments per column are always visible with fixed colors:
+    The mic level controls **how many segments light up from the bottom**, not the
+    panel's overall brightness. Zone colour is fixed by POSITION:
     - Green #3ddc84 (segments 0-5)
     - Yellow #ffb454 (segments 6-7)
     - Red #ff5a52 (segments 8-9)
 
-    Overall opacity (brightness) varies with mic level: 0.18 (silent) → 1.0 (loud).
-    Segment 6 (first yellow) blinks when active.
+    Segments below the current level glow at full colour; segments above it stay a
+    dim "unlit rail". A peak-hold cap marks the highest recent segment, and the two
+    columns use slightly different ballistics so they bounce like a stereo meter.
 
     Emits clicked() when the widget is clicked (PTT stop trigger).
     """
@@ -54,12 +56,17 @@ class VUBarMeterWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(74)
+        # Tall enough to show all 10 segments at a comfortable size; the geometry
+        # below also scales to whatever height the layout actually grants.
+        self.setFixedHeight(124)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._level = 0.0
-        self._smoothed = 0.0
-        self._blink_phase = 0  # for segment 6 blink animation
+        # Two channels with slightly different ballistics → lively stereo bounce.
+        self._smoothed   = 0.0
+        self._smoothed_b = 0.0
+        self._peak       = 0.0   # peak-hold per channel, decays slowly
+        self._peak_b     = 0.0
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -70,10 +77,15 @@ class VUBarMeterWidget(QWidget):
         self._level = max(0.0, min(float(v), 1.0))
 
     def _tick(self) -> None:
-        """Smooth the level, update blink phase, and refresh display."""
-        k = 0.55 if self._level > self._smoothed else 0.20
-        self._smoothed += (self._level - self._smoothed) * k
-        self._blink_phase = (self._blink_phase + 1) % 60  # ~1s blink cycle at 33 FPS
+        """Smooth each channel (snap up fast, fall slow) and decay the peak holds."""
+        # Channel A: faster; Channel B: slightly slower → the columns don't move
+        # in lockstep, which reads as a real meter rather than one solid block.
+        ka = 0.55 if self._level > self._smoothed else 0.20
+        self._smoothed += (self._level - self._smoothed) * ka
+        kb = 0.45 if self._level > self._smoothed_b else 0.16
+        self._smoothed_b += (self._level - self._smoothed_b) * kb
+        self._peak   = max(self._smoothed,   self._peak   - 0.010)
+        self._peak_b = max(self._smoothed_b, self._peak_b - 0.010)
         self.update()
 
     def paintEvent(self, _event) -> None:
@@ -83,15 +95,18 @@ class VUBarMeterWidget(QWidget):
 
         w, h = self.width(), self.height()
 
-        # Bar dimensions
-        seg_height = 7
-        seg_gap = 3
         col_gap = 12
         label_width = 24
 
         # Padding
         h_pad = 8
         v_pad = 8
+
+        # Derive segment geometry from the available height so all 10 segments
+        # always fit regardless of the widget's height (taller → bigger bars).
+        pitch      = (h - 2 * v_pad) / self.SEGMENTS   # per-segment vertical step
+        seg_gap    = max(2.0, pitch * 0.30)
+        seg_height = max(3, int(pitch - seg_gap))
 
         # Available width for two columns
         avail_width = w - h_pad * 2 - label_width
@@ -103,45 +118,44 @@ class VUBarMeterWidget(QWidget):
         col2_x = col1_x + col_width + col_gap
         label_x = w - label_width + 2
 
-        # Compute overall opacity based on level: 0.18 (silent) → 1.0 (loud)
-        opacity = 0.18 + self._smoothed * (1.0 - 0.18)
-        overall_alpha = int(255 * opacity)
+        # Level → number of lit segments, counted from the BOTTOM up. Louder =
+        # taller column (not a brighter panel). Colour is fixed by POSITION.
+        def _zone(seg: int) -> tuple[int, int, int]:
+            if seg < 6:
+                return 0x3d, 0xdc, 0x84   # green
+            if seg < 8:
+                return 0xff, 0xb4, 0x54   # amber
+            return 0xff, 0x5a, 0x52       # red
 
-        # Determine if segment 6 should blink (when volume > 0)
-        blink_on = (self._blink_phase < 30) if self._smoothed > 0.05 else True
-
-        # Draw two columns with fixed colors
-        for col in range(2):
-            col_x = col1_x if col == 0 else col2_x
-
+        def draw_column(col_x: int, level: float, peak: float) -> None:
+            lit = level * self.SEGMENTS   # fractional → the top segment fades in
             for seg in range(self.SEGMENTS):
-                y = h - v_pad - (seg + 1) * (seg_height + seg_gap)
+                y = int(h - v_pad - seg * pitch - seg_height)
+                r, g, b = _zone(seg)
+                frac = max(0.0, min(1.0, lit - seg))
+                # Unlit segments still render their zone colour as a dim rail, so the
+                # green→amber→red ladder is visible bottom→top at all times; lit
+                # segments glow much brighter on top of it.
+                alpha = int(110 + 145 * frac) if frac > 0 else 60
+                painter.fillRect(col_x, y, bar_width, seg_height,
+                                 QColor(r, g, b, alpha))
+            # Peak-hold cap: bright tick at the highest recent segment.
+            pseg = int(peak * self.SEGMENTS)
+            if pseg > 0:
+                pidx = min(pseg, self.SEGMENTS) - 1
+                pr, pg, pb = (0x9c, 0xff, 0xc8) if pidx < 6 else _zone(pidx)
+                py = int(h - v_pad - pidx * pitch - seg_height)
+                painter.fillRect(col_x, py, bar_width, 2, QColor(pr, pg, pb, 235))
 
-                # Fixed color mapping
-                if seg < 6:  # Green zone
-                    color = QColor("#3ddc84")
-                elif seg < 8:  # Yellow zone
-                    color = QColor("#ffb454")
-                else:  # Red zone
-                    color = QColor("#ff5a52")
-
-                # Apply overall brightness + special blink for segment 6
-                if seg == 6 and not blink_on:
-                    # Blink out: darker for this segment
-                    color.setAlpha(int(overall_alpha * 0.3))
-                else:
-                    color.setAlpha(overall_alpha)
-
-                painter.fillRect(col_x, y, bar_width, seg_height, color)
+        draw_column(col1_x, self._smoothed,   self._peak)
+        draw_column(col2_x, self._smoothed_b, self._peak_b)
 
         # Draw "MIC LEVEL" label vertically on the right
         painter.save()
         painter.translate(label_x, h // 2)
         painter.rotate(-90)
-        painter.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        label_color = QColor("#5b6675")
-        label_color.setAlpha(overall_alpha)
-        painter.setPen(label_color)
+        painter.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+        painter.setPen(QColor("#8d9197"))
         # Center the rotated label on the panel's vertical axis regardless of font.
         fm = painter.fontMetrics()
         tw = fm.horizontalAdvance("MIC LEVEL")

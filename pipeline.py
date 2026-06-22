@@ -50,11 +50,13 @@ from glossary import resolve_glossary_file, load_glossary, apply_glossary
 SIGNAL_SESSION   = os.path.join(_BASE, ".pipeline_session")
 SIGNAL_STOP      = os.path.join(_BASE, ".pipeline_stop")
 SIGNAL_SESS_DONE = os.path.join(_BASE, ".pipeline_session_done")
+SIGNAL_READY     = os.path.join(_BASE, ".pipeline_ready")
 SIGNAL_LOCK      = os.path.join(_BASE, ".pipeline.lock")
 MIC_ONAIR        = os.path.join(_BASE, ".mic_onair")
 LANG_FILE          = os.path.join(_BASE, ".last_language")
 STATE_FILE         = os.path.join(_BASE, ".last_transcript")
 CORRECTED_STATE    = os.path.join(_BASE, ".last_corrected")
+SUBTITLE_FILE      = os.path.join(_BASE, ".subtitle_text")
 
 SAMPLE_RATE = 16000
 CHUNK_SIZE  = 1024
@@ -544,11 +546,9 @@ def run():
 
     # ── Import faster-whisper ─────────────────────────────────────────────────
     try:
-        from faster_whisper import WhisperModel
-    except (OSError, ImportError) as e:
-        sys_error(f"faster-whisper load failed: {e}")
-        setup_hint = "setup.bat" if sys.platform == "win32" else "setup_mac.sh"
-        sys_error(f"Run {setup_hint} to repair the installation")
+        from asr_backend import create_asr_backend, WhisperBackend
+    except Exception as e:
+        sys_error(f"ASR backend load failed: {e}")
         return
 
     # ── Device detection ──────────────────────────────────────────────────────
@@ -608,22 +608,34 @@ def run():
     # ── Load model ────────────────────────────────────────────────────────────
     model_path = _resolve_model(session_lang)
     sys_info(f"pipeline: model={model_path} device={device}")
+    _transcribe_kwargs = _make_transcribe_kwargs(model_path, device)
     try:
-        whisper = WhisperModel(model_path, device=device, compute_type=compute_type)
+        asr = create_asr_backend(cfg, model_path, device, compute_type, _transcribe_kwargs,
+                                 log_info=sys_info, log_warn=tr_warn)
     except Exception as e:
         if device == "cuda":
-            sys_info(f"CUDA unavailable ({e}), falling back to CPU")
+            sys_info(f"ASR backend unavailable on CUDA ({e}), falling back to CPU")
             device = "cpu"
             compute_type = "int8"
-            whisper = WhisperModel(model_path, device="cpu", compute_type="int8")
+            _transcribe_kwargs = _make_transcribe_kwargs(model_path, "cpu")
+            try:
+                asr = create_asr_backend(cfg, model_path, device, compute_type,
+                                         _transcribe_kwargs, log_info=sys_info,
+                                         log_warn=tr_warn)
+            except Exception as e2:
+                sys_error(f"Failed to load ASR backend: {e2}")
+                return
         else:
-            sys_error(f"Failed to load model: {e}")
+            sys_error(f"Failed to load ASR backend: {e}")
             return
-    sys_info(f"model ready (device={device})")
+    if getattr(asr, "name", "") == "whisper":
+        device = getattr(asr, "device", device)
+        compute_type = getattr(asr, "compute_type", compute_type)
+    sys_info(f"model ready (backend={getattr(asr, 'name', 'unknown')} device={device})")
     _current_model_lang = session_lang
-    _transcribe_kwargs = _make_transcribe_kwargs(model_path, device)
-    sys_info(f"transcribe: beam={_transcribe_kwargs['beam_size']} "
-             f"vad={_transcribe_kwargs['vad_parameters']}")
+    if getattr(asr, "name", "") == "whisper":
+        sys_info(f"transcribe: beam={_transcribe_kwargs['beam_size']} "
+                 f"vad={_transcribe_kwargs['vad_parameters']}")
 
     # ── Vocabulary ────────────────────────────────────────────────────────────
     vocab_file = os.path.expanduser(cfg.get("paths", "vocab_file", fallback="").strip())
@@ -665,6 +677,48 @@ def run():
         "cur_buf":      [],   # list[np.ndarray] — current on-air audio accumulator
         "onair_offset": None, # float | None — session-relative offset in seconds when On Air started
     }
+    _live_streams: dict[str, object | None] = {"system": None, "mic": None}
+    _live_last: dict[str, str] = {"system": "", "mic": ""}
+    _live_lock = threading.Lock()
+
+    def _write_subtitle(text: str) -> None:
+        try:
+            with open(SUBTITLE_FILE, "w", encoding="utf-8") as f:
+                f.write(text.strip())
+        except Exception:
+            pass
+
+    def _reset_live_streams() -> None:
+        with _live_lock:
+            _live_streams["system"] = None
+            _live_streams["mic"] = None
+            _live_last["system"] = ""
+            _live_last["mic"] = ""
+        _write_subtitle("")
+
+    def _live_accept(source: str, chunk: np.ndarray) -> None:
+        if not getattr(asr, "supports_streaming", False):
+            return
+        try:
+            pcm = chunk.astype(np.int16, copy=False).tobytes()
+            with _live_lock:
+                live = _live_streams.get(source)
+                if live is None:
+                    live = asr.new_stream(session_lang)
+                    _live_streams[source] = live if live is not None else False
+                if not live:
+                    return
+                text = live.accept(pcm).strip()
+                if text and text != _live_last.get(source, ""):
+                    _live_last[source] = text
+                    label = _mic_label(session_lang) if source == "mic" else ""
+                    _write_subtitle(label + text)
+                    tr_debug(f"Nemotron partial [{source}]: {text[:80]}")
+        except Exception as e:
+            tr_debug(f"Nemotron live stream disabled for {source}: {e}")
+            with _live_lock:
+                _live_streams[source] = False
+
     _conv_threads: list[threading.Thread] = []  # non-daemon MP3 conversion threads to join
     # System audio sample counter — single-writer (system-capture), read by mic thread via GIL.
     # Counts frames at original sample_rate since session start → used for precise mic offset.
@@ -748,6 +802,7 @@ def run():
         _mic_state["segments"].clear()
         _mic_state["cur_buf"].clear()
         _mic_state["onair_offset"] = None
+        _reset_live_streams()
         sys_info(f"Session started: {session_ts}")
         sys_info(f"Audio streaming to disk: {raw_file_path}")
         sys_info(f"Transcript: {transcript_file}")
@@ -869,6 +924,7 @@ def run():
         if session_lang:
             with open(LANG_FILE, "w", encoding="utf-8") as f:
                 f.write(session_lang)
+        _reset_live_streams()
 
         # Remove the segment cache dir. By the time _close_session runs the queue
         # has been drained (main loop joins it first), so all seg files are gone;
@@ -978,7 +1034,7 @@ def run():
 
     def _transcribe_loop():
         """Background thread: transcribes audio segments in order."""
-        nonlocal session_lang, whisper, _current_model_lang, device, compute_type, _transcribe_kwargs, corrected_file
+        nonlocal session_lang, asr, _current_model_lang, device, compute_type, _transcribe_kwargs, corrected_file
 
         while True:
             item = _seg_queue.get()
@@ -1005,16 +1061,25 @@ def run():
                 t0 = time.monotonic()
                 try:
                     prompt = _initial_prompt(session_lang)
-                    segs, info = whisper.transcribe(
-                        seg_path,
-                        language       = session_lang,
-                        initial_prompt = prompt,
-                        **_transcribe_kwargs,
-                    )
-                    seg_list = list(segs)
+                    asr_result = asr.transcribe(seg_path, session_lang, prompt)
+                    info = asr_result.info
+                    seg_list = list(asr_result.segments)
 
                 except Exception as e:
-                    if device == "cuda" and ("cublas" in str(e).lower() or "cuda" in str(e).lower()):
+                    if getattr(asr, "name", "") != "whisper":
+                        tr_warn(f"Nemotron transcribe error, falling back to faster-whisper: {e}")
+                        try:
+                            _transcribe_kwargs = _make_transcribe_kwargs(model_path, device)
+                            asr = WhisperBackend(model_path, device=device,
+                                                 compute_type=compute_type,
+                                                 transcribe_kwargs=_transcribe_kwargs)
+                            asr_result = asr.transcribe(seg_path, session_lang, prompt)
+                            info = asr_result.info
+                            seg_list = list(asr_result.segments)
+                        except Exception as e2:
+                            tr_error(f"transcribe error (Whisper fallback): {e2}")
+                            continue
+                    elif device == "cuda" and ("cublas" in str(e).lower() or "cuda" in str(e).lower()):
                         tr_info(f"CUDA error, switching to CPU: {e}")
                         # The CPU model rebuild itself can fail; if it does, the
                         # error must NOT escape (it would kill the worker). Drop the
@@ -1022,11 +1087,13 @@ def run():
                         try:
                             device = "cpu"
                             compute_type = "int8"
-                            whisper = WhisperModel(model_path, device="cpu", compute_type="int8")
                             _transcribe_kwargs = _make_transcribe_kwargs(model_path, "cpu")
-                            segs, info = whisper.transcribe(
-                                seg_path, language=session_lang, **_transcribe_kwargs)
-                            seg_list = list(segs)
+                            asr = create_asr_backend(cfg, model_path, device, compute_type,
+                                                     _transcribe_kwargs, log_info=sys_info,
+                                                     log_warn=tr_warn)
+                            asr_result = asr.transcribe(seg_path, session_lang, prompt)
+                            info = asr_result.info
+                            seg_list = list(asr_result.segments)
                         except Exception as e2:
                             tr_error(f"transcribe error (CPU fallback): {e2}")
                             continue
@@ -1080,10 +1147,15 @@ def run():
                                 f.write(session_lang)
                             if _current_model_lang != session_lang:
                                 new_path = _resolve_model(session_lang)
-                                if new_path != model_path:
+                                if getattr(asr, "name", "") != "whisper":
+                                    _current_model_lang = session_lang
+                                elif new_path != model_path:
                                     tr_info(f"Switching to {session_lang} model...")
-                                    whisper = WhisperModel(new_path, device=device, compute_type=compute_type)
                                     _transcribe_kwargs = _make_transcribe_kwargs(new_path, device)
+                                    asr = create_asr_backend(cfg, new_path, device, compute_type,
+                                                             _transcribe_kwargs,
+                                                             log_info=sys_info,
+                                                             log_warn=tr_warn)
                                     _current_model_lang = session_lang
                                     tr_info("Model switched")
                     except Exception:
@@ -1232,6 +1304,7 @@ def run():
                         while _aec_buf and _now_t - _aec_buf[0][0] > _AEC_BUF_SEC:
                             _aec_buf.popleft()
 
+                _live_accept("system", chunk)
                 seg = vad.feed(chunk)
                 if seg:
                     _enqueue(seg, "system")
@@ -1249,6 +1322,11 @@ def run():
     _system_capture_thread.start()
     _system_vad_thread.start()
     sys_info("System audio threads started: capture + vad")
+    try:
+        with open(SIGNAL_READY, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except Exception as e:
+        sys_error(f"failed to write pipeline ready signal: {e}")
 
     def _drain_system_audio_queue(timeout: float = 5.0):
         # Give an in-flight stream.read() one chunk window to publish its chunk
@@ -1388,6 +1466,7 @@ def run():
 
                             if _onair and _in_sess:
                                 _mic_state["cur_buf"].append(_arr)  # record for MP3 mixing
+                                _live_accept("mic", _arr)
                                 with _mic_vad_lock:
                                     _mseg = _mic_vad.feed(_arr)
                                 if _mseg:
@@ -1470,11 +1549,18 @@ def run():
                 else:
                     _new_device = _new_device_cfg
                 _new_model_size = _sess_cfg.get("recording", "model_size", fallback="small").strip()
+                _new_asr_backend = _sess_cfg.get("asr", "backend",
+                                                 fallback=cfg.get("asr", "backend",
+                                                                  fallback="nemotron")).strip().lower()
+                _old_asr_backend = cfg.get("asr", "backend", fallback="nemotron").strip().lower()
 
-                _settings_changed = (_new_model_size != model_size) or (_new_device != device)
+                _settings_changed = ((_new_model_size != model_size) or
+                                     (_new_device != device) or
+                                     (_new_asr_backend != _old_asr_backend))
                 if _settings_changed:
                     sys_info(f"Model/device changed: {model_size}/{device} → "
                              f"{_new_model_size}/{_new_device}")
+                    cfg          = _sess_cfg
                     model_size   = _new_model_size
                     device       = _new_device
                     compute_type = "float16" if device == "cuda" else "int8"
@@ -1494,13 +1580,16 @@ def run():
                     _new_mp = _resolve_model(session_lang)
                     if _new_mp != model_path or _settings_changed:
                         try:
-                            sys_info(f"Reloading model: {_new_mp} (device={device})")
-                            whisper = WhisperModel(_new_mp, device=device, compute_type=compute_type)
+                            _transcribe_kwargs = _make_transcribe_kwargs(_new_mp, device)
+                            sys_info(f"Reloading ASR backend: {_new_mp} (device={device})")
+                            asr = create_asr_backend(cfg, _new_mp, device, compute_type,
+                                                     _transcribe_kwargs,
+                                                     log_info=sys_info,
+                                                     log_warn=tr_warn)
                             model_path = _new_mp
-                            _transcribe_kwargs = _make_transcribe_kwargs(model_path, device)
                             _current_model_lang = session_lang
                         except Exception as _me:
-                            sys_error(f"Model reload failed: {_me}")
+                            sys_error(f"ASR backend reload failed: {_me}")
 
                 _open_session()
                 _recording_active.set()
@@ -1615,7 +1704,7 @@ def run():
         pa.terminate()
         sys_info("pipeline stopped")
 
-    for f in (SIGNAL_STOP, MIC_ONAIR):
+    for f in (SIGNAL_STOP, MIC_ONAIR, SIGNAL_READY):
         try:
             os.remove(f)
         except Exception:

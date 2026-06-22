@@ -49,6 +49,8 @@ from appconfig import (
 )
 
 _MIC_ONAIR = os.path.join(BASE, ".mic_onair")
+_TRANSLATE_TARGET = os.path.join(BASE, ".translate_target")
+_LAST_TRANSLATED  = os.path.join(BASE, ".last_translated")
 
 if TYPE_CHECKING:
     pass
@@ -125,6 +127,11 @@ class Presenter:
         # backward compat alias
         self._sub_proc = None
 
+        # ── live translation (Transcript tab only; separate process + file) ──
+        self._translate_proc: subprocess.Popen | None = None
+        self._translate_on    = False
+        self._translate_lang  = "zh"
+
         # ── state flags ───────────────────────────────────────────────────────
         self._running         = False
         self._stopping        = False
@@ -190,6 +197,25 @@ class Presenter:
         CUDA is validated on demand when the user picks it in the settings UI."""
         return
 
+    def prewarm_pipeline(self) -> None:
+        """Spawn the long-lived ``pipeline.py`` at app startup so CUDA and the
+        Whisper model load **in the background** (inside the child process) before
+        the user ever clicks Start — making the first recording start instant.
+
+        Non-blocking: ``_ensure_pipeline_running`` only does ``subprocess.Popen``
+        and returns immediately; the model load happens in the child. No session
+        signal is written, so the pipeline simply loads and idles in its loop
+        waiting for ``.pipeline_session``. The device comes from config as-is and
+        the pipeline still falls back to CPU at runtime if a CUDA load fails."""
+        try:
+            self._ensure_pipeline_running()
+            self._wait_pipeline_ready_async()
+            self._view and self._view.put_log(
+                "[UI] pipeline を事前起動（CUDA・モデルをバックグラウンドで読込中）"
+            )
+        except Exception as e:
+            _log("SYS", "WARN", f"pipeline prewarm failed: {e}")
+
     def initialize(self) -> None:
         """Called once after warm_up(), on the Qt main thread. Reflects the saved
         device in the UI as-is — startup must NOT probe CUDA. Whatever the config
@@ -251,6 +277,8 @@ class Presenter:
                              fallback=os.path.join(_base, "corrected")),
             self._config.get("summary", "summary_dir",
                              fallback=os.path.join(_base, "memo")),
+            self._config.get("translate", "translated_dir",
+                             fallback=os.path.join(_base, "translated")),
         ]
         for d in dirs:
             if d:
@@ -314,8 +342,9 @@ class Presenter:
             if self._view:
                 self._view.schedule(lambda: self._view.hide_onair())
             return
+        # Starting the preview: mic is live, so show ON AIR (not MIC OFF).
         if self._view:
-            self._view.schedule(lambda: self._view.hide_onair())
+            self._view.schedule(lambda: self._view.show_onair())
         self._start_meter()
 
     def stop_mic(self) -> None:
@@ -508,6 +537,7 @@ class Presenter:
     _PIPELINE_SUBTITLE = os.path.join(BASE, ".pipeline_subtitle")
     _PIPELINE_SESSION  = os.path.join(BASE, ".pipeline_session")
     _PIPELINE_STOP     = os.path.join(BASE, ".pipeline_stop")
+    _PIPELINE_READY    = os.path.join(BASE, ".pipeline_ready")
     _PIPELINE_LOCK     = os.path.join(BASE, ".pipeline.lock")
 
     def _pipeline_lock_held(self) -> bool:
@@ -537,6 +567,31 @@ class Presenter:
         except Exception:
             return False
 
+    def _wait_pipeline_ready_async(self, timeout: float = 300.0) -> None:
+        """Enable Start only after pipeline.py has finished loading ASR/audio."""
+        if self._view is not None:
+            self._view.schedule(lambda: self._view.set_start_enabled(False))
+
+        def _wait() -> None:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if os.path.exists(self._PIPELINE_READY):
+                    if self._view is not None:
+                        self._view.schedule(lambda: self._view.set_start_enabled(True))
+                        self._view.put_log("[UI] Ready")
+                    return
+                if self._pipeline_proc and self._pipeline_proc.poll() is not None:
+                    if self._view is not None:
+                        self._view.put_log(
+                            f"[UI] [ERROR] pipeline exited before ready code={self._pipeline_proc.returncode}"
+                        )
+                    return
+                time.sleep(0.2)
+            if self._view is not None:
+                self._view.put_log("[UI] pipeline is still loading the ASR model; Start remains disabled")
+
+        threading.Thread(target=_wait, daemon=True).start()
+
     def _ensure_pipeline_running(self) -> None:
         """pipeline.py が起動していなければ起動する。"""
         if self._pipeline_proc and self._pipeline_proc.poll() is None:
@@ -544,6 +599,10 @@ class Presenter:
         # stop シグナルをクリア
         try:
             os.remove(self._PIPELINE_STOP)
+        except FileNotFoundError:
+            pass
+        try:
+            os.remove(self._PIPELINE_READY)
         except FileNotFoundError:
             pass
         if self._pipeline_lock_held():
@@ -621,6 +680,98 @@ class Presenter:
         if self._view:
             self._view.schedule(lambda: self._view.set_onair_level(0.0))
 
+    # ── live translation (Transcript tab only) ─────────────────────────────────
+
+    def set_translate(self, enabled: bool, target_lang: str = "") -> None:
+        """Toggle Transcript-tab live translation and/or change the target language.
+
+        Translation is fully isolated: a separate ``translator.py`` process reads
+        the live raw transcript and writes ``translated_<ts>.txt`` to its own dir;
+        the Corrected/Minutes tabs and their files are never touched. When ON, the
+        Transcript tab is routed to the translated file (only translated content
+        shows); when OFF it returns to the raw transcript."""
+        lang = (target_lang or self._translate_lang or "zh").strip().lower()
+        if lang not in ("zh", "ja", "en"):
+            lang = "zh"
+        self._translate_lang = lang
+        # Persist the chosen target language for next launch.
+        try:
+            self._config.set("translate", "target_lang", lang)
+            self._config.save()
+        except Exception:
+            pass
+
+        if not enabled:
+            self._translate_on = False
+            self._stop_translator()
+            try:
+                os.remove(_TRANSLATE_TARGET)
+            except FileNotFoundError:
+                pass
+            self._reroute_transcript_display()
+            self._view and self._view.put_log("[UI] 翻訳 OFF（Transcript を原文に戻しました）")
+            return
+
+        self._translate_on = True
+        with open(_TRANSLATE_TARGET, "w", encoding="utf-8") as f:
+            f.write(lang)
+        # Drop any stale translated pointer so the tab won't flash last session's text.
+        try:
+            os.remove(_LAST_TRANSLATED)
+        except FileNotFoundError:
+            pass
+        self._start_translator()
+        self._reroute_transcript_display()
+        self._view and self._view.put_log(f"[UI] 翻訳 ON → {lang}（Transcript のみ・別ファイル管理）")
+
+    def _start_translator(self) -> None:
+        """(Re)spawn a single fresh translator.py child."""
+        self._stop_translator()
+        try:
+            self._translate_proc = subprocess.Popen(
+                [sys.executable, "-X", "utf8", os.path.join(BASE, "translator.py")],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", env=self._env,
+            )
+            threading.Thread(
+                target=self._pipe, args=(self._translate_proc, "[TL]"), daemon=True
+            ).start()
+            _log("SYS", "INFO", f"translator started pid={self._translate_proc.pid}")
+        except Exception as e:
+            _log("SYS", "WARN", f"translator start failed: {e}")
+            self._translate_proc = None
+
+    def _stop_translator(self) -> None:
+        proc = self._translate_proc
+        self._translate_proc = None
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    def _read_pointer(self, pointer_file: str) -> str:
+        """Read a `.last_*` pointer file → the path it contains (or '')."""
+        try:
+            with open(pointer_file, encoding="utf-8") as f:
+                p = f.read().strip()
+            return p if p and os.path.exists(p) else ""
+        except (FileNotFoundError, OSError):
+            return ""
+
+    def _reroute_transcript_display(self) -> None:
+        """Immediately repaint the Transcript tab from the active source
+        (translated when ON, raw when OFF)."""
+        if not self._view:
+            return
+        path = self._read_pointer(_LAST_TRANSLATED if self._translate_on else STATE_FILE)
+        if path:
+            self._view.schedule(lambda p=path: self._view.show_transcript(p))
+
     def _meter_loop(self) -> None:
         """Read mic input in real time and feed RMS level to the VU meter."""
         stream = None
@@ -676,6 +827,11 @@ class Presenter:
             return
         if self._view is None:
             return
+        if not os.path.exists(self._PIPELINE_READY):
+            self._ensure_pipeline_running()
+            self._wait_pipeline_ready_async()
+            self._view.put_log("[UI] pipeline/model is still loading; please wait for Ready")
+            return
 
         # Clean up signal files from any previous session.
         # Include .pipeline_stop so a lingering stop signal (from a previous
@@ -684,7 +840,8 @@ class Presenter:
                      _MIC_ONAIR, self._PIPELINE_STOP,
                      os.path.join(BASE, ".pipeline_session_done"),
                      os.path.join(BASE, ".last_corrected"),
-                     os.path.join(BASE, ".last_final_corrected")):
+                     os.path.join(BASE, ".last_final_corrected"),
+                     _LAST_TRANSLATED):
             try:
                 os.remove(path)
             except FileNotFoundError:
@@ -756,6 +913,12 @@ class Presenter:
         with open(self._PIPELINE_SESSION, "w") as f:
             f.write("1")
         self._ensure_pipeline_running()
+        # If translation mode is left ON across sessions, (re)spawn the translator
+        # for the new session's transcript (the previous one exits on rotation).
+        if self._translate_on:
+            with open(_TRANSLATE_TARGET, "w", encoding="utf-8") as f:
+                f.write(self._translate_lang)
+            self._start_translator()
         # Start real-time corrected file polling for transcript tab
         threading.Thread(target=self._poll_corrected_file, daemon=True).start()
         self._view.put_log("[UI] pipeline セッション開始")
@@ -874,9 +1037,13 @@ class Presenter:
         two are kept distinct so corrections never overwrite the raw output."""
         _corr_state = os.path.join(BASE, ".last_corrected")
         _sid        = self._session_id   # session this poll thread belongs to
-        # (state_pointer_file, view_method, last_path, last_mtime)
+        # (state_pointer_file, view_method, last_path, last_mtime, tag)
+        # The Transcript tab has two possible sources: raw transcript and the
+        # translated file. Only one feeds it at a time, chosen by _translate_on
+        # so that in translation mode ONLY the translated content shows.
         watches = [
-            [STATE_FILE,   "show_transcript", None, 0.0],
+            [STATE_FILE,       "show_transcript", None, 0.0, "raw"],
+            [_LAST_TRANSLATED, "show_transcript", None, 0.0, "translated"],
         ]
         # With online refinement enabled, correction happens once at stop (a single
         # combined full-correction + industry-term pass → final_corrected). There is
@@ -884,11 +1051,16 @@ class Presenter:
         # corrected file (glossary-only raw) into the Corrected tab would be
         # misleading — fill that tab once at stop instead.
         if not self._config.getboolean("summary", "enable_online_refine", fallback=False):
-            watches.append([_corr_state, "show_corrected", None, 0.0])
+            watches.append([_corr_state, "show_corrected", None, 0.0, "corrected"])
         POLL_INTERVAL = 0.5  # check every 500ms instead of 3s for faster responsiveness
         while self._running and self._session_id == _sid:
             for w in watches:
-                state_file, method = w[0], w[1]
+                state_file, method, tag = w[0], w[1], w[4]
+                # Route the Transcript tab to exactly one source.
+                if tag == "raw" and self._translate_on:
+                    continue
+                if tag == "translated" and not self._translate_on:
+                    continue
                 try:
                     if not os.path.exists(state_file):
                         continue
@@ -1279,6 +1451,7 @@ class Presenter:
             # 3. Stop the long-lived pipeline; give its shutdown enough time to
             #    finish draining any remaining queue + in-progress MP3 conversion
             #    before the process exits.
+            self._stop_translator()
             self._stop_pipeline(timeout=1800)
             self._stop_ollama()
         except Exception as e:
@@ -1293,7 +1466,7 @@ class Presenter:
 
     def _force_quit(self) -> None:
         for proc in (self._rec_proc, self._tr_proc, self._ollama_proc,
-                     self._pipeline_proc):
+                     self._pipeline_proc, self._translate_proc):
             if proc and proc.poll() is None:
                 try:
                     proc.kill()
@@ -1335,10 +1508,19 @@ class Presenter:
         # correction/glossary, and corrected-file append have completed.
         _pl_seg_cached = re.compile(r"seg cached\+queued: .* dur=([\d.]+)s,")
         _pl_finalized  = re.compile(r"Segment finalized: ([\d.]+)s (?:system|mic) audio")
+        _pl_noise = (
+            "OneLogger:",
+            "No exporters were provided.",
+            "triton not found; flop counting will not work",
+            "Inference prompt set to",
+            "Transcribing: 0it",
+        )
 
         for line in proc.stdout:
             text = line.rstrip()
             if not text:
+                continue
+            if prefix == "[PL]" and any(marker in text for marker in _pl_noise):
                 continue
 
             # 構造化ログを先に解析し、正規表現は msg 部分に適用する

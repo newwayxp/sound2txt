@@ -150,6 +150,12 @@ _T: dict[str, dict[str, str]] = {
     "failed":        {"zh": "● 失败",                    "ja": "● 失敗",                        "en": "● Failed"},
     "ptt_speak":          {"zh": "发言",                  "ja": "発言",                           "en": "Speak"},
     "ptt_speaking":       {"zh": "发言中",               "ja": "発言中",                         "en": "Speaking"},
+    # Transcript-tab live translation
+    "translate_toggle":   {"zh": "翻译",                  "ja": "翻訳",                           "en": "Translate"},
+    "translate_to":       {"zh": "翻译为",                "ja": "翻訳先",                         "en": "Translate to"},
+    "tl_zh":              {"zh": "中文",                  "ja": "中国語",                         "en": "Chinese"},
+    "tl_ja":              {"zh": "日语",                  "ja": "日本語",                         "en": "Japanese"},
+    "tl_en":              {"zh": "英语",                  "ja": "英語",                           "en": "English"},
     "transcript_hint":    {"zh": "开始录音后，转写结果将实时显示在这里。",
                            "ja": "録音を開始すると、文字起こし結果がリアルタイムで表示されます。",
                            "en": "Transcribed text will appear here in real time after starting."},

@@ -71,6 +71,19 @@ if %errorlevel% neq 0 (
 )
 echo  OK: Packages installed
 
+echo.
+echo  Checking optional Nemotron/NeMo backend...
+python "%SCRIPT_DIR%check_nemo.py"
+if %errorlevel% equ 0 (
+    echo  OK: NeMo ASR found. Nemotron backend can be used.
+) else (
+    echo  INFO: NeMo ASR not found in checked environments.
+    echo  INFO: Nemotron will fall back to faster-whisper until NeMo is installed.
+    echo  INFO: Optional install:
+    echo        pip install Cython packaging
+    echo        pip install "nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main"
+)
+
 rem --------------------------------------------------
 rem Step 3: Patch ctranslate2 + verify faster-whisper
 rem --------------------------------------------------
@@ -161,7 +174,7 @@ if not "%PROXY_HOST%"=="" (
 (
     echo @echo off
     echo cd /d "%%~dp0"
-    echo python -X utf8 ui_qt.py
+    echo python -X utf8 run_gui.py
     echo if %%errorlevel%% neq 0 pause
 ) > "%SCRIPT_DIR%run.bat"
 echo  OK: run.bat created
@@ -250,7 +263,7 @@ if %ERROR% equ 0 (
     echo  ^|                                        ^|
     echo  ^|  To launch:                            ^|
     echo  ^|    Double-click run.bat                ^|
-    echo  ^|    or: python ui_qt.py                 ^|
+    echo  ^|    or: python run_gui.py               ^|
     echo  ^|                                        ^|
     echo  ^|  Set API Key in the Summary/API tab    ^|
     echo  ^|  before starting recording.            ^|
