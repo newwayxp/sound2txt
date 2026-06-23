@@ -329,7 +329,7 @@ def create_asr_backend(
     log_info: LogFn | None = None,
     log_warn: LogFn | None = None,
 ):
-    backend = cfg.get("asr", "backend", fallback="nemotron").strip().lower()
+    backend = cfg.get("asr", "backend", fallback="whisper").strip().lower()
     fallback = cfg.get("asr", "fallback_backend", fallback="whisper").strip().lower()
     info = log_info or (lambda _msg: None)
     warn = log_warn or (lambda _msg: None)

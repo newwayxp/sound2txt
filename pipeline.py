@@ -1226,11 +1226,15 @@ def run():
     sample_rate = int(dev_info["defaultSampleRate"])
     sample_size = pa.get_sample_size(pyaudio.paInt16)
     sys_info(f"audio device: {dev_info['name']}  rate={sample_rate}")
-    stream = pa.open(
-        format=pyaudio.paInt16, channels=channels,
-        rate=sample_rate, frames_per_buffer=CHUNK_SIZE,
-        input=True, input_device_index=device_index,
-    )
+
+    def _open_system_stream():
+        return pa.open(
+            format=pyaudio.paInt16, channels=channels,
+            rate=sample_rate, frames_per_buffer=CHUNK_SIZE,
+            input=True, input_device_index=device_index,
+        )
+
+    stream = _open_system_stream()
 
     need_resample = (sample_rate != SAMPLE_RATE)
     if need_resample:
@@ -1259,12 +1263,36 @@ def run():
     _system_capture_stop = threading.Event()
 
     def _system_capture_loop():
+        nonlocal stream
+        _consec_errors = 0
         while not _system_capture_stop.is_set():
             try:
                 raw = stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                _consec_errors = 0
             except Exception as e:
-                tr_warn(f"System audio read error: {e}")
-                time.sleep(0.05)
+                # The WASAPI loopback stream can be invalidated by the OS
+                # (default-device change, sleep/resume, sample-rate switch).
+                # Once that happens every read fails with "[Errno -9988] Stream
+                # closed" forever, so capture silently dies and the next session
+                # never records. Recover by reopening the stream after a short
+                # run of consecutive failures (and don't spam the log per read).
+                _consec_errors += 1
+                if _consec_errors == 1:
+                    tr_warn(f"System audio read error: {e}")
+                if _consec_errors >= 5:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                    try:
+                        stream = _open_system_stream()
+                        _consec_errors = 0
+                        sys_info("System audio stream reopened after read errors")
+                    except Exception as re:
+                        tr_warn(f"System audio stream reopen failed: {re}")
+                        time.sleep(1.0)
+                else:
+                    time.sleep(0.05)
                 continue
 
             if not _recording_active.is_set():
@@ -1551,8 +1579,8 @@ def run():
                 _new_model_size = _sess_cfg.get("recording", "model_size", fallback="small").strip()
                 _new_asr_backend = _sess_cfg.get("asr", "backend",
                                                  fallback=cfg.get("asr", "backend",
-                                                                  fallback="nemotron")).strip().lower()
-                _old_asr_backend = cfg.get("asr", "backend", fallback="nemotron").strip().lower()
+                                                                  fallback="whisper")).strip().lower()
+                _old_asr_backend = cfg.get("asr", "backend", fallback="whisper").strip().lower()
 
                 _settings_changed = ((_new_model_size != model_size) or
                                      (_new_device != device) or
