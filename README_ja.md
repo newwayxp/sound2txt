@@ -252,3 +252,5 @@ setup.bat           新規マシン用セットアップスクリプト
 | requests | LLM API 呼び出し |
 | numpy | 音声データ処理 |
 | ffmpeg | MP3 変換 + マイク音声混合（adelay/amix）|
+
+test
