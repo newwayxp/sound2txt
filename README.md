@@ -300,3 +300,21 @@ setup.bat           # 新机器一键安装脚本
 在 **纪要/API** 设置页可以打开“停止后在线行业术语精修”。开启后，停止录音时程序会先保留实时生成的 `corrected_*.txt`，再判断会议领域、下载术语候选并生成独立的 `final_corrected_*.txt`，会议纪要会优先基于这个最终校正版生成。
 
 该功能默认关闭。联网或精修失败时不会覆盖原文件，会自动回退到已有的 `corrected_*.txt` 继续生成会议纪要。最终校正版 `final_corrected_*.txt` 保存到 `[summary] final_corrected_dir`（默认 `~/Documents/Sound2Text/corrected`），术语下载结果缓存到 `[summary] term_cache_dir`（默认 `~/Documents/Sound2Text/term_cache`）。
+
+## 许可协议 / License
+
+本项目以 **GNU General Public License v3.0 (GPLv3)** 发布，完整条款见仓库根目录的 [`LICENSE`](LICENSE)。
+之所以采用 GPLv3，是因为 GUI 依赖 **PyQt6（GPLv3）**；在免费、开源分发的前提下完全合规。
+
+第三方组件及其许可（均与 GPLv3 兼容，安装时由脚本下载，不随仓库/安装包分发二进制）：
+
+| 组件 | 许可 | 获取方式 |
+|---|---|---|
+| PyQt6 | GPLv3 | pip |
+| faster-whisper / ctranslate2 / pyaudiowpatch | MIT | pip |
+| transformers / sudachipy / requests | Apache-2.0 | pip |
+| numpy / scipy / PyTorch | BSD-3 | pip |
+| JetBrains Mono / Share Tech Mono（字体） | SIL OFL 1.1 | `download_fonts.py` 安装时下载 |
+| ffmpeg (Gyan build) | GPL | winget 下载（**不随包分发**）|
+| CUDA 运行时 (cu12) | NVIDIA EULA | NVIDIA pip 源下载（**不随包分发**）|
+| kotoba-whisper-v2.0（模型） | Apache-2.0 | HuggingFace 下载 |

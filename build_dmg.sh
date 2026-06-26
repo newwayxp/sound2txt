@@ -18,6 +18,7 @@ SOURCE_FILES=(
     config_default.ini
     requirements.txt requirements_mac.txt
     setup_mac.sh
+    download_fonts.py
 )
 
 echo "=== Sound2Text – macOS DMG Builder ==="

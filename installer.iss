@@ -46,7 +46,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "run_gui.py";      DestDir: "{app}"; Flags: ignoreversion
 Source: "ui_qt_design.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "font_checker.py"; DestDir: "{app}"; Flags: ignoreversion
-Source: "fonts\*";         DestDir: "{app}\fonts"; Flags: ignoreversion recursesubdirs
+; Fonts are NOT bundled (SIL OFL 1.1) - download_fonts.py fetches them at install time.
+Source: "download_fonts.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "widgets_qt.py";  DestDir: "{app}"; Flags: ignoreversion
 Source: "presenter.py";   DestDir: "{app}"; Flags: ignoreversion
 Source: "appconfig.py";   DestDir: "{app}"; Flags: ignoreversion
@@ -90,6 +91,9 @@ Filename: "python"; Parameters: "-c ""import subprocess,sys; r=subprocess.run(['
 
 ; Step 5: Install ffmpeg
 Filename: "powershell"; Parameters: "-NoProfile -Command ""if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {{ winget install Gyan.FFmpeg --accept-package-agreements --accept-source-agreements }} else {{ Write-Host 'ffmpeg already installed' }}"""; StatusMsg: "Checking ffmpeg..."; Description: "Install ffmpeg (required for audio processing)"; Flags: postinstall waituntilterminated runascurrentuser
+
+; Step 5b: Download UI fonts (SIL OFL 1.1) - not bundled, fetched from upstream
+Filename: "python"; Parameters: "-X utf8 ""{app}\download_fonts.py"""; WorkingDir: "{app}"; StatusMsg: "Downloading UI fonts..."; Description: "Download UI fonts (JetBrains Mono, Share Tech Mono)"; Flags: postinstall waituntilterminated runascurrentuser
 
 ; Step 6: Install PyTorch CPU (needed by ct2-transformers-converter to convert the model)
 Filename: "python"; Parameters: "-c ""import subprocess,sys; r=subprocess.run([sys.executable,'-c','import torch'],capture_output=True); r.returncode and subprocess.run([sys.executable,'-m','pip','install','torch','--index-url','https://download.pytorch.org/whl/cpu','--trusted-host','download.pytorch.org'])"""; WorkingDir: "{app}"; StatusMsg: "Installing PyTorch for model conversion (~200MB)..."; Flags: postinstall waituntilterminated runascurrentuser

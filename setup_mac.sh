@@ -127,6 +127,13 @@ if [ "$PA_LIB" != "/usr/local/lib" ]; then
     fi
 fi
 
+# ── UI fonts (SIL OFL 1.1, not bundled) ───────────────────────────────────────
+echo ""
+echo "  Downloading UI fonts (JetBrains Mono, Share Tech Mono)..."
+if [ -f download_fonts.py ]; then
+    "$PY" download_fonts.py || echo "  WARNING: font download failed — app will use a default monospace font."
+fi
+
 # ── Config ────────────────────────────────────────────────────────────────────
 echo ""
 echo "[3/3] Setting up config..."

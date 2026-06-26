@@ -167,6 +167,21 @@ if not exist "%SCRIPT_DIR%config.ini" (
     echo  OK: config.ini already exists (skipping)
 )
 
+rem Download UI fonts (SIL OFL 1.1) - not bundled, fetched from upstream
+echo.
+echo  Downloading UI fonts (JetBrains Mono, Share Tech Mono)...
+if not "%PROXY_HOST%"=="" (
+    set HTTPS_PROXY=http://%PROXY_HOST%
+    set HTTP_PROXY=http://%PROXY_HOST%
+    set S2T_SSL_NO_VERIFY=1
+)
+python -X utf8 "%SCRIPT_DIR%download_fonts.py"
+if %errorlevel% neq 0 (
+    echo  [WARNING] Font download failed - app will use a default monospace font.
+) else (
+    echo  OK: Fonts ready
+)
+
 if not "%PROXY_HOST%"=="" (
     python -c "import configparser; f=r'%SCRIPT_DIR%config.ini'; cfg=configparser.ConfigParser(); cfg.read(f,encoding='utf-8'); cfg.has_section('network') or cfg.add_section('network'); cfg.set('network','https_proxy','http://%PROXY_HOST%'); cfg.set('network','http_proxy','http://%PROXY_HOST%'); cfg.set('network','ssl_verify','false'); fp=open(f,'w',encoding='utf-8'); cfg.write(fp); fp.close(); print('  OK: Proxy settings saved')"
 )

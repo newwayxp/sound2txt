@@ -55,3 +55,6 @@ test_result.txt
 vocabulary.txt
 glossary.txt
 .claude/worktrees/agent-a27f1ec586b6cf697
+
+# ── UI フォント（同梱せずインストール時に DL: download_fonts.py） ──
+fonts/*.ttf
