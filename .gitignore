@@ -18,6 +18,7 @@ config.ini
 .pipeline.lock
 .last_transcript
 .last_corrected
+.last_translated
 .last_final_corrected
 .last_language
 .stop_signal
