@@ -128,13 +128,6 @@ _T: dict[str, dict[str, str]] = {
     "ssl_on":        {"zh": "启用（默认）",              "ja": "有効（デフォルト）",             "en": "Enabled (default)"},
     "ssl_off":       {"zh": "禁用（企业代理自签名证书）","ja": "無効（社内プロキシ自己署名証明書）", "en": "Disabled (self-signed corp proxy)"},
     "proxy_hint":    {"zh": "留空则不使用代理",          "ja": "空欄の場合はプロキシなし",       "en": "Leave blank to disable proxy"},
-    # Subtitle
-    "subtitle_btn":  {"zh": "字幕",                      "ja": "字幕",                           "en": "Subtitle"},
-    "subtitle_on":   {"zh": "● 字幕显示中",              "ja": "● 字幕表示中",                   "en": "● Subtitles ON"},
-    "subtitle_off":  {"zh": "● 字幕关闭",                "ja": "● 字幕オフ",                     "en": "● Subtitles OFF"},
-    "sub_src_lang":  {"zh": "识别语言",                  "ja": "認識言語",                       "en": "Source language"},
-    "sub_dst_lang":  {"zh": "显示语言（翻译）",          "ja": "表示言語（翻訳）",               "en": "Display language (translate)"},
-    "sub_dst_same":  {"zh": "与识别语言相同",            "ja": "認識言語のまま",                 "en": "Same as source"},
     "on_air":        {"zh": "ON AIR",                    "ja": "ON AIR",                         "en": "ON AIR"},
     "rec_time":      {"zh": "录音时间",                  "ja": "録音時間",                       "en": "Rec Time"},
     "trans_time":    {"zh": "转写时间",                  "ja": "転写時間",                       "en": "Trans Time"},

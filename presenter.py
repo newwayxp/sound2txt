@@ -123,9 +123,6 @@ class Presenter:
         # ── pipeline (unified: VAD + Whisper + translation) ───────────────────
         self._pipeline_proc:  subprocess.Popen | None = None
         self._pipeline_owned = False
-        self._sub_win_proc:   subprocess.Popen | None = None
-        # backward compat alias
-        self._sub_proc = None
 
         # ── live translation (Transcript tab only; separate process + file) ──
         self._translate_proc: subprocess.Popen | None = None
@@ -459,8 +456,6 @@ class Presenter:
         self._meter_active = True
         threading.Thread(target=self._meter_loop, daemon=True).start()
 
-    # ── subtitle control ──────────────────────────────────────────────────────
-
     def _finalize_recorder_raw(self) -> None:
         """recorder が terminate() で停止した後、残った .raw ファイルを WAV に変換する。"""
         import wave as _wave
@@ -477,7 +472,15 @@ class Presenter:
         if not audio_dir:
             return
 
-        raw_files = _glob.glob(os.path.join(audio_dir, ".tmp_audio_*.raw"))
+        # Only this session's raw. Older .tmp_audio_*.raw left by a previous /
+        # crashed session must be ignored — converting them would inject stale
+        # audio into the current transcript. Filter by the recording start time
+        # written at start(); fall back to all only if no start time is known.
+        _cutoff = getattr(self, "_start_time", 0) or 0
+        raw_files = [
+            f for f in _glob.glob(os.path.join(audio_dir, ".tmp_audio_*.raw"))
+            if os.path.getmtime(f) >= _cutoff
+        ]
         if not raw_files:
             return
 
@@ -534,7 +537,6 @@ class Presenter:
 
     # ── Pipeline control (unified: audio + VAD + Whisper + translation) ────────
 
-    _PIPELINE_SUBTITLE = os.path.join(BASE, ".pipeline_subtitle")
     _PIPELINE_SESSION  = os.path.join(BASE, ".pipeline_session")
     _PIPELINE_STOP     = os.path.join(BASE, ".pipeline_stop")
     _PIPELINE_READY    = os.path.join(BASE, ".pipeline_ready")
@@ -622,37 +624,6 @@ class Presenter:
         ).start()
         _log("SYS", "INFO", f"pipeline started pid={self._pipeline_proc.pid}")
         self._view and self._view.put_log(f"[UI] pipeline 起動 pid={self._pipeline_proc.pid}")
-
-    def start_subtitle(self, dst_lang: str = "") -> None:
-        """字幕ボタン ON: pipeline を起動して subtitle シグナルを書く。"""
-        self.save_config({("subtitle", "dst_lang"): dst_lang})
-        # subtitle シグナルを書く
-        with open(self._PIPELINE_SUBTITLE, "w") as f:
-            f.write("1")
-        self._ensure_pipeline_running()
-        # 字幕ウィンドウを起動
-        if not self._sub_win_proc or self._sub_win_proc.poll() is not None:
-            self._sub_win_proc = subprocess.Popen(
-                [sys.executable, "-X", "utf8", os.path.join(BASE, "subtitle_window.py")],
-                env=self._env,
-            )
-            _log("SYS", "INFO", f"subtitle_window started pid={self._sub_win_proc.pid}")
-        self._view and self._view.put_log("[UI] 字幕開始")
-
-    def stop_subtitle(self) -> None:
-        """字幕ボタン OFF: subtitle シグナルを削除。session も OFF なら pipeline 停止。"""
-        try:
-            os.remove(self._PIPELINE_SUBTITLE)
-        except FileNotFoundError:
-            pass
-        # session も非アクティブなら pipeline を停止
-        if not os.path.exists(self._PIPELINE_SESSION):
-            self._stop_pipeline()
-        # 字幕ウィンドウを閉じる
-        if self._sub_win_proc and self._sub_win_proc.poll() is None:
-            self._sub_win_proc.terminate()
-            self._sub_win_proc = None
-        self._view and self._view.put_log("[UI] 字幕停止")
 
     def _stop_pipeline(self, timeout: float = 600) -> None:
         """pipeline に停止シグナルを送り、終了を待つ。
@@ -1223,7 +1194,6 @@ class Presenter:
 
         # ── メインループ ──────────────────────────────────────────────────────
         # 新方式: recorder が1セッション1ファイルに蓄積
-        # → 録音中は subtitle_processor がリアルタイム転写を担当
         # → 停止後に最終 WAV ファイルが生成されたら処理する
         _log("SYS", "INFO", "file_watch_loop started (single-file mode)")
 
@@ -1235,16 +1205,11 @@ class Presenter:
         _log("SYS", "INFO", "停止シグナル受信 → recorder の書き込み完了を待機...")
         time.sleep(DRAIN_WAIT + 2)   # recorder の WAV 変換を待つ余裕
 
-        # 最終 WAV ファイルを処理（字幕プロセスが既に転写済みの場合はスキップ）
-        subtitle_active = (self._sub_proc and self._sub_proc.poll() is None)
-        if not subtitle_active:
-            # 字幕なしモード: 最終 WAV を転写する (mic は pipeline でミックス済み)
-            final_wavs = _new_files(audio_dir, "audio_*.wav")
-            for wav in final_wavs:
-                _process_file(wav, "loopback")
-            _log("SYS", "INFO", f"最終転写完了: loopback={len(final_wavs)}")
-        else:
-            _log("SYS", "INFO", "字幕プロセスが転写済み → 転写スキップ")
+        # 最終 WAV を転写する (mic は pipeline でミックス済み)
+        final_wavs = _new_files(audio_dir, "audio_*.wav")
+        for wav in final_wavs:
+            _process_file(wav, "loopback")
+        _log("SYS", "INFO", f"最終転写完了: loopback={len(final_wavs)}")
 
         # transcript が作成されたら STATE_FILE に書く
         if self._transcript_file and os.path.exists(self._transcript_file):

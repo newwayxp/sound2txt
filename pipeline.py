@@ -56,7 +56,6 @@ MIC_ONAIR        = os.path.join(_BASE, ".mic_onair")
 LANG_FILE          = os.path.join(_BASE, ".last_language")
 STATE_FILE         = os.path.join(_BASE, ".last_transcript")
 CORRECTED_STATE    = os.path.join(_BASE, ".last_corrected")
-SUBTITLE_FILE      = os.path.join(_BASE, ".subtitle_text")
 
 SAMPLE_RATE = 16000
 CHUNK_SIZE  = 1024
@@ -478,6 +477,17 @@ def _make_transcribe_kwargs(model_path: str, device: str = "cpu") -> dict:
         word_timestamps            = False,
         no_speech_threshold        = 0.7,
         log_prob_threshold         = -1.0,
+        # Repetition guards. On loud non-speech / music / clipped audio Whisper
+        # loops a single phrase ("プランコード、サイトアクセス、…") to the full
+        # token window — the slowest possible decode (0.4x) for an output that the
+        # repetition filter then drops anyway. no_repeat_ngram_size hard-blocks the
+        # decoder from emitting a repeated 3-gram, so it terminates early instead of
+        # spinning; repetition_penalty discourages near-repeats; compression_ratio
+        # flags the degenerate result. Together they cut the wasted CPU and the
+        # backlog growth that made stop feel like it "never finished".
+        repetition_penalty         = 1.15,
+        no_repeat_ngram_size       = 3,
+        compression_ratio_threshold = 2.4,
     )
 
     if not os.path.isdir(model_path):
@@ -677,48 +687,6 @@ def run():
         "cur_buf":      [],   # list[np.ndarray] — current on-air audio accumulator
         "onair_offset": None, # float | None — session-relative offset in seconds when On Air started
     }
-    _live_streams: dict[str, object | None] = {"system": None, "mic": None}
-    _live_last: dict[str, str] = {"system": "", "mic": ""}
-    _live_lock = threading.Lock()
-
-    def _write_subtitle(text: str) -> None:
-        try:
-            with open(SUBTITLE_FILE, "w", encoding="utf-8") as f:
-                f.write(text.strip())
-        except Exception:
-            pass
-
-    def _reset_live_streams() -> None:
-        with _live_lock:
-            _live_streams["system"] = None
-            _live_streams["mic"] = None
-            _live_last["system"] = ""
-            _live_last["mic"] = ""
-        _write_subtitle("")
-
-    def _live_accept(source: str, chunk: np.ndarray) -> None:
-        if not getattr(asr, "supports_streaming", False):
-            return
-        try:
-            pcm = chunk.astype(np.int16, copy=False).tobytes()
-            with _live_lock:
-                live = _live_streams.get(source)
-                if live is None:
-                    live = asr.new_stream(session_lang)
-                    _live_streams[source] = live if live is not None else False
-                if not live:
-                    return
-                text = live.accept(pcm).strip()
-                if text and text != _live_last.get(source, ""):
-                    _live_last[source] = text
-                    label = _mic_label(session_lang) if source == "mic" else ""
-                    _write_subtitle(label + text)
-                    tr_debug(f"Nemotron partial [{source}]: {text[:80]}")
-        except Exception as e:
-            tr_debug(f"Nemotron live stream disabled for {source}: {e}")
-            with _live_lock:
-                _live_streams[source] = False
-
     _conv_threads: list[threading.Thread] = []  # non-daemon MP3 conversion threads to join
     # System audio sample counter — single-writer (system-capture), read by mic thread via GIL.
     # Counts frames at original sample_rate since session start → used for precise mic offset.
@@ -769,11 +737,16 @@ def run():
         with raw_lock:
             raw_fh = open(raw_file_path, "wb")
         seg_cache_dir = os.path.join(audio_dir, f".seg_cache_{session_ts}")
-        # Sweep orphaned caches left by a previously crashed session (single
-        # pipeline process → no concurrent session can own them).
+        # Sweep temp artifacts left by a previously crashed session (single
+        # pipeline process → no concurrent session can own them). This guarantees
+        # only THIS session's temp files exist while it runs, so any later
+        # fallback that scans .tmp_audio_*.raw / .seg_cache_* can't pick up a
+        # stale pre-session file and mix it into this session's output.
+        _cur_raw  = os.path.basename(raw_file_path)
+        _cur_sc   = os.path.basename(seg_cache_dir)
         try:
             for _d in os.listdir(audio_dir):
-                if _d.startswith(".seg_cache_") and _d != os.path.basename(seg_cache_dir):
+                if _d.startswith(".seg_cache_") and _d != _cur_sc:
                     _stale = os.path.join(audio_dir, _d)
                     if os.path.isdir(_stale):
                         for _f in os.listdir(_stale):
@@ -782,6 +755,12 @@ def run():
                             except Exception:
                                 pass
                         os.rmdir(_stale)
+                elif (_d.startswith(".tmp_audio_") and _d.endswith(".raw")
+                      and _d != _cur_raw):
+                    try:
+                        os.remove(os.path.join(audio_dir, _d))
+                    except Exception:
+                        pass
         except Exception:
             pass
         os.makedirs(seg_cache_dir, exist_ok=True)
@@ -802,7 +781,6 @@ def run():
         _mic_state["segments"].clear()
         _mic_state["cur_buf"].clear()
         _mic_state["onair_offset"] = None
-        _reset_live_streams()
         sys_info(f"Session started: {session_ts}")
         sys_info(f"Audio streaming to disk: {raw_file_path}")
         sys_info(f"Transcript: {transcript_file}")
@@ -924,7 +902,6 @@ def run():
         if session_lang:
             with open(LANG_FILE, "w", encoding="utf-8") as f:
                 f.write(session_lang)
-        _reset_live_streams()
 
         # Remove the segment cache dir. By the time _close_session runs the queue
         # has been drained (main loop joins it first), so all seg files are gone;
@@ -1332,7 +1309,6 @@ def run():
                         while _aec_buf and _now_t - _aec_buf[0][0] > _AEC_BUF_SEC:
                             _aec_buf.popleft()
 
-                _live_accept("system", chunk)
                 seg = vad.feed(chunk)
                 if seg:
                     _enqueue(seg, "system")
@@ -1438,15 +1414,21 @@ def run():
                     import pyaudio as _paw
                 _pa2 = _paw.PyAudio()
                 _prev_onair = False
-                try:
-                    _st = _pa2.open(
+
+                def _open_mic_stream():
+                    return _pa2.open(
                         format=_paw.paInt16, channels=_mic_ch,
                         rate=_mic_rate, frames_per_buffer=CHUNK_SIZE,
                         input=True, input_device_index=_mic_idx,
                     )
+
+                try:
+                    _st = _open_mic_stream()
+                    _mic_consec_errors = 0
                     while not _mic_stop.is_set():
                         try:
                             _raw = _st.read(CHUNK_SIZE, exception_on_overflow=False)
+                            _mic_consec_errors = 0
                             _arr = np.frombuffer(_raw, dtype=np.int16)
                             if _mic_ch > 1:
                                 _arr = _arr.reshape(-1, _mic_ch).mean(axis=1).astype(np.int16)
@@ -1494,7 +1476,6 @@ def run():
 
                             if _onair and _in_sess:
                                 _mic_state["cur_buf"].append(_arr)  # record for MP3 mixing
-                                _live_accept("mic", _arr)
                                 with _mic_vad_lock:
                                     _mseg = _mic_vad.feed(_arr)
                                 if _mseg:
@@ -1505,8 +1486,30 @@ def run():
                                     else:
                                         _enqueue(_mseg, "mic")
                         except Exception as _e:
-                            tr_warn(f"Mic read error: {_e}")
-                            time.sleep(0.05)
+                            # Mirror the system-capture recovery: the mic stream can
+                            # be invalidated by the OS after sleep/resume, a default-
+                            # device change, or long idle, after which every read
+                            # fails forever ("[Errno -9988] Stream closed") and mic
+                            # recording silently dies until app restart. Reopen the
+                            # stream after a short run of consecutive failures (and
+                            # don't spam the log per read).
+                            _mic_consec_errors += 1
+                            if _mic_consec_errors == 1:
+                                tr_warn(f"Mic read error: {_e}")
+                            if _mic_consec_errors >= 5:
+                                try:
+                                    _st.stop_stream(); _st.close()
+                                except Exception:
+                                    pass
+                                try:
+                                    _st = _open_mic_stream()
+                                    _mic_consec_errors = 0
+                                    sys_info("Mic stream reopened after read errors")
+                                except Exception as _re:
+                                    tr_warn(f"Mic stream reopen failed: {_re}")
+                                    time.sleep(1.0)
+                            else:
+                                time.sleep(0.05)
                     _st.stop_stream()
                     _st.close()
                 finally:

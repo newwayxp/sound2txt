@@ -11,11 +11,10 @@ test_audio_*.wav
 config.ini
 
 # ── ランタイム状態ファイル ────────────────────────────
-.subtitle_text
-.pipeline_subtitle
 .pipeline_session
 .pipeline_stop
 .pipeline_session_done
+.pipeline_ready
 .pipeline.lock
 .last_transcript
 .last_corrected
