@@ -23,13 +23,14 @@ from PyQt6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog,
     QFormLayout, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QRadioButton,
-    QSlider, QSizePolicy, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout,
+    QSlider, QSizePolicy, QStackedWidget, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout,
     QWidget,
 )
 
 from appconfig import BASE, AppConfig
 from i18n import _LANG, t
 from widgets_qt import VUMeterWidget, VUBarMeterWidget
+from history_view import HistoryDetailWidget, HistoryListWidget
 from log_util import LogConfig, FileLogger
 from font_checker import ensure_fonts_installed
 
@@ -932,11 +933,19 @@ class App(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Row 0: control bar (full-width, no padding)
-        control_bar = self._build_design_control_bar(central)
-        layout.addWidget(control_bar, 0)
+        self._page_stack = QStackedWidget(central)
+        layout.addWidget(self._page_stack, 1)
 
-        body = QWidget()
+        recording_page = QWidget(self._page_stack)
+        recording_layout = QVBoxLayout(recording_page)
+        recording_layout.setContentsMargins(0, 0, 0, 0)
+        recording_layout.setSpacing(0)
+
+        # Row 0: control bar (full-width, no padding)
+        control_bar = self._build_design_control_bar(recording_page)
+        recording_layout.addWidget(control_bar, 0)
+
+        body = QWidget(recording_page)
         body.setObjectName("bodyArea")
         body_layout = QHBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
@@ -959,7 +968,17 @@ class App(QMainWindow):
         main_layout.addWidget(log_area, 0)
 
         body_layout.addWidget(main, 1)
-        layout.addWidget(body, 1)
+        recording_layout.addWidget(body, 1)
+
+        self._history_list = HistoryListWidget(self._presenter, self._page_stack)
+        self._history_detail = HistoryDetailWidget(self._presenter, self._page_stack)
+        self._history_list.backRequested.connect(self._show_main_view)
+        self._history_list.sessionSelected.connect(self._show_history_detail)
+        self._history_detail.finished.connect(self._show_history_list)
+
+        self._page_stack.addWidget(recording_page)
+        self._page_stack.addWidget(self._history_list)
+        self._page_stack.addWidget(self._history_detail)
 
     # ── Control bar ───────────────────────────────────────────────────────────
 
@@ -1150,6 +1169,30 @@ class App(QMainWindow):
         self._dashboard = CompactDashboardWidget(rail)
         vbox.addWidget(self._dashboard)
         vbox.addStretch()
+
+        history_sep = QFrame(rail)
+        history_sep.setFrameShape(QFrame.Shape.HLine)
+        history_sep.setStyleSheet("color: #232B36; background-color: #232B36; max-height: 1px;")
+        vbox.addWidget(history_sep)
+
+        self._history_btn = QPushButton(t("history"), rail)
+        self._history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._history_btn.clicked.connect(self._show_history_list)
+        self._history_btn.setStyleSheet(
+            "QPushButton {"
+            " background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            " stop:0 #244C2F, stop:1 #173720);"
+            " color: #DDE8DF; border: 1px solid #2A6A3D; border-radius: 17px;"
+            " padding: 7px 18px; font-size: 13px; font-weight: 700; min-height: 34px;"
+            "}"
+            "QPushButton:hover {"
+            " background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            " stop:0 #2D5F3B, stop:1 #1B4328);"
+            " border-color: #3A8B54; color: #FFFFFF;"
+            "}"
+            "QPushButton:pressed { background-color: #15311E; }"
+        )
+        vbox.addWidget(self._history_btn)
 
         self._ptt_visible = True
         self.hide_onair()
@@ -1833,6 +1876,24 @@ class App(QMainWindow):
             f"QPushButton#btnToggle:disabled  {{ background-color: {bg_d}; color: #6B7480; }}"
         )
         self._btn_toggle.setEnabled(enabled)
+
+    def _show_main_view(self) -> None:
+        if hasattr(self, "_page_stack"):
+            self._page_stack.setCurrentIndex(0)
+
+    def _show_history_list(self) -> None:
+        if hasattr(self, "_history_list"):
+            self._history_list.refresh()
+            self._page_stack.setCurrentWidget(self._history_list)
+
+    def _show_history_detail(self, ts: str) -> None:
+        if hasattr(self, "_history_detail"):
+            try:
+                self._history_detail.load(ts)
+            except Exception as e:
+                QMessageBox.warning(self, t("history"), str(e))
+                return
+            self._page_stack.setCurrentWidget(self._history_detail)
 
     def _on_toggle(self) -> None:
         def _run():

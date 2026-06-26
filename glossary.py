@@ -65,6 +65,32 @@ def apply_glossary(text: str, pairs: list[tuple[str, str]]) -> str:
     return text
 
 
+
+def append_glossary_rules(path: str, pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Append new ``wrong => right`` rules, skipping duplicates."""
+    path = path or GLOSSARY_DEFAULT
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    existing = set(load_glossary(path))
+    written: list[tuple[str, str]] = []
+    for wrong, right in pairs:
+        wrong = str(wrong).strip()
+        right = str(right).strip()
+        pair = (wrong, right)
+        if not wrong or not right or wrong == right or pair in existing:
+            continue
+        existing.add(pair)
+        written.append(pair)
+    if not written:
+        return []
+    needs_newline = os.path.exists(path) and os.path.getsize(path) > 0
+    with open(path, "a", encoding="utf-8") as f:
+        if needs_newline:
+            f.write("\n")
+        for wrong, right in written:
+            f.write(f"{wrong} => {right}\n")
+    return written
+
+
 def glossary_prompt_section(pairs: list[tuple[str, str]]) -> str:
     """A prompt snippet that asks the LLM to also apply the term corrections."""
     if not pairs:

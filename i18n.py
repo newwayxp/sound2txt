@@ -62,6 +62,10 @@ def _ui_lang() -> str:
 _LANG: str = _ui_lang()
 
 _T: dict[str, dict[str, str]] = {
+    "history":       {"zh": "历史记录", "ja": "履歴", "en": "History"},
+    "back":          {"zh": "返回", "ja": "戻る", "en": "Back"},
+    "pause":         {"zh": "暂停", "ja": "一時停止", "en": "Pause"},
+    "finish":        {"zh": "结束", "ja": "終了", "en": "Finish"},
     "title":         {"zh": "Sound2Text 控制台",          "ja": "Sound2Text コントロール",       "en": "Sound2Text Control Panel"},
     "start":         {"zh": "▶  开始",                    "ja": "▶  開始",                       "en": "▶  Start"},
     "stop":          {"zh": "■  停止",                    "ja": "■  停止",                       "en": "■  Stop"},

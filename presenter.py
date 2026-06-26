@@ -303,6 +303,35 @@ class Presenter:
             from i18n import t
             self._view.put_log(t("saved"))
 
+    def history_sessions(self):
+        from history_store import list_sessions
+        return list_sessions(self._config)
+
+    def history_load_session(self, ts: str):
+        from history_store import load_session
+        return load_session(self._config, ts)
+
+    def history_learning_candidates(self, old_text: str, new_text: str):
+        from history_store import extract_learning_candidates
+        return extract_learning_candidates(old_text, new_text)
+
+    def history_save_session(self, corrected_path: str, new_text: str,
+                             glossary_pairs: list[tuple[str, str]],
+                             vocabulary_terms: list[str]) -> None:
+        from history_store import save_corrected_text
+        from glossary import append_glossary_rules, resolve_glossary_file
+        from summarizer import append_vocabulary, _resolve_vocab_file
+
+        save_corrected_text(corrected_path, new_text)
+        written_pairs = append_glossary_rules(
+            resolve_glossary_file(self._config), glossary_pairs)
+        written_terms = append_vocabulary(
+            _resolve_vocab_file(self._config), vocabulary_terms)
+        self._log(
+            f"[UI] history correction saved: {os.path.basename(corrected_path)} "
+            f"(+{len(written_pairs)} glossary, +{len(written_terms)} vocabulary)"
+        )
+
     def start_mic(self) -> None:
         """Activate mic mixing in pipeline (On Air ON)."""
         if not self._running:

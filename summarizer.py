@@ -81,6 +81,32 @@ def _load_vocabulary(vocab_file: str = "") -> list[str]:
 
 # ── 纠错プロンプト ────────────────────────────────────────────────────────────
 
+
+
+def append_vocabulary(vocab_file: str, terms: list[str]) -> list[str]:
+    """Append new vocabulary terms, skipping case-insensitive duplicates."""
+    path = vocab_file or _VOCAB_DEFAULT
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    existing = {term.casefold() for term in _load_vocabulary(path)}
+    written: list[str] = []
+    for term in terms:
+        term = str(term).strip()
+        key = term.casefold()
+        if not term or key in existing:
+            continue
+        existing.add(key)
+        written.append(term)
+    if not written:
+        return []
+    needs_newline = os.path.exists(path) and os.path.getsize(path) > 0
+    with open(path, "a", encoding="utf-8") as f:
+        if needs_newline:
+            f.write("\n")
+        for term in written:
+            f.write(term + "\n")
+    return written
+
+
 CORRECT_SYSTEM = """\
 You are a professional ASR (Automatic Speech Recognition) correction specialist
 skilled in Chinese, Japanese, and English mixed conversation.

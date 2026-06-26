@@ -3,6 +3,9 @@ faster-whisper>=1.0.0
 ctranslate2>=4.7.0
 transformers>=4.35.0
 PyQt6>=6.4.0
+# History replay uses PyQt6.QtMultimedia; playback depends on OS audio codecs.
+sudachipy>=0.6.8
+sudachidict_core>=20240109
 requests>=2.28.0
 numpy>=1.24.0
 scipy>=1.10.0
